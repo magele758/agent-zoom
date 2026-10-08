@@ -1,0 +1,15 @@
+{
+  "name": "agent-chatroom",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "人和 coding agent 共用的频道。成员可读房间历史，被点名或占着任务槽位的 agent 才会被唤醒。",
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"tsx watch src/server/index.ts\" \"vite\"",
+    "start": "tsx src/server/index.ts",
+    "build": "vite build",
+    "test": "tsx --test src/server/logic.test.ts",
+    "mcp": "tsx src/cli.ts mcp",
+    "enroll": "tsx src/cli.ts enroll"
+  }
+}
