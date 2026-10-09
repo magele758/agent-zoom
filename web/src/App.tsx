@@ -285,6 +285,7 @@ function Channel({
   const [body, setBody] = useState("");
   const [acceptance, setAcceptance] = useState("");
   const [parallel, setParallel] = useState(false);
+  const [complex, setComplex] = useState(false);
   const [tags, setTags] = useState("");
   const [kind, setKind] = useState<"chat" | "question" | "instruction">("instruction");
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -367,11 +368,13 @@ function Channel({
               acceptance: kind === "instruction" ? acceptance : undefined,
               parallel: kind === "instruction" ? parallel : undefined,
               tags: kind === "instruction" ? tags : undefined,
+              complex: kind === "instruction" ? complex : undefined,
             });
             setBody("");
             setAcceptance("");
             setTags("");
             setParallel(false);
+            setComplex(false);
             onPosted();
           } catch (reason) {
             onError(reason instanceof Error ? reason.message : "发送失败");
@@ -435,6 +438,15 @@ function Channel({
                 onChange={(event) => setParallel(event.target.checked)}
               />
               并行方案，最多 3 条。各自隔离，都通过后留给人裁定
+            </label>
+            <label className="checkline">
+              <input
+                data-testid="complex"
+                type="checkbox"
+                checked={complex}
+                onChange={(event) => setComplex(event.target.checked)}
+              />
+              复杂任务。有等级 3 及以上的空闲 agent 时只交给他们
             </label>
           </div>
         ) : null}
@@ -512,16 +524,39 @@ function SidePanel({
             </li>
           ))}
           {snap.members.agents.map((agent) => (
-            <li key={agent.id}>
+            <li key={agent.id} className="agent-row">
               <i className={agent.online ? "dot on" : "dot"} aria-hidden="true" />
-              <button type="button" className="handle" onClick={() => onMention(agent.handle)}>
-                {agent.ownerName} / {agent.handle}
-              </button>
-              <em>{agent.demo ? "演示" : agent.runtime}{agent.tags ? ` · ${agent.tags}` : ""}</em>
+              <span className="who">
+                <button type="button" className="handle" onClick={() => onMention(agent.handle)}>
+                  {agent.ownerName} / {agent.handle}
+                </button>
+                <em>{agent.demo ? "演示" : agent.runtime}{agent.tags ? ` · ${agent.tags}` : ""}</em>
+              </span>
+              <label className="level">
+                <span>等级</span>
+                <select
+                  aria-label={`${agent.handle} 的等级`}
+                  value={agent.level ?? 1}
+                  onChange={async (event) => {
+                    try {
+                      await api.setLevel(agent.id, Number(event.target.value));
+                      onChanged();
+                    } catch (reason) {
+                      onError(reason instanceof Error ? reason.message : "没能改等级");
+                    }
+                  }}
+                >
+                  {[1, 2, 3, 4, 5].map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </li>
           ))}
         </ul>
-        <p className="fine">点句柄会把 @句柄 放进输入框。房间历史成员都能读。推送只发给被点名的、在投标的，和占着槽位的 agent。</p>
+        <p className="fine">点句柄会把 @句柄 放进输入框。房间历史成员都能读。复杂任务优先叫醒等级 3 及以上；点名不受等级限制。</p>
       </section>
       <section className="invite-block">
         <h2>成员和 agent</h2>
@@ -559,7 +594,7 @@ function SidePanel({
         {code ? (
           <p className="code" data-testid="join-code-value">
             <code>{code}</code>
-            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags build</span>
+            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags build --level 1</span>
           </p>
         ) : null}
       </section>
@@ -608,6 +643,7 @@ function TaskCard({
       </header>
       {task.acceptance && task.acceptance !== task.body ? <p className="note">验收：{task.acceptance}</p> : null}
       {task.tags ? <p className="note">标签：{task.tags}</p> : null}
+      {task.complex ? <p className="note">复杂任务。等级 3 及以上优先，没有就退回全体匹配者。</p> : null}
       {task.direction ? <p className="note">方向：{task.direction}</p> : null}
       {task.deliverableRef ? (
         <p className="note">

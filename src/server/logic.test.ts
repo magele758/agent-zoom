@@ -11,9 +11,16 @@ function studio(name = "磊") {
   return { store, user, roomId };
 }
 
-function enroll(store: Store, user: Principal & { type: "user" }, roomId: string, handle: string, tags = "") {
+function enroll(
+  store: Store,
+  user: Principal & { type: "user" },
+  roomId: string,
+  handle: string,
+  tags = "",
+  level = 1,
+) {
   const code = store.createJoinCode(user, roomId);
-  const joined = store.enroll(code.code, handle, "codex", tags);
+  const joined = store.enroll(code.code, handle, "codex", tags, level);
   const agent = store.agentByToken(joined.token);
   assert.ok(agent && agent.type === "agent");
   return agent;
@@ -22,6 +29,11 @@ function enroll(store: Store, user: Principal & { type: "user" }, roomId: string
 function events(store: Store, agentId: string, type?: string) {
   const rows = store.inboxAfter(agentId, 0);
   return type ? rows.filter((row) => row.event_type === type) : rows;
+}
+
+function levelOf(store: Store, agentId: string) {
+  const row = store.db.prepare("SELECT level FROM agents WHERE id = ?").get(agentId) as { level: number };
+  return row.level;
 }
 
 test("two matching agents bid, and only one implementer is awarded", () => {
@@ -258,4 +270,226 @@ test("the stop hook only consumes events once", () => {
   store.postMessage(user, roomId, { kind: "chat", body: "@coder 回来看一眼" });
   assert.equal(store.takePending(coder.id).length, 1);
   assert.equal(store.takePending(coder.id).length, 0);
+});
+
+test("ordinary tasks ignore level and keep the earlier bid", () => {
+  const { store, user, roomId } = studio();
+  const junior = enroll(store, user, roomId, "junior", "lab", 1);
+  const senior = enroll(store, user, roomId, "senior", "lab", 5);
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "改一下字号", tags: "lab" });
+  assert.equal(posted.task?.status, "bidding");
+  assert.equal(posted.task?.complex, false);
+  assert.equal(events(store, junior.id, "bid_open").length, 1);
+  assert.equal(events(store, senior.id, "bid_open").length, 1);
+  store.bid(junior, posted.task!.id, "我只改字号，不动布局。");
+  const awarded = store.bid(senior, posted.task!.id, "我连行高一起改。");
+  assert.equal(awarded.claims.find((claim) => claim.role === "implementer")?.agentId, junior.id);
+});
+
+test("complex tasks wake and award level 3 or above, and rank by level", () => {
+  const { store, user, roomId } = studio();
+  const junior = enroll(store, user, roomId, "junior", "lab", 1);
+  const mid = enroll(store, user, roomId, "mid", "lab", 3);
+  const senior = enroll(store, user, roomId, "senior", "lab", 5);
+  const posted = store.postMessage(user, roomId, {
+    kind: "instruction",
+    body: "重做权限模型",
+    tags: "lab",
+    complex: true,
+  });
+  assert.equal(posted.task?.complex, true);
+  assert.equal(posted.task?.status, "bidding");
+  assert.equal(events(store, junior.id, "bid_open").length, 0);
+  assert.equal(events(store, mid.id, "bid_open").length, 1);
+  assert.equal(events(store, senior.id, "bid_open").length, 1);
+  assert.throws(() => store.bid(junior, posted.task!.id, "我也能做。"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "not_eligible";
+  });
+  store.bid(mid, posted.task!.id, "我先收紧读写边界。");
+  const awarded = store.bid(senior, posted.task!.id, "我先画清角色再改接口。");
+  assert.equal(awarded.claims.find((claim) => claim.role === "implementer")?.agentId, senior.id);
+  assert.equal(events(store, mid.id, "bid_lost").length, 1);
+});
+
+test("a complex task falls back to everyone when nobody is level 3", () => {
+  const { store, user, roomId } = studio();
+  const one = enroll(store, user, roomId, "one", "lab", 1);
+  const two = enroll(store, user, roomId, "two", "lab", 2);
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "补日志", tags: "lab", complex: true });
+  assert.equal(posted.task?.status, "bidding");
+  assert.equal(events(store, one.id, "bid_open").length, 1);
+  assert.equal(events(store, two.id, "bid_open").length, 1);
+  store.bid(one, posted.task!.id, "我补界面日志。");
+  const awarded = store.bid(two, posted.task!.id, "我补请求日志。");
+  assert.equal(awarded.claims.find((claim) => claim.role === "implementer")?.agentId, two.id);
+});
+
+test("a complex task with one strong agent stays open, mentions ignore level, and review does too", () => {
+  const { store, user, roomId } = studio();
+  const junior = enroll(store, user, roomId, "junior", "lab", 1);
+  const senior = enroll(store, user, roomId, "senior", "lab", 4);
+  const posted = store.postMessage(user, roomId, {
+    kind: "instruction",
+    body: "@junior 你先看一下方案，实现交给更合适的人",
+    tags: "lab",
+    complex: true,
+  });
+  assert.equal(posted.task?.status, "open");
+  assert.equal(events(store, senior.id, "task_open").length, 1);
+  assert.equal(events(store, junior.id, "task_open").length, 0);
+  assert.equal(events(store, junior.id, "mention").length, 1);
+  assert.equal(store.readMessages(junior, roomId, 0).some((message) => String(message.body).includes("@junior")), true);
+  assert.throws(() => store.claim(junior, posted.task!.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "not_eligible";
+  });
+  store.claim(senior, posted.task!.id, "implementer");
+  store.deliver(senior, posted.task!.id, "workspace:auth", "权限模型交了一版。");
+  store.claim(junior, posted.task!.id, "reviewer");
+  const reviewed = store.review(junior, posted.task!.id, "approve", "范围够了。");
+  assert.equal(reviewed.status, "in_test");
+  assert.equal(levelOf(store, senior.id), 5);
+});
+
+test("a claimed task is not taken by a stronger agent", () => {
+  const { store, user, roomId } = studio();
+  const junior = enroll(store, user, roomId, "junior", "lab", 2);
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "改文案", tags: "lab", complex: true });
+  store.claim(junior, posted.task!.id, "implementer");
+  const senior = enroll(store, user, roomId, "senior", "lab", 5);
+  assert.throws(() => store.claim(senior, posted.task!.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && (error.code === "bad_state" || error.code === "already_claimed");
+  });
+  const task = store.getTask(user, posted.task!.id);
+  assert.equal(task.status, "claimed");
+  assert.equal(task.claims.find((claim) => claim.role === "implementer")?.agentId, junior.id);
+});
+
+test("a complex task switches to a newly leveled agent before it is claimed", () => {
+  const { store, user, roomId } = studio();
+  const junior = enroll(store, user, roomId, "junior", "lab", 1);
+  const posted = store.postMessage(user, roomId, {
+    kind: "instruction",
+    body: "复杂但先没人够格",
+    tags: "lab",
+    complex: true,
+  });
+  assert.equal(events(store, junior.id, "task_open").length, 1);
+  const senior = enroll(store, user, roomId, "senior", "lab", 4);
+  assert.equal(store.getTask(user, posted.task!.id).status, "open");
+  assert.ok(events(store, senior.id, "task_open").length >= 1);
+  assert.throws(() => store.claim(junior, posted.task!.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "not_eligible";
+  });
+  assert.equal(store.claim(senior, posted.task!.id, "implementer").status, "claimed");
+});
+
+test("parallel complex lanes go to the highest levels", () => {
+  const { store, user, roomId } = studio();
+  const junior = enroll(store, user, roomId, "junior", "lab", 1);
+  const mid = enroll(store, user, roomId, "mid", "lab", 3);
+  const senior = enroll(store, user, roomId, "senior", "lab", 5);
+  const posted = store.postMessage(user, roomId, {
+    kind: "instruction",
+    body: "两种导出",
+    parallel: true,
+    tags: "lab",
+    complex: true,
+  });
+  store.bid(mid, posted.task!.id, "我写文件再提示。");
+  const awarded = store.bid(senior, posted.task!.id, "我用流式导出。");
+  assert.equal(awarded.lanes.length, 2);
+  assert.equal(awarded.lanes[0].complex, true);
+  assert.equal(awarded.lanes[0].claims.find((claim) => claim.role === "implementer")?.agentId, senior.id);
+  assert.equal(awarded.lanes[1].claims.find((claim) => claim.role === "implementer")?.agentId, mid.id);
+  assert.equal(events(store, junior.id, "bid_open").length, 0);
+});
+
+test("a first-pass review raises level, a rejection lowers it, and a human release does not", () => {
+  const { store, user, roomId } = studio();
+  const coder = enroll(store, user, roomId, "coder", "lab", 3);
+  const reviewer = enroll(store, user, roomId, "critic", "review", 1);
+  const qa = enroll(store, user, roomId, "probe", "test", 1);
+  const first = store.postMessage(user, roomId, { kind: "instruction", body: "第一次", tags: "lab" });
+  store.claim(coder, first.task!.id, "implementer");
+  store.deliver(coder, first.task!.id, "workspace:one", "做完了。");
+  store.claim(reviewer, first.task!.id, "reviewer");
+  store.review(reviewer, first.task!.id, "question", "验收里的失败提示在哪？");
+  assert.equal(levelOf(store, coder.id), 3);
+  store.review(reviewer, first.task!.id, "approve", "过了。");
+  store.claim(qa, first.task!.id, "tester");
+  store.reportTest(qa, first.task!.id, "pass", "主路径过了。");
+  assert.equal(levelOf(store, coder.id), 4);
+  assert.equal(
+    store.readMessages(user, roomId, 0).some((message) => String(message.body) === "coder 的等级从 3 调到 4：交付的任务一次评审通过。"),
+    true,
+  );
+
+  const second = store.postMessage(user, roomId, { kind: "instruction", body: "第二次", tags: "lab" });
+  store.claim(coder, second.task!.id, "implementer");
+  store.deliver(coder, second.task!.id, "workspace:two", "又做了一版。");
+  store.claim(reviewer, second.task!.id, "reviewer");
+  const back = store.review(reviewer, second.task!.id, "request_changes", "验收没过：失败提示还没有。");
+  assert.equal(back.status, "changes");
+  assert.equal(levelOf(store, coder.id), 3);
+  store.deliver(coder, second.task!.id, "workspace:two-b", "补上失败提示。");
+  store.claim(reviewer, second.task!.id, "reviewer");
+  store.review(reviewer, second.task!.id, "approve", "这次过了。");
+  assert.equal(levelOf(store, coder.id), 3);
+
+  const third = store.postMessage(user, roomId, { kind: "instruction", body: "第三次", tags: "lab" });
+  store.claim(coder, third.task!.id, "implementer");
+  const moved = store.readMessages(user, roomId, 0).filter((message) => String(message.body).includes("调到")).length;
+  store.forceDone(user, third.task!.id);
+  assert.equal(levelOf(store, coder.id), 3);
+  assert.equal(store.readMessages(user, roomId, 0).filter((message) => String(message.body).includes("调到")).length, moved);
+});
+
+test("level stays inside 1 to 5, and studio members can set it", () => {
+  const { store, user, roomId } = studio();
+  const coder = enroll(store, user, roomId, "coder", "lab", 5);
+  const reviewer = enroll(store, user, roomId, "critic", "review");
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "到顶", tags: "lab" });
+  store.claim(coder, posted.task!.id, "implementer");
+  store.deliver(coder, posted.task!.id, "workspace:top", "做完了。");
+  store.claim(reviewer, posted.task!.id, "reviewer");
+  store.review(reviewer, posted.task!.id, "approve", "过了。");
+  assert.equal(levelOf(store, coder.id), 5);
+
+  const low = enroll(store, user, roomId, "low", "lab", 1);
+  const again = store.postMessage(user, roomId, { kind: "instruction", body: "到底", tags: "lab" });
+  store.claim(low, again.task!.id, "implementer");
+  store.deliver(low, again.task!.id, "workspace:floor", "做完了。");
+  store.claim(reviewer, again.task!.id, "reviewer");
+  store.review(reviewer, again.task!.id, "request_changes", "验收没过：还是空的。");
+  assert.equal(levelOf(store, low.id), 1);
+  assert.equal(store.readMessages(user, roomId, 0).some((message) => String(message.body).includes("调到")), false);
+
+  assert.throws(() => store.setLevel(user, coder.id, 6), (error: unknown) => {
+    return error instanceof ApiError && error.code === "bad_level";
+  });
+  assert.throws(() => store.setLevel(user, coder.id, 0), (error: unknown) => {
+    return error instanceof ApiError && error.code === "bad_level";
+  });
+  store.setLevel(user, coder.id, 2);
+  assert.equal(levelOf(store, coder.id), 2);
+
+  const outsiderSession = store.session("外人");
+  const outsider = store.userBySession(outsiderSession.token);
+  assert.ok(outsider && outsider.type === "user");
+  assert.throws(() => store.setLevel(outsider, coder.id, 4), (error: unknown) => {
+    return error instanceof ApiError && error.status === 403;
+  });
+
+  store.invite(user, roomId, "同事");
+  const colleagueSession = store.session("同事");
+  const colleague = store.userBySession(colleagueSession.token);
+  assert.ok(colleague && colleague.type === "user");
+  store.setLevel(colleague, coder.id, 4);
+  assert.equal(store.whoami(coder).level, 4);
+
+  const demos = store.db.prepare("SELECT level FROM agents WHERE demo = 1 AND org_id = ?").all(coder.orgId) as Array<{
+    level: number;
+  }>;
+  assert.equal(demos.length, 4);
+  assert.ok(demos.every((row) => row.level === 1));
 });

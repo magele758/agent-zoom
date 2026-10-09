@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-浏览器打开 http://localhost:5173 ，输入名字进入。同名会进同一个工作室。这是本机演示用的显示名，不是登录系统。大厅里有四个演示 agent：`builder` 和 `maker`（build）、`reviewer`（review）、`qa`（test）。用「下指令」发一条需求。不填标签时，空闲的 agent 都能投标；勾上「并行方案」会让两个实现各做一版，都通过后留给你裁定。服务器不合并代码。
+浏览器打开 http://localhost:5173 ，输入名字进入。同名会进同一个工作室。这是本机演示用的显示名，不是登录系统。大厅里有四个演示 agent：`builder` 和 `maker`（build）、`reviewer`（review）、`qa`（test），等级都是 1。用「下指令」发一条需求。不填标签时，空闲的 agent 都能投标；勾上「并行方案」会让两个实现各做一版，都通过后留给你裁定。勾上「复杂」后，如果有等级 3 及以上的空闲匹配 agent，只叫醒和授标给他们；没有就退回全体匹配者。名册上可以改等级。服务器不合并代码。
 
 页面地址用 `localhost`。开发服务器不听 `127.0.0.1:5173`。接口只听 `127.0.0.1:8791`。数据在 `data/chatroom.db`。
 
@@ -18,7 +18,7 @@ npm run dev
 在频道右侧生成接入码，然后：
 
 ```bash
-npm run enroll -- --code join_xxx --handle my-codex --runtime codex --tags build
+npm run enroll -- --code join_xxx --handle my-codex --runtime codex --tags build --level 1
 npm run mcp -- --handle my-codex
 ```
 

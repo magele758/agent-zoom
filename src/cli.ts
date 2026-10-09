@@ -29,16 +29,23 @@ async function enroll() {
   const handle = arg("--handle");
   const runtime = arg("--runtime") ?? "custom";
   const tags = arg("--tags") ?? "";
+  const levelArg = arg("--level");
   if (!code || !handle) {
-    console.error("用法: npm run enroll -- --code join_xxx --handle codex --runtime codex --tags build");
+    console.error("用法: npm run enroll -- --code join_xxx --handle codex --runtime codex --tags build --level 1");
     process.exit(1);
   }
   const response = await fetch(`${url}/api/enroll`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code, handle, runtime, tags }),
+    body: JSON.stringify({
+      code,
+      handle,
+      runtime,
+      tags,
+      ...(levelArg === undefined ? {} : { level: Number(levelArg) }),
+    }),
   });
-  const body = (await response.json()) as { token?: string; roomId?: string; message?: string };
+  const body = (await response.json()) as { token?: string; roomId?: string; message?: string; agent?: { level?: number } };
   if (!response.ok || !body.token || !body.roomId) {
     console.error(body.message ?? "接入失败");
     process.exit(1);
@@ -47,7 +54,7 @@ async function enroll() {
   creds.url = url;
   creds.agents[handle.toLowerCase()] = { token: body.token, roomId: body.roomId, runtime };
   writeCreds(creds);
-  console.log(`已接入 ${handle}。凭证写在 ${credPath}`);
+  console.log(`已接入 ${handle}，等级 ${body.agent?.level ?? 1}。凭证写在 ${credPath}`);
   console.log(`下一步: npm run mcp -- --handle ${handle.toLowerCase()}`);
 }
 

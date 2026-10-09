@@ -168,6 +168,9 @@ function migrate(db: DatabaseSync) {
   add("tasks", "deliverable_ref", "deliverable_ref TEXT");
   add("tasks", "deliverable_summary", "deliverable_summary TEXT");
   add("tasks", "winner_task_id", "winner_task_id TEXT");
+  add("agents", "level", "level INTEGER NOT NULL DEFAULT 1");
+  add("tasks", "complex", "complex INTEGER NOT NULL DEFAULT 0");
+  add("tasks", "review_returns", "review_returns INTEGER NOT NULL DEFAULT 0");
   db.exec(`
     CREATE TABLE IF NOT EXISTS bids (
       id TEXT PRIMARY KEY,

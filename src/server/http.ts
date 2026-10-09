@@ -89,6 +89,7 @@ export function createApp(store: Store) {
         acceptance: body.acceptance ? String(body.acceptance) : undefined,
         parallel: Boolean(body.parallel),
         tags: body.tags ? String(body.tags) : undefined,
+        complex: Boolean(body.complex),
       }),
     );
   });
@@ -112,6 +113,7 @@ export function createApp(store: Store) {
         String(body.handle ?? ""),
         String(body.runtime ?? "custom"),
         body.tags ? String(body.tags) : "",
+        body.level === undefined || body.level === null || body.level === "" ? 1 : (body.level as number | string),
       ),
     );
   });
@@ -119,7 +121,11 @@ export function createApp(store: Store) {
   app.patch("/api/agents/:id", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
-    return c.json(store.setPaused(user, c.req.param("id"), Boolean(body.paused)));
+    const id = c.req.param("id");
+    let result: { id: string; paused?: boolean; level?: number } = { id };
+    if (body.level !== undefined) result = { ...result, ...store.setLevel(user, id, body.level as number | string) };
+    if (body.paused !== undefined) result = { ...result, ...store.setPaused(user, id, Boolean(body.paused)) };
+    return c.json(result);
   });
 
   app.post("/api/tasks/:id/cancel", (c) => {

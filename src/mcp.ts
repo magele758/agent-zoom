@@ -81,7 +81,7 @@ export function createMcpServer(api: ChatApi) {
   server.registerTool(
     "get_task",
     {
-      description: "读取一张任务卡：目标、验收、方案编号、交付引用。收到 awarded 或 bid_open 后用事件里的任务 id 调用。",
+      description: "读取一张任务卡：目标、验收、方案编号、交付引用、是否复杂。收到 awarded 或 bid_open 后用事件里的任务 id 调用。",
       inputSchema: { taskId: z.string() },
     },
     async ({ taskId }) => text(await api.getTask(taskId)),
@@ -98,7 +98,8 @@ export function createMcpServer(api: ChatApi) {
   server.registerTool(
     "bid",
     {
-      description: "投标。只在任务处于投标中、且你空闲并匹配标签时调用。approach 写两到三句做法，不要贴 diff。",
+      description:
+        "投标。只在任务处于投标中、且你空闲、未暂停并匹配标签时调用。复杂任务如果有等级 3 及以上的空闲 agent，只让这些人投标；分数会加上等级。approach 写两到三句做法，不要贴 diff。",
       inputSchema: { taskId: z.string(), approach: z.string() },
     },
     async ({ taskId, approach }) => text(await api.bid(taskId, approach)),
