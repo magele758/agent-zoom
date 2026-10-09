@@ -210,6 +210,19 @@ button { cursor: pointer; }
 .room.active { background: rgba(228, 194, 122, 0.1); }
 .room.active::before { background: var(--brass); }
 .room:hover { background: rgba(244, 240, 230, 0.05); }
+.archived-rooms {
+  margin: 8px 4px 0;
+  border-top: 1px solid var(--line);
+  padding-top: 4px;
+}
+.archived-rooms summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  min-height: 36px;
+  padding: 6px 8px;
+}
+.archived-rooms .room { color: var(--muted); }
 .icon-button {
   width: 44px;
   height: 44px;
@@ -246,6 +259,7 @@ button { cursor: pointer; }
 }
 .channel-head p, .fine, .muted { color: var(--muted); }
 .channel-head p { margin: 4px 0 0; font-size: 14px; max-width: 62ch; }
+.channel-head p.current-topic { color: var(--brass-2); }
 .scope-form { display: grid; gap: 8px; margin-top: 10px; max-width: 460px; }
 .scope-form textarea { min-height: 72px; resize: vertical; }
 .scope-actions { display: flex; gap: 8px; align-items: center; }
@@ -342,6 +356,7 @@ button { cursor: pointer; }
 }
 .checkline input { width: 16px; height: 16px; min-height: 0; accent-color: var(--brass); }
 .thread-hint { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+.scope-hint { margin: 0 0 10px; color: var(--warn); font-size: 13px; line-height: 1.45; }
 .thread-hint button { color: var(--brass); margin-left: 8px; text-decoration: underline; text-underline-offset: 2px; }
 .composer-bar { justify-content: space-between; margin-top: 10px; color: var(--muted); font-size: 13px; }
 .error { color: var(--danger); margin: 8px 0 0; }

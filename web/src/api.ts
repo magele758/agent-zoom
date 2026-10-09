@@ -1,5 +1,14 @@
 export type RoomScope = { project: string; directories: string[]; branch: string };
-export type Room = { id: string; org_id: string; name: string; topic: string; created_at: string } & RoomScope;
+export type Room = {
+  id: string;
+  org_id: string;
+  name: string;
+  topic: string;
+  currentTopic: string;
+  general: boolean;
+  archived: boolean;
+  created_at: string;
+} & RoomScope;
 export type Agent = {
   id: string;
   handle: string;
@@ -61,7 +70,14 @@ export type Task = {
 };
 
 export type Snapshot = {
-  room: { id: string; name: string; topic: string } & RoomScope;
+  room: {
+    id: string;
+    name: string;
+    topic: string;
+    currentTopic: string;
+    general: boolean;
+    archived: boolean;
+  } & RoomScope;
   members: {
     users: Array<{ id: string; name: string; online: boolean }>;
     agents: Agent[];
@@ -90,10 +106,20 @@ export const api = {
   enter: (name: string) => request<{ user: { id: string; name: string }; roomId: string | null }>("/api/session", { method: "POST", body: JSON.stringify({ name }) }),
   logout: () => request("/api/logout", { method: "POST", body: "{}" }),
   rooms: () => request<{ rooms: Room[] }>("/api/rooms"),
-  createRoom: (input: { name: string; topic: string; project?: string; directories?: string[]; branch?: string }) =>
-    request<{ id: string }>("/api/rooms", { method: "POST", body: JSON.stringify(input) }),
+  createRoom: (input: {
+    name: string;
+    topic: string;
+    currentTopic?: string;
+    project?: string;
+    directories?: string[];
+    branch?: string;
+  }) => request<{ id: string }>("/api/rooms", { method: "POST", body: JSON.stringify(input) }),
   setScope: (roomId: string, input: { project: string; directories: string[]; branch: string }) =>
     request<RoomScope>(`/api/rooms/${roomId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  setChannelText: (roomId: string, input: { topic: string; currentTopic: string }) =>
+    request<{ topic: string; currentTopic: string }>(`/api/rooms/${roomId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  setArchived: (roomId: string, archived: boolean) =>
+    request<{ archived: boolean }>(`/api/rooms/${roomId}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
   snapshot: (roomId: string) => request<Snapshot>(`/api/rooms/${roomId}`),
   post: (
     roomId: string,

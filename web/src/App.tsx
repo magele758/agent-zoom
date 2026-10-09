@@ -98,13 +98,26 @@ export function App() {
       const same =
         existing.project === snap.room.project &&
         existing.branch === snap.room.branch &&
-        (existing.directories ?? []).join("\n") === (snap.room.directories ?? []).join("\n");
+        (existing.directories ?? []).join("\n") === (snap.room.directories ?? []).join("\n") &&
+        existing.topic === snap.room.topic &&
+        (existing.currentTopic ?? "") === (snap.room.currentTopic ?? "") &&
+        Boolean(existing.general) === Boolean(snap.room.general) &&
+        Boolean(existing.archived) === Boolean(snap.room.archived);
       if (same) return current;
       return {
         ...current,
         rooms: current.rooms.map((room) =>
           room.id === snap.room.id
-            ? { ...room, project: snap.room.project, directories: snap.room.directories, branch: snap.room.branch }
+            ? {
+                ...room,
+                project: snap.room.project,
+                directories: snap.room.directories,
+                branch: snap.room.branch,
+                topic: snap.room.topic,
+                currentTopic: snap.room.currentTopic ?? "",
+                general: Boolean(snap.room.general),
+                archived: Boolean(snap.room.archived),
+              }
             : room,
         ),
       };
@@ -265,9 +278,20 @@ function RoomList({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
+  const [currentTopic, setCurrentTopic] = useState("");
   const [project, setProject] = useState("");
   const [directories, setDirectories] = useState("");
   const [branch, setBranch] = useState("");
+  const openRooms = rooms.filter((room) => !room.archived);
+  const archivedRooms = rooms.filter((room) => room.archived);
+  const roomItem = (room: Me["rooms"][number]) => (
+    <li key={room.id}>
+      <button type="button" className={room.id === active ? "room active" : "room"} onClick={() => onPick(room.id)}>
+        <span>{room.name}</span>
+        {room.project ? <small>{room.project}</small> : null}
+      </button>
+    </li>
+  );
   return (
     <div className="rooms">
       <div className="section-row">
@@ -284,12 +308,14 @@ function RoomList({
             const room = await api.createRoom({
               name,
               topic,
+              currentTopic,
               project,
               directories: directoryLines(directories),
               branch,
             });
             setName("");
             setTopic("");
+            setCurrentTopic("");
             setProject("");
             setDirectories("");
             setBranch("");
@@ -298,23 +324,21 @@ function RoomList({
           }}
         >
           <input aria-label="频道名" value={name} onChange={(event) => setName(event.target.value)} placeholder="频道名" />
-          <input aria-label="频道说明" value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="这个频道用来做什么" />
+          <input aria-label="说明" value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="这个频道用来做什么" />
+          <input aria-label="当前主题" value={currentTopic} onChange={(event) => setCurrentTopic(event.target.value)} placeholder="当前主题" />
           <input aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} placeholder="项目名，比如 agent-zoom" />
           <textarea aria-label="工作目录" value={directories} onChange={(event) => setDirectories(event.target.value)} placeholder={"工作目录，一行一个\nweb/src"} />
           <input aria-label="分支" value={branch} onChange={(event) => setBranch(event.target.value)} placeholder="默认分支，比如 main" />
           <button type="submit" disabled={!name.trim()}>创建</button>
         </form>
       ) : null}
-      <ul>
-        {rooms.map((room) => (
-          <li key={room.id}>
-            <button type="button" className={room.id === active ? "room active" : "room"} onClick={() => onPick(room.id)}>
-              <span>{room.name}</span>
-              {room.project ? <small>{room.project}</small> : null}
-            </button>
-          </li>
-        ))}
-      </ul>
+      <ul>{openRooms.map(roomItem)}</ul>
+      {archivedRooms.length > 0 ? (
+        <details className="archived-rooms">
+          <summary>已归档</summary>
+          <ul>{archivedRooms.map(roomItem)}</ul>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -341,6 +365,9 @@ function Channel({
   const [taskId, setTaskId] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [editingScope, setEditingScope] = useState(false);
+  const [editingText, setEditingText] = useState(false);
+  const [topicDraft, setTopicDraft] = useState("");
+  const [currentTopicDraft, setCurrentTopicDraft] = useState("");
   const [project, setProject] = useState("");
   const [directories, setDirectories] = useState("");
   const [branch, setBranch] = useState("");
@@ -373,8 +400,21 @@ function Channel({
     setBranch(snap.room.branch ?? "");
   }, [scopeKey]);
 
+  useEffect(() => {
+    setEditingText(false);
+  }, [snap?.room.id]);
+
   const selected = snap?.tasks.find((task) => task.id === taskId) ?? null;
   const latest = snap?.messages.at(-1);
+  const changeArchived = async (archived: boolean) => {
+    if (!snap) return;
+    try {
+      await api.setArchived(snap.room.id, archived);
+      onPosted();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : archived ? "没能归档" : "没能取消归档");
+    }
+  };
 
   return (
     <>
@@ -382,7 +422,48 @@ function Channel({
         <div>
           <h1>{snap?.room.name ?? "频道"}</h1>
           <p>{snap?.room.topic}</p>
+          {snap?.room.currentTopic?.trim() ? (
+            <p className="current-topic" data-testid="current-topic">当前：{snap.room.currentTopic}</p>
+          ) : null}
           {snap ? <p className="scope" data-testid="room-scope">{scopeText(snap.room)}</p> : null}
+          {snap && editingText ? (
+            <form
+              className="scope-form"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                try {
+                  await api.setChannelText(snap.room.id, {
+                    topic: topicDraft.trim(),
+                    currentTopic: currentTopicDraft.trim(),
+                  });
+                  setEditingText(false);
+                  onPosted();
+                } catch (reason) {
+                  onError(reason instanceof Error ? reason.message : "没能保存说明");
+                }
+              }}
+            >
+              <input aria-label="说明" value={topicDraft} onChange={(event) => setTopicDraft(event.target.value)} placeholder="这个频道用来做什么" />
+              <input aria-label="当前主题" value={currentTopicDraft} onChange={(event) => setCurrentTopicDraft(event.target.value)} placeholder="当前主题" />
+              <span className="scope-actions">
+                <button type="submit">保存说明</button>
+                <button type="button" className="text-button" onClick={() => setEditingText(false)}>取消</button>
+              </span>
+            </form>
+          ) : snap ? (
+            <button
+              type="button"
+              className="text-button"
+              data-testid="edit-channel-text"
+              onClick={() => {
+                setTopicDraft(snap.room.topic ?? "");
+                setCurrentTopicDraft(snap.room.currentTopic ?? "");
+                setEditingText(true);
+              }}
+            >
+              改说明
+            </button>
+          ) : null}
           {snap && editingScope ? (
             <form
               className="scope-form"
@@ -412,6 +493,11 @@ function Channel({
           ) : (
             <button type="button" className="text-button" data-testid="edit-scope" onClick={() => setEditingScope(true)}>改工作范围</button>
           )}
+          {snap && !snap.room.general && !snap.room.archived ? (
+            <button type="button" className="text-button" data-testid="archive-room" onClick={() => void changeArchived(true)}>
+              归档频道
+            </button>
+          ) : null}
         </div>
         <span className="you">你是 {meName}</span>
       </header>
@@ -449,6 +535,14 @@ function Channel({
         <p className="sr" aria-live="polite">{latest ? `${latest.authorName} ${KIND_LABEL[latest.kind] ?? ""} ${latest.body}` : ""}</p>
       </div>
       {error ? <p className="error banner">{error}</p> : null}
+      {snap?.room.archived ? (
+        <div className="composer">
+          <p className="fine">这个频道已归档。历史还在。</p>
+          <button type="button" className="text-button" data-testid="unarchive-room" onClick={() => void changeArchived(false)}>
+            取消归档
+          </button>
+        </div>
+      ) : (
       <form
         className="composer"
         onSubmit={async (event) => {
@@ -504,6 +598,9 @@ function Channel({
             发进「{selected.title}」，会唤醒占着槽位的 agent。
             <button type="button" onClick={() => setTaskId(null)}>取消</button>
           </p>
+        ) : null}
+        {kind === "instruction" && snap && !snap.room.archived && !(snap.room.directories?.length) ? (
+          <p className="scope-hint" data-testid="scope-hint">这个频道还没有工作目录。项目请另开频道，填上目录和分支。大厅只适合公告。</p>
         ) : null}
         {kind === "instruction" ? (
           <div className="composer-extra">
@@ -566,6 +663,7 @@ function Channel({
           <button data-testid="send" type="submit" disabled={pending || !body.trim()}>发送</button>
         </div>
       </form>
+      )}
     </>
   );
 }

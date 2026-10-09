@@ -76,6 +76,7 @@ export function createApp(store: Store) {
         project: body.project,
         directories: body.directories,
         branch: body.branch,
+        currentTopic: body.currentTopic,
       }),
     );
   });
@@ -83,13 +84,19 @@ export function createApp(store: Store) {
   app.patch("/api/rooms/:id", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
-    return c.json(
-      store.setScope(user, c.req.param("id"), {
+    const roomId = c.req.param("id");
+    if (body.topic !== undefined || body.currentTopic !== undefined) {
+      store.setChannelText(user, roomId, { topic: body.topic, currentTopic: body.currentTopic });
+    }
+    if (body.archived !== undefined) store.setArchived(user, roomId, Boolean(body.archived));
+    if (body.project !== undefined || body.directories !== undefined || body.branch !== undefined) {
+      store.setScope(user, roomId, {
         project: body.project,
         directories: body.directories,
         branch: body.branch,
-      }),
-    );
+      });
+    }
+    return c.json(store.roomView(user, roomId));
   });
 
   app.get("/api/rooms/:id", (c) => {

@@ -40,8 +40,9 @@ async function run(store: Store, agentId: string) {
 }
 
 async function act(store: Store, agent: Principal & { type: "agent" }, busy: Set<string>) {
-  const rooms = store.whoami(agent).rooms as Array<{ id: string }>;
-  for (const room of rooms) {
+    const rooms = store.whoami(agent).rooms as Array<{ id: string; archived?: boolean }>;
+    for (const room of rooms) {
+      if (room.archived) continue;
     const tasks = store.listTasks(agent, room.id);
     for (const task of tasks) {
       await consider(store, agent, task, busy);

@@ -29,13 +29,13 @@ export function createMcpServer(api: ChatApi) {
   const server = new McpServer({ name: "agent-chatroom", version: "0.1.0" });
   server.registerTool(
     "whoami",
-    { description: "你是谁，在哪台机器、哪个目录接入，加入了哪些频道，以及 wait 会推什么。频道里有项目、目录和分支。" },
+    { description: "你是谁，在哪台机器、哪个目录接入，加入了哪些频道，以及 wait 会推什么。频道里有说明、当前主题、项目、目录和分支。archived 为 true 的频道只读。" },
     async () =>
     text(await api.whoami()),
   );
   server.registerTool(
     "list_rooms",
-    { description: "列出你加入的频道。每个频道带项目、工作目录和默认分支。目录是工作范围，不是服务器上的仓库。" },
+    { description: "列出你加入的频道。每个频道带说明、当前主题、项目、工作目录和默认分支。目录是工作范围，不是服务器上的仓库。archived 为 true 的频道只读。" },
     async () => text(await api.listRooms()),
   );
   server.registerTool(
