@@ -71,7 +71,25 @@ export function createApp(store: Store) {
   app.post("/api/rooms", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
-    return c.json(store.createRoom(user, String(body.name ?? ""), String(body.topic ?? "")));
+    return c.json(
+      store.createRoom(user, String(body.name ?? ""), String(body.topic ?? ""), {
+        project: body.project,
+        directories: body.directories,
+        branch: body.branch,
+      }),
+    );
+  });
+
+  app.patch("/api/rooms/:id", async (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const body = await c.req.json();
+    return c.json(
+      store.setScope(user, c.req.param("id"), {
+        project: body.project,
+        directories: body.directories,
+        branch: body.branch,
+      }),
+    );
   });
 
   app.get("/api/rooms/:id", (c) => {
@@ -115,6 +133,8 @@ export function createApp(store: Store) {
         String(body.runtime ?? "custom"),
         body.tags ? String(body.tags) : "",
         body.level,
+        body.machine ? String(body.machine) : "",
+        body.cwd ? String(body.cwd) : "",
       ),
     );
   });
@@ -159,6 +179,12 @@ export function createApp(store: Store) {
   });
 
   app.get("/api/agent/me", (c) => c.json(store.whoami(requireAgent(c.req.header("authorization")))));
+
+  app.post("/api/agent/place", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.setPlace(agent, body.machine, body.cwd));
+  });
 
   app.get("/api/agent/rooms/:id/messages", (c) => {
     const agent = requireAgent(c.req.header("authorization"));

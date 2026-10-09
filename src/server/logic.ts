@@ -29,6 +29,8 @@ export type Principal =
 
 export type Role = "implementer" | "reviewer" | "tester";
 
+export type RoomScope = { project: string; directories: string[]; branch: string };
+
 type InboxKind = "mention" | "thread" | "task_open" | "bid_open" | "awarded" | "bid_lost" | "review_needed" | "test_needed" | "dispute";
 
 type TaskRow = {
@@ -74,6 +76,7 @@ export type TaskView = {
   deliverableSummary: string | null;
   winnerTaskId: string | null;
   bidUntil: string | null;
+  scope: RoomScope;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -118,6 +121,53 @@ const ROLE_LABEL: Record<Role, string> = {
 
 function parseTags(value: string | null | undefined) {
   return [...new Set(String(value ?? "").toLowerCase().split(/[\s,，]+/).filter(Boolean))].slice(0, 8);
+}
+
+const DIRECTORY_LIMIT = 8;
+
+function cleanLine(value: unknown, max: number) {
+  return String(value ?? "").replace(/[\r\n\0]/g, " ").trim().slice(0, max);
+}
+
+function parseDirectories(value: unknown) {
+  const raw = Array.isArray(value) ? value.map((item) => String(item)) : String(value ?? "").split(/[\n,，]+/);
+  const directories: string[] = [];
+  for (const item of raw) {
+    const path = item.trim().replaceAll("\\", "/");
+    if (!path) continue;
+    if (path.length > 200) throw new ApiError(400, "bad_path", "单个目录最多 200 个字符");
+    if (!directories.includes(path)) directories.push(path);
+  }
+  if (directories.length > DIRECTORY_LIMIT) throw new ApiError(400, "bad_scope", "一个频道最多 8 个目录");
+  return directories;
+}
+
+function readDirectories(stored: string | null | undefined) {
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored) as unknown;
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean).slice(0, DIRECTORY_LIMIT);
+  } catch {
+    return stored.split("\n").map((item) => item.trim()).filter(Boolean).slice(0, DIRECTORY_LIMIT);
+  }
+  return [];
+}
+
+function scopeFrom(row: { project?: string | null; directories?: string | null; branch?: string | null }): RoomScope {
+  return {
+    project: row.project ?? "",
+    directories: readDirectories(row.directories),
+    branch: row.branch ?? "",
+  };
+}
+
+function scopeLabel(scope: RoomScope) {
+  const parts = [
+    scope.project ? `项目 ${scope.project}` : "",
+    scope.directories.length ? `目录 ${scope.directories.join("、")}` : "",
+    scope.branch ? `分支 ${scope.branch}` : "",
+  ].filter(Boolean);
+  return parts.length ? `${parts.join("。")}。` : "未指定项目和目录。";
 }
 
 function clampLevel(value: unknown) {
@@ -332,34 +382,109 @@ export class Store {
   }
 
   listRooms(userId: string) {
-    return this.db
+    const rows = this.db
       .prepare(
-        `SELECT r.id, r.org_id, r.name, r.topic, r.created_at
+        `SELECT r.id, r.org_id, r.name, r.topic, r.project, r.directories, r.branch, r.created_at
          FROM rooms r
          JOIN room_members m ON m.room_id = r.id
          WHERE m.principal_type = 'user' AND m.principal_id = ?
          ORDER BY r.created_at`,
       )
-      .all(userId) as Array<{ id: string; org_id: string; name: string; topic: string; created_at: string }>;
+      .all(userId) as Array<{
+      id: string;
+      org_id: string;
+      name: string;
+      topic: string;
+      project: string;
+      directories: string;
+      branch: string;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      org_id: row.org_id,
+      name: row.name,
+      topic: row.topic,
+      created_at: row.created_at,
+      ...scopeFrom(row),
+    }));
   }
 
-  createRoom(user: Principal & { type: "user" }, name: string, topic: string) {
+  createRoom(
+    user: Principal & { type: "user" },
+    name: string,
+    topic: string,
+    scope: { project?: unknown; directories?: unknown; branch?: unknown } = {},
+  ) {
     const clean = name.trim();
     if (!clean || clean.length > 40) throw new ApiError(400, "bad_name", "频道名需要 1 到 40 个字");
     const org = this.db
       .prepare("SELECT org_id FROM org_members WHERE user_id = ? ORDER BY role DESC LIMIT 1")
       .get(user.id) as { org_id: string } | undefined;
     if (!org) throw new ApiError(400, "no_org", "还没有工作室");
+    const project = cleanLine(scope.project, 80);
+    const branch = cleanLine(scope.branch, 200);
+    const directories = parseDirectories(scope.directories);
     const room = this.transaction(() => {
       const id = uuid();
       this.db
-        .prepare("INSERT INTO rooms (id, org_id, name, topic, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(id, org.org_id, clean, topic.trim().slice(0, 200), user.id, nowIso());
+        .prepare(
+          `INSERT INTO rooms (id, org_id, name, topic, project, directories, branch, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(id, org.org_id, clean, topic.trim().slice(0, 200), project, JSON.stringify(directories), branch, user.id, nowIso());
       this.addRoomMember(id, "user", user.id);
-      return { id, name: clean, topic: topic.trim().slice(0, 200), org_id: org.org_id };
+      return { id, name: clean, topic: topic.trim().slice(0, 200), org_id: org.org_id, project, directories, branch };
     });
     this.flush();
     return room;
+  }
+
+  setScope(
+    user: Principal & { type: "user" },
+    roomId: string,
+    input: { project?: unknown; directories?: unknown; branch?: unknown },
+  ) {
+    this.assertMember(user, roomId);
+    const current = scopeFrom(this.roomRow(roomId));
+    const next: RoomScope = {
+      project: input.project === undefined ? current.project : cleanLine(input.project, 80),
+      directories: input.directories === undefined ? current.directories : parseDirectories(input.directories),
+      branch: input.branch === undefined ? current.branch : cleanLine(input.branch, 200),
+    };
+    const same =
+      next.project === current.project &&
+      next.branch === current.branch &&
+      next.directories.join("\n") === current.directories.join("\n");
+    if (same) return { roomId, ...next };
+    const result = this.transaction(() => {
+      this.db
+        .prepare("UPDATE rooms SET project = ?, directories = ?, branch = ? WHERE id = ?")
+        .run(next.project, JSON.stringify(next.directories), next.branch, roomId);
+      const summary = `工作范围已更新。${scopeLabel(next)}`;
+      this.insertMessage({
+        roomId,
+        authorType: "system",
+        authorId: "system",
+        taskId: null,
+        kind: "system",
+        body: summary,
+        addressed: [],
+      });
+      const holders = this.db
+        .prepare(
+          `SELECT c.agent_id, MIN(c.task_id) AS task_id
+           FROM task_claims c
+           JOIN tasks t ON t.id = c.task_id
+           WHERE t.room_id = ? AND c.state = 'active'
+           GROUP BY c.agent_id`,
+        )
+        .all(roomId) as Array<{ agent_id: string; task_id: string }>;
+      for (const holder of holders) this.pushInbox(holder.agent_id, roomId, "thread", holder.task_id, summary);
+      return { roomId, ...next };
+    });
+    this.flush();
+    return result;
   }
 
   invite(user: Principal & { type: "user" }, roomId: string, name: string) {
@@ -411,7 +536,15 @@ export class Store {
     return { code, expiresAt, roomId };
   }
 
-  enroll(code: string, handle: string, runtime: string, tags = "", level: unknown = MIN_LEVEL) {
+  enroll(
+    code: string,
+    handle: string,
+    runtime: string,
+    tags = "",
+    level: unknown = MIN_LEVEL,
+    machine = "",
+    cwd = "",
+  ) {
     const cleanHandle = handle.trim().toLowerCase();
     if (!/^[a-z][a-z0-9-]{1,31}$/.test(cleanHandle)) {
       throw new ApiError(400, "bad_handle", "句柄要用小写字母开头，只含小写字母、数字和短横线");
@@ -438,11 +571,13 @@ export class Store {
       const token = `agt_${randomBytes(24).toString("base64url")}`;
       const cleanTags = parseTags(tags).join(",");
       const cleanLevel = clampLevel(level);
+      const cleanMachine = cleanLine(machine, 80);
+      const cleanCwd = cleanLine(cwd, 200);
       this.db
         .prepare(
           `INSERT INTO agents
-           (id, org_id, owner_user_id, handle, runtime, token_hash, tags, level, paused, demo, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+           (id, org_id, owner_user_id, handle, runtime, token_hash, tags, level, machine, cwd, paused, demo, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
         )
         .run(
           id,
@@ -453,6 +588,8 @@ export class Store {
           hashToken(token),
           cleanTags,
           cleanLevel,
+          cleanMachine,
+          cleanCwd,
           nowIso(),
         );
       this.db.prepare("UPDATE join_codes SET used_by_agent_id = ? WHERE code = ?").run(id, code);
@@ -463,18 +600,33 @@ export class Store {
         authorId: "system",
         taskId: null,
         kind: "system",
-        body: `${cleanHandle} 接入了频道（${cleanRuntime}）`,
+        body: `${cleanHandle} 接入了频道（${cleanRuntime}）${cleanMachine ? `，机器 ${cleanMachine}` : ""}${cleanCwd ? `，目录 ${cleanCwd}` : ""}`,
         addressed: [],
       });
       this.refreshOpen(row.room_id);
       return {
         token,
-        agent: { id, handle: cleanHandle, runtime: cleanRuntime, orgId: row.org_id, level: cleanLevel },
+        agent: {
+          id,
+          handle: cleanHandle,
+          runtime: cleanRuntime,
+          orgId: row.org_id,
+          level: cleanLevel,
+          machine: cleanMachine,
+          cwd: cleanCwd,
+        },
         roomId: row.room_id,
       };
     });
     this.flush();
     return result;
+  }
+
+  setPlace(agent: Principal & { type: "agent" }, machine: unknown, cwd: unknown) {
+    const cleanMachine = cleanLine(machine, 80);
+    const cleanCwd = cleanLine(cwd, 200);
+    this.db.prepare("UPDATE agents SET machine = ?, cwd = ? WHERE id = ?").run(cleanMachine, cleanCwd, agent.id);
+    return { machine: cleanMachine, cwd: cleanCwd };
   }
 
   setPaused(user: Principal & { type: "user" }, agentId: string, paused: boolean) {
@@ -529,7 +681,13 @@ export class Store {
     const messages = this.decorateMessages(roomId, 0, 300);
     const tasks = this.tasksInRoom(roomId);
     const locks = this.locksForOrg(room.org_id);
-    return { room: { id: room.id, orgId: room.org_id, name: room.name, topic: room.topic }, members, messages, tasks, locks };
+    return {
+      room: { id: room.id, orgId: room.org_id, name: room.name, topic: room.topic, ...scopeFrom(room) },
+      members,
+      messages,
+      tasks,
+      locks,
+    };
   }
 
   readMessages(principal: Principal, roomId: string, afterSeq: number, limit = 100) {
@@ -1065,11 +1223,14 @@ export class Store {
   whoami(agent: Principal & { type: "agent" }) {
     const rooms = this.db
       .prepare(
-        `SELECT r.id, r.name, r.topic FROM rooms r
+        `SELECT r.id, r.name, r.topic, r.project, r.directories, r.branch FROM rooms r
          JOIN room_members m ON m.room_id = r.id
          WHERE m.principal_type = 'agent' AND m.principal_id = ?`,
       )
-      .all(agent.id);
+      .all(agent.id) as Array<{ id: string; name: string; topic: string; project: string; directories: string; branch: string }>;
+    const place = this.db.prepare("SELECT machine, cwd FROM agents WHERE id = ?").get(agent.id) as
+      | { machine: string; cwd: string }
+      | undefined;
     return {
       id: agent.id,
       handle: agent.handle,
@@ -1077,7 +1238,9 @@ export class Store {
       paused: agent.paused,
       level: this.agentLevel(agent.id),
       tags: this.agentTags(agent.id).join(","),
-      rooms,
+      machine: place?.machine ?? "",
+      cwd: place?.cwd ?? "",
+      rooms: rooms.map((room) => ({ id: room.id, name: room.name, topic: room.topic, ...scopeFrom(room) })),
       visibility:
         "房间历史对成员可读。wait 只返回点名、投标、中标、评审、测试和你占着的任务线程。不推送无关闲聊，也不塞进整段历史。",
     };
@@ -1167,7 +1330,7 @@ export class Store {
 
   private roomRow(roomId: string) {
     const row = this.db.prepare("SELECT * FROM rooms WHERE id = ?").get(roomId) as
-      | { id: string; org_id: string; name: string; topic: string }
+      | { id: string; org_id: string; name: string; topic: string; project: string; directories: string; branch: string }
       | undefined;
     if (!row) throw new ApiError(404, "no_room", "没有这个频道");
     return row;
@@ -1323,18 +1486,20 @@ export class Store {
 
   private bidsFor(taskId: string) {
     return this.db
-      .prepare("SELECT id, agent_id, approach, created_at FROM bids WHERE task_id = ? ORDER BY created_at, agent_id")
-      .all(taskId) as Array<{ id: string; agent_id: string; approach: string; created_at: string }>;
+      .prepare("SELECT id, agent_id, approach, created_at, rowid FROM bids WHERE task_id = ? ORDER BY created_at, rowid")
+      .all(taskId) as Array<{ id: string; agent_id: string; approach: string; created_at: string; rowid: number }>;
   }
 
   private cardSummary(
-    task: { title: string; body: string; acceptance?: string | null; lane?: number | null; complex?: number },
+    task: { room_id?: string; title: string; body: string; acceptance?: string | null; lane?: number | null; complex?: number },
     prefix: string,
   ) {
     const acceptance = (task.acceptance || task.body || "").replace(/\s+/g, " ").slice(0, 80);
     const lane = task.lane ? `方案${task.lane}。` : "";
     const complex = task.complex ? "复杂。" : "";
-    return `${prefix}。${complex}${lane}目标：${task.title}。验收：${acceptance}`;
+    const scope = task.room_id ? scopeFrom(this.roomRow(task.room_id)) : { project: "", directories: [], branch: "" };
+    const where = scope.project || scope.directories.length || scope.branch ? scopeLabel(scope) : "";
+    return `${prefix}。${where}${complex}${lane}目标：${task.title}。验收：${acceptance}`;
   }
 
   private pushInbox(agentId: string, roomId: string, eventType: InboxKind, refId: string, summary: string) {
@@ -1410,7 +1575,7 @@ export class Store {
         const score = overlap * 10 + idle * 5 - this.loadOf(bid.agent_id) * 3 + levelBonus;
         return { ...bid, score };
       })
-      .sort((a, b) => b.score - a.score || a.created_at.localeCompare(b.created_at) || a.agent_id.localeCompare(b.agent_id));
+      .sort((a, b) => b.score - a.score || a.created_at.localeCompare(b.created_at) || a.rowid - b.rowid);
     this.db.prepare("UPDATE tasks SET bid_until = NULL, updated_at = ? WHERE id = ?").run(nowIso(), taskId);
     if (task.mode === "parallel" && !task.parent_id) {
       const lanes = Math.min(3, Math.max(1, task.max_lanes || 1), ranked.length);
@@ -1857,6 +2022,7 @@ export class Store {
       deliverableSummary: task.deliverable_summary ?? null,
       winnerTaskId: task.winner_task_id ?? null,
       bidUntil: task.bid_until ?? null,
+      scope: scopeFrom(this.roomRow(task.room_id)),
       createdBy: task.created_by,
       createdAt: task.created_at,
       updatedAt: task.updated_at,
@@ -1881,7 +2047,7 @@ export class Store {
       .all(roomId) as Array<{ id: string; name: string }>;
     const agents = this.db
       .prepare(
-        `SELECT a.id, a.handle, a.runtime, a.paused, a.demo, a.tags, a.level, a.last_seen_at, u.name AS owner
+        `SELECT a.id, a.handle, a.runtime, a.paused, a.demo, a.tags, a.level, a.machine, a.cwd, a.last_seen_at, u.name AS owner
          FROM room_members m
          JOIN agents a ON a.id = m.principal_id
          JOIN users u ON u.id = a.owner_user_id
@@ -1896,6 +2062,8 @@ export class Store {
       demo: number;
       tags: string;
       level: number;
+      machine: string;
+      cwd: string;
       last_seen_at: string | null;
       owner: string;
     }>;
@@ -1914,6 +2082,8 @@ export class Store {
         demo: agent.demo === 1,
         tags: agent.tags ?? "",
         level: agent.level,
+        machine: agent.machine ?? "",
+        cwd: agent.cwd ?? "",
         ownerName: agent.owner,
         online: agent.paused !== 1 && !!agent.last_seen_at && Date.parse(agent.last_seen_at) > fresh,
       })),

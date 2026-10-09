@@ -173,6 +173,11 @@ function migrate(db: DatabaseSync) {
   add("agents", "level", "level INTEGER NOT NULL DEFAULT 1");
   add("tasks", "complex", "complex INTEGER NOT NULL DEFAULT 0");
   add("tasks", "review_returns", "review_returns INTEGER NOT NULL DEFAULT 0");
+  add("rooms", "project", "project TEXT NOT NULL DEFAULT ''");
+  add("rooms", "directories", "directories TEXT NOT NULL DEFAULT '[]'");
+  add("rooms", "branch", "branch TEXT NOT NULL DEFAULT ''");
+  add("agents", "machine", "machine TEXT NOT NULL DEFAULT ''");
+  add("agents", "cwd", "cwd TEXT NOT NULL DEFAULT ''");
   db.exec(`
     CREATE TABLE IF NOT EXISTS bids (
       id TEXT PRIMARY KEY,

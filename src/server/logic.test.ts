@@ -549,6 +549,64 @@ test("an @mention lets a low-level agent take a complex task", () => {
   assert.equal(store.claim(weak, posted.task!.id, "implementer").status, "claimed");
 });
 
+test("a channel keeps a project, several directories, and a branch on every task", () => {
+  const { store, user, roomId } = studio();
+  const created = store.createRoom(user, "前端", "界面", {
+    project: "agent-zoom",
+    directories: ["web/src", "src/server"],
+    branch: "main",
+  });
+  const listed = store.listRooms(user.id).find((room) => room.id === created.id);
+  assert.equal(listed?.project, "agent-zoom");
+  assert.deepEqual(listed?.directories, ["web/src", "src/server"]);
+  assert.equal(listed?.branch, "main");
+  const posted = store.postMessage(user, created.id, { kind: "instruction", body: "改按钮" });
+  assert.deepEqual(store.getTask(user, posted.task!.id).scope, {
+    project: "agent-zoom",
+    directories: ["web/src", "src/server"],
+    branch: "main",
+  });
+  const coder = enroll(store, user, created.id, "coder", "lab");
+  assert.equal(events(store, coder.id, "task_open")[0]?.summary.includes("目录 web/src、src/server"), true);
+  store.claim(coder, posted.task!.id, "implementer");
+  store.setScope(user, created.id, { directories: "web/src\npackages/ui", branch: "feature/ui" });
+  assert.deepEqual(store.getTask(user, posted.task!.id).scope, {
+    project: "agent-zoom",
+    directories: ["web/src", "packages/ui"],
+    branch: "feature/ui",
+  });
+  assert.equal(events(store, coder.id, "thread").some((event) => event.summary.includes("packages/ui")), true);
+  assert.throws(
+    () => store.setScope(user, created.id, { directories: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }),
+    (error: unknown) => error instanceof ApiError && error.code === "bad_scope",
+  );
+  const outsider = store.userBySession(store.session("外人").token);
+  assert.ok(outsider && outsider.type === "user");
+  assert.throws(() => store.setScope(outsider, created.id, { project: "nope" }), (error: unknown) => {
+    return error instanceof ApiError && error.status === 403;
+  });
+  const hall = store.snapshot(user, roomId, new Set()).room;
+  assert.deepEqual(hall.directories, []);
+  assert.equal(hall.project, "");
+});
+
+test("enroll records the machine and directory an agent is working from", () => {
+  const { store, user, roomId } = studio();
+  const code = store.createJoinCode(user, roomId);
+  const joined = store.enroll(code.code, "local", "codex", "lab", 2, "lei-mac", "/work/agent-zoom");
+  const agent = store.agentByToken(joined.token);
+  assert.ok(agent && agent.type === "agent");
+  const who = store.whoami(agent);
+  assert.equal(who.machine, "lei-mac");
+  assert.equal(who.cwd, "/work/agent-zoom");
+  assert.equal(who.rooms[0]?.project, "");
+  const roster = store.snapshot(user, roomId, new Set()).members.agents.find((item) => item.handle === "local");
+  assert.equal(roster?.machine, "lei-mac");
+  assert.equal(roster?.cwd, "/work/agent-zoom");
+  assert.deepEqual(store.setPlace(agent, "other-box", "/work/web"), { machine: "other-box", cwd: "/work/web" });
+  assert.equal(store.whoami(agent).cwd, "/work/web");
+});
+
 test("complex parallel tasks bid normally, and malformed JSON is a 400", async () => {
   const { store, user, roomId } = studio();
   enrollAt(store, user, roomId, "alpha", 3);

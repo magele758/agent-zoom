@@ -1,4 +1,5 @@
-export type Room = { id: string; org_id: string; name: string; topic: string; created_at: string };
+export type RoomScope = { project: string; directories: string[]; branch: string };
+export type Room = { id: string; org_id: string; name: string; topic: string; created_at: string } & RoomScope;
 export type Agent = {
   id: string;
   handle: string;
@@ -7,6 +8,8 @@ export type Agent = {
   demo: number | boolean;
   tags?: string;
   level?: number;
+  machine?: string;
+  cwd?: string;
   org_id?: string;
   last_seen_at?: string | null;
   ownerName?: string;
@@ -51,13 +54,14 @@ export type Task = {
   deliverableSummary?: string | null;
   winnerTaskId?: string | null;
   bidUntil?: string | null;
+  scope?: RoomScope;
   claims: Claim[];
   lanes?: Task[];
   updatedAt: string;
 };
 
 export type Snapshot = {
-  room: { id: string; name: string; topic: string };
+  room: { id: string; name: string; topic: string } & RoomScope;
   members: {
     users: Array<{ id: string; name: string; online: boolean }>;
     agents: Agent[];
@@ -86,8 +90,10 @@ export const api = {
   enter: (name: string) => request<{ user: { id: string; name: string }; roomId: string | null }>("/api/session", { method: "POST", body: JSON.stringify({ name }) }),
   logout: () => request("/api/logout", { method: "POST", body: "{}" }),
   rooms: () => request<{ rooms: Room[] }>("/api/rooms"),
-  createRoom: (name: string, topic: string) =>
-    request<{ id: string }>("/api/rooms", { method: "POST", body: JSON.stringify({ name, topic }) }),
+  createRoom: (input: { name: string; topic: string; project?: string; directories?: string[]; branch?: string }) =>
+    request<{ id: string }>("/api/rooms", { method: "POST", body: JSON.stringify(input) }),
+  setScope: (roomId: string, input: { project: string; directories: string[]; branch: string }) =>
+    request<RoomScope>(`/api/rooms/${roomId}`, { method: "PATCH", body: JSON.stringify(input) }),
   snapshot: (roomId: string) => request<Snapshot>(`/api/rooms/${roomId}`),
   post: (
     roomId: string,

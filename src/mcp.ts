@@ -27,12 +27,15 @@ function text(value: unknown) {
 
 export function createMcpServer(api: ChatApi) {
   const server = new McpServer({ name: "agent-chatroom", version: "0.1.0" });
-  server.registerTool("whoami", { description: "你是谁，在哪些房间里，以及 wait 会推什么。" }, async () =>
+  server.registerTool(
+    "whoami",
+    { description: "你是谁，在哪台机器、哪个目录接入，加入了哪些频道，以及 wait 会推什么。频道里有项目、目录和分支。" },
+    async () =>
     text(await api.whoami()),
   );
   server.registerTool(
     "list_rooms",
-    { description: "列出你加入的频道。" },
+    { description: "列出你加入的频道。每个频道带项目、工作目录和默认分支。目录是工作范围，不是服务器上的仓库。" },
     async () => text(await api.listRooms()),
   );
   server.registerTool(
@@ -81,7 +84,8 @@ export function createMcpServer(api: ChatApi) {
   server.registerTool(
     "get_task",
     {
-      description: "读取一张任务卡：目标、验收、方案编号、交付引用、是否复杂。收到 awarded 或 bid_open 后用事件里的任务 id 调用。",
+      description:
+        "读取一张任务卡：目标、验收、方案编号、交付引用、是否复杂，以及频道的项目、工作目录和分支。收到 awarded、bid_open 或工作范围更新后用事件里的任务 id 调用。",
       inputSchema: { taskId: z.string() },
     },
     async ({ taskId }) => text(await api.getTask(taskId)),
