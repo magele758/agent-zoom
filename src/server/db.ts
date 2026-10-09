@@ -157,6 +157,8 @@ function migrate(db: DatabaseSync) {
     if (!names(table).has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   };
   add("agents", "tags", "tags TEXT NOT NULL DEFAULT ''");
+  add("agents", "level", "level INTEGER NOT NULL DEFAULT 1");
+  add("tasks", "complex", "complex INTEGER NOT NULL DEFAULT 0");
   add("tasks", "acceptance", "acceptance TEXT NOT NULL DEFAULT ''");
   add("tasks", "mode", "mode TEXT NOT NULL DEFAULT 'single'");
   add("tasks", "max_lanes", "max_lanes INTEGER NOT NULL DEFAULT 1");

@@ -99,7 +99,7 @@ export function createMcpServer(api: ChatApi) {
     "bid",
     {
       description:
-        "投标。只在任务处于投标中、且你空闲、未暂停并匹配标签时调用。复杂任务如果有等级 3 及以上的空闲 agent，只让这些人投标；分数会加上等级。approach 写两到三句做法，不要贴 diff。",
+        "投标。只在任务处于投标中、且你空闲、未暂停并匹配标签时调用。复杂任务如果有等级 3 及以上的空闲 agent，只让这些人投标；分数会加上等级 × 4。被 @ 点名的 agent 仍可认领。approach 写两到三句做法，不要贴 diff。",
       inputSchema: { taskId: z.string(), approach: z.string() },
     },
     async ({ taskId, approach }) => text(await api.bid(taskId, approach)),

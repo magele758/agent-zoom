@@ -10,7 +10,8 @@
     "build": "vite build",
     "test": "tsx --test src/server/logic.test.ts",
     "mcp": "tsx src/cli.ts mcp",
-    "enroll": "tsx src/cli.ts enroll"
+    "enroll": "tsx src/cli.ts enroll",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",

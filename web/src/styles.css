@@ -351,24 +351,16 @@ button { cursor: pointer; }
   align-items: center;
   min-height: 40px;
 }
-.roster .who { display: flex; flex-direction: column; min-width: 0; }
-.roster .who .handle { min-height: 28px; padding: 0; }
-.roster .who em { font-size: 12px; }
-.level {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.roster li.with-level { grid-template-columns: 12px 1fr auto auto; }
+.roster .level {
+  background: transparent;
   color: var(--muted);
-  font-size: 12px;
-}
-.level select {
-  width: 48px;
-  min-height: 32px;
-  border-radius: 8px;
   border: 1px solid var(--line-strong);
-  background: var(--inset);
-  color: inherit;
+  border-radius: 6px;
+  min-height: 28px;
   padding: 0 4px;
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 12px;
 }
 .slots li {
   grid-template-columns: 52px 1fr;

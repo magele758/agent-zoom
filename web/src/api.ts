@@ -43,13 +43,13 @@ export type Task = {
   mode?: string;
   maxLanes?: number;
   tags?: string;
+  complex?: boolean;
   parentId?: string | null;
   lane?: number | null;
   direction?: string;
   deliverableRef?: string | null;
   deliverableSummary?: string | null;
   winnerTaskId?: string | null;
-  complex?: boolean;
   bidUntil?: string | null;
   claims: Claim[];
   lanes?: Task[];
@@ -104,7 +104,8 @@ export const api = {
   invite: (roomId: string, name: string) => request(`/api/rooms/${roomId}/members`, { method: "POST", body: JSON.stringify({ name }) }),
   joinCode: (roomId: string) => request<{ code: string; expiresAt: string }>(`/api/rooms/${roomId}/join-codes`, { method: "POST", body: "{}" }),
   pause: (agentId: string, paused: boolean) => request(`/api/agents/${agentId}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
-  setLevel: (agentId: string, level: number) => request(`/api/agents/${agentId}`, { method: "PATCH", body: JSON.stringify({ level }) }),
+  setLevel: (agentId: string, level: number) =>
+    request(`/api/agents/${agentId}/level`, { method: "PATCH", body: JSON.stringify({ level }) }),
   cancel: (taskId: string) => request(`/api/tasks/${taskId}/cancel`, { method: "POST", body: "{}" }),
   done: (taskId: string) => request(`/api/tasks/${taskId}/done`, { method: "POST", body: "{}" }),
 };

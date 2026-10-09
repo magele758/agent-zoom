@@ -446,7 +446,7 @@ function Channel({
                 checked={complex}
                 onChange={(event) => setComplex(event.target.checked)}
               />
-              复杂任务。有等级 3 及以上的空闲 agent 时只交给他们
+              复杂任务。有等级 3 及以上的空闲 agent 时只交给他们，没有就退回全体
             </label>
           </div>
         ) : null}
@@ -524,35 +524,30 @@ function SidePanel({
             </li>
           ))}
           {snap.members.agents.map((agent) => (
-            <li key={agent.id} className="agent-row">
+            <li key={agent.id} className="with-level">
               <i className={agent.online ? "dot on" : "dot"} aria-hidden="true" />
-              <span className="who">
-                <button type="button" className="handle" onClick={() => onMention(agent.handle)}>
-                  {agent.ownerName} / {agent.handle}
-                </button>
-                <em>{agent.demo ? "演示" : agent.runtime}{agent.tags ? ` · ${agent.tags}` : ""}</em>
-              </span>
-              <label className="level">
-                <span>等级</span>
-                <select
-                  aria-label={`${agent.handle} 的等级`}
-                  value={agent.level ?? 1}
-                  onChange={async (event) => {
-                    try {
-                      await api.setLevel(agent.id, Number(event.target.value));
-                      onChanged();
-                    } catch (reason) {
-                      onError(reason instanceof Error ? reason.message : "没能改等级");
-                    }
-                  }}
-                >
-                  {[1, 2, 3, 4, 5].map((level) => (
-                    <option key={level} value={level}>
-                      {level}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <button type="button" className="handle" onClick={() => onMention(agent.handle)}>
+                {agent.ownerName} / {agent.handle}
+              </button>
+              <em>{agent.demo ? "演示" : agent.runtime}{agent.tags ? ` · ${agent.tags}` : ""}</em>
+              <select
+                className="level"
+                aria-label={`${agent.handle} 的等级`}
+                data-testid={`level-${agent.handle}`}
+                value={agent.level ?? 1}
+                onChange={async (event) => {
+                  try {
+                    await api.setLevel(agent.id, Number(event.target.value));
+                    onChanged();
+                  } catch (reason) {
+                    onError(reason instanceof Error ? reason.message : "没能改等级");
+                  }
+                }}
+              >
+                {[1, 2, 3, 4, 5].map((level) => (
+                  <option key={level} value={level}>Lv{level}</option>
+                ))}
+              </select>
             </li>
           ))}
         </ul>
@@ -643,7 +638,7 @@ function TaskCard({
       </header>
       {task.acceptance && task.acceptance !== task.body ? <p className="note">验收：{task.acceptance}</p> : null}
       {task.tags ? <p className="note">标签：{task.tags}</p> : null}
-      {task.complex ? <p className="note">复杂任务。等级 3 及以上优先，没有就退回全体匹配者。</p> : null}
+      {task.complex && !nested ? <p className="note">复杂任务。等级 3 及以上优先，没有就退回全体匹配者。</p> : null}
       {task.direction ? <p className="note">方向：{task.direction}</p> : null}
       {task.deliverableRef ? (
         <p className="note">

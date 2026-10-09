@@ -29,7 +29,7 @@ async function enroll() {
   const handle = arg("--handle");
   const runtime = arg("--runtime") ?? "custom";
   const tags = arg("--tags") ?? "";
-  const levelArg = arg("--level");
+  const level = Number(arg("--level") ?? 1);
   if (!code || !handle) {
     console.error("用法: npm run enroll -- --code join_xxx --handle codex --runtime codex --tags build --level 1");
     process.exit(1);
@@ -37,13 +37,7 @@ async function enroll() {
   const response = await fetch(`${url}/api/enroll`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      code,
-      handle,
-      runtime,
-      tags,
-      ...(levelArg === undefined ? {} : { level: Number(levelArg) }),
-    }),
+    body: JSON.stringify({ code, handle, runtime, tags, level }),
   });
   const body = (await response.json()) as { token?: string; roomId?: string; message?: string; agent?: { level?: number } };
   if (!response.ok || !body.token || !body.roomId) {

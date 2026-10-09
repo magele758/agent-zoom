@@ -7,7 +7,10 @@ export const LOCK_MS = 120_000;
 const JOIN_MS = 30 * 60 * 1000;
 const BID_MS = 8_000;
 const REVIEWER_LIMIT = 3;
-const COMPLEX_LEVEL = 3;
+export const MIN_LEVEL = 1;
+export const MAX_LEVEL = 5;
+export const STRONG_LEVEL = 3;
+const LEVEL_WEIGHT = 4;
 
 export class ApiError extends Error {
   constructor(
@@ -42,6 +45,7 @@ type TaskRow = {
   mode: string;
   max_lanes: number;
   tags: string;
+  complex: number;
   parent_id: string | null;
   lane: number | null;
   bid_until: string | null;
@@ -49,7 +53,6 @@ type TaskRow = {
   deliverable_ref: string | null;
   deliverable_summary: string | null;
   winner_task_id: string | null;
-  complex: number;
   review_returns: number;
 };
 
@@ -63,13 +66,13 @@ export type TaskView = {
   mode: string;
   maxLanes: number;
   tags: string;
+  complex: boolean;
   parentId: string | null;
   lane: number | null;
   direction: string;
   deliverableRef: string | null;
   deliverableSummary: string | null;
   winnerTaskId: string | null;
-  complex: boolean;
   bidUntil: string | null;
   createdBy: string;
   createdAt: string;
@@ -117,17 +120,15 @@ function parseTags(value: string | null | undefined) {
   return [...new Set(String(value ?? "").toLowerCase().split(/[\s,，]+/).filter(Boolean))].slice(0, 8);
 }
 
+function clampLevel(value: unknown) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return MIN_LEVEL;
+  return Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, n));
+}
+
 function tagsMatch(wanted: string[], have: string[]) {
   if (wanted.length === 0) return true;
   return wanted.some((tag) => have.includes(tag));
-}
-
-function parseLevel(value: number | string) {
-  const number = typeof value === "number" ? value : Number(value);
-  if (!Number.isInteger(number) || number < 1 || number > 5) {
-    throw new ApiError(400, "bad_level", "等级是 1 到 5 的整数");
-  }
-  return number;
 }
 
 export function openStore(path: string) {
@@ -410,7 +411,7 @@ export class Store {
     return { code, expiresAt, roomId };
   }
 
-  enroll(code: string, handle: string, runtime: string, tags = "", level: number | string = 1) {
+  enroll(code: string, handle: string, runtime: string, tags = "", level: unknown = MIN_LEVEL) {
     const cleanHandle = handle.trim().toLowerCase();
     if (!/^[a-z][a-z0-9-]{1,31}$/.test(cleanHandle)) {
       throw new ApiError(400, "bad_handle", "句柄要用小写字母开头，只含小写字母、数字和短横线");
@@ -436,14 +437,24 @@ export class Store {
       const id = uuid();
       const token = `agt_${randomBytes(24).toString("base64url")}`;
       const cleanTags = parseTags(tags).join(",");
-      const cleanLevel = parseLevel(level);
+      const cleanLevel = clampLevel(level);
       this.db
         .prepare(
           `INSERT INTO agents
            (id, org_id, owner_user_id, handle, runtime, token_hash, tags, level, paused, demo, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
         )
-        .run(id, row.org_id, row.created_by, cleanHandle, cleanRuntime, hashToken(token), cleanTags, cleanLevel, nowIso());
+        .run(
+          id,
+          row.org_id,
+          row.created_by,
+          cleanHandle,
+          cleanRuntime,
+          hashToken(token),
+          cleanTags,
+          cleanLevel,
+          nowIso(),
+        );
       this.db.prepare("UPDATE join_codes SET used_by_agent_id = ? WHERE code = ?").run(id, code);
       this.addRoomMember(row.room_id, "agent", id);
       this.insertMessage({
@@ -476,22 +487,34 @@ export class Store {
     return { id: agentId, paused };
   }
 
-  setLevel(user: Principal & { type: "user" }, agentId: string, level: number | string) {
-    const next = parseLevel(level);
+  setLevel(user: Principal & { type: "user" }, agentId: string, level: unknown) {
+    const next = clampLevel(level);
     const result = this.transaction(() => {
-      const row = this.db.prepare("SELECT org_id FROM agents WHERE id = ?").get(agentId) as
-        | { org_id: string }
-        | undefined;
+      const row = this.db
+        .prepare(
+          `SELECT a.handle, a.level FROM agents a
+           JOIN org_members m ON m.org_id = a.org_id AND m.user_id = ?
+           WHERE a.id = ?`,
+        )
+        .get(user.id, agentId) as { handle: string; level: number } | undefined;
       if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
-      const member = this.db
-        .prepare("SELECT 1 AS ok FROM org_members WHERE org_id = ? AND user_id = ?")
-        .get(row.org_id, user.id);
-      if (!member) throw new ApiError(403, "not_member", "只能改本工作室里的等级");
+      if (row.level === next) return { id: agentId, level: next };
       this.db.prepare("UPDATE agents SET level = ? WHERE id = ?").run(next, agentId);
       const rooms = this.db
         .prepare("SELECT room_id FROM room_members WHERE principal_type = 'agent' AND principal_id = ?")
         .all(agentId) as Array<{ room_id: string }>;
-      for (const room of rooms) this.refreshOpen(room.room_id);
+      for (const room of rooms) {
+        this.insertMessage({
+          roomId: room.room_id,
+          authorType: "system",
+          authorId: "system",
+          taskId: null,
+          kind: "system",
+          body: `${user.name} 把 ${row.handle} 的等级从 ${row.level} 调到 ${next}`,
+          addressed: [],
+        });
+        this.refreshOpen(room.room_id);
+      }
       return { id: agentId, level: next };
     });
     this.flush();
@@ -638,8 +661,8 @@ export class Store {
       if (role === "implementer" && !tagsMatch(parseTags(task.tags), this.agentTags(agent.id))) {
         throw new ApiError(403, "not_eligible", "标签不匹配，这条任务不交给你");
       }
-      if (role === "implementer" && task.complex && !this.eligibleAgents(task).some((item) => item.id === agent.id)) {
-        throw new ApiError(403, "not_eligible", "复杂任务先交给等级达到 3 的空闲 agent");
+      if (role === "implementer" && task.status === "open" && this.levelBlocked(task, agent.id)) {
+        throw new ApiError(403, "level_low", "复杂任务先交给等级 3 以上的 agent");
       }
       if (role === "implementer" && task.status === "bidding") {
         throw new ApiError(409, "bid_first", "正在投标，用 bid 写下做法");
@@ -696,6 +719,9 @@ export class Store {
       if (!task.bid_until || task.bid_until < nowIso()) throw new ApiError(409, "bid_closed", "投标已经截止");
       if (!this.eligibleAgents(task).some((item) => item.id === agent.id)) {
         throw new ApiError(403, "not_eligible", "只有空闲、未暂停且标签匹配的 agent 能投标");
+      }
+      if (this.levelBlocked(task, agent.id)) {
+        throw new ApiError(403, "level_low", "复杂任务先交给等级 3 以上的 agent");
       }
       try {
         this.db
@@ -1253,8 +1279,13 @@ export class Store {
 
   private agentLevel(agentId: string) {
     const row = this.db.prepare("SELECT level FROM agents WHERE id = ?").get(agentId) as { level: number } | undefined;
-    const level = row?.level ?? 1;
-    return level >= 1 && level <= 5 ? level : 1;
+    return row?.level ?? MIN_LEVEL;
+  }
+
+  private levelBlocked(task: TaskRow, agentId: string) {
+    if (!task.complex || this.agentLevel(agentId) >= STRONG_LEVEL) return false;
+    if (!this.eligibleAgents(task).some((agent) => agent.level >= STRONG_LEVEL)) return false;
+    return !this.resolveMentions(task.room_id, task.body).some((item) => item.id === agentId);
   }
 
   private isIdle(agentId: string) {
@@ -1286,7 +1317,7 @@ export class Store {
   private eligibleAgents(task: TaskRow) {
     const matched = this.matchedIdle(task);
     if (!task.complex) return matched;
-    const strong = matched.filter((agent) => agent.level >= COMPLEX_LEVEL);
+    const strong = matched.filter((agent) => agent.level >= STRONG_LEVEL);
     return strong.length > 0 ? strong : matched;
   }
 
@@ -1325,7 +1356,7 @@ export class Store {
       this.db
         .prepare("UPDATE tasks SET status = 'bidding', bid_until = ?, updated_at = ? WHERE id = ?")
         .run(until, nowIso(), taskId);
-      const narrowed = Boolean(task.complex) && this.matchedIdle(task).some((agent) => agent.level >= COMPLEX_LEVEL);
+      const narrowed = Boolean(task.complex) && this.matchedIdle(task).some((agent) => agent.level >= STRONG_LEVEL);
       const scope = !task.complex ? "" : narrowed ? "只包括等级 3 及以上。" : "没有等级 3 及以上的人，所以包括全体匹配者。";
       const scoreRule = task.complex ? "标签、负载和等级" : "标签和负载";
       this.insertMessage({
@@ -1375,8 +1406,8 @@ export class Store {
         const have = this.agentTags(bid.agent_id);
         const overlap = wanted.filter((tag) => have.includes(tag)).length;
         const idle = this.isIdle(bid.agent_id) ? 1 : 0;
-        const levelWeight = task.complex ? this.agentLevel(bid.agent_id) : 0;
-        const score = overlap * 10 + idle * 5 - this.loadOf(bid.agent_id) * 3 + levelWeight;
+        const levelBonus = task.complex ? this.agentLevel(bid.agent_id) * LEVEL_WEIGHT : 0;
+        const score = overlap * 10 + idle * 5 - this.loadOf(bid.agent_id) * 3 + levelBonus;
         return { ...bid, score };
       })
       .sort((a, b) => b.score - a.score || a.created_at.localeCompare(b.created_at) || a.agent_id.localeCompare(b.agent_id));
@@ -1392,8 +1423,8 @@ export class Store {
           .prepare(
             `INSERT INTO tasks (
                id, room_id, message_id, title, body, status, created_by, created_at, updated_at,
-               acceptance, mode, max_lanes, tags, parent_id, lane, direction, complex
-             ) VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, 'single', 1, ?, ?, ?, '', ?)`,
+               acceptance, mode, max_lanes, tags, complex, parent_id, lane, direction
+             ) VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, 'single', 1, ?, ?, ?, ?, '')`,
           )
           .run(
             childId,
@@ -1406,9 +1437,9 @@ export class Store {
             stamp,
             task.acceptance,
             task.tags,
+            task.complex ? 1 : 0,
             task.id,
             lane,
-            task.complex ? 1 : 0,
           );
         this.insertClaim(childId, "implementer", bid.agent_id);
         const child = this.taskRow(childId);
@@ -1818,13 +1849,13 @@ export class Store {
       mode: task.mode ?? "single",
       maxLanes: task.max_lanes ?? 1,
       tags: task.tags ?? "",
+      complex: task.complex === 1,
       parentId: task.parent_id ?? null,
       lane: task.lane ?? null,
       direction: task.direction ?? "",
       deliverableRef: task.deliverable_ref ?? null,
       deliverableSummary: task.deliverable_summary ?? null,
       winnerTaskId: task.winner_task_id ?? null,
-      complex: task.complex === 1,
       bidUntil: task.bid_until ?? null,
       createdBy: task.created_by,
       createdAt: task.created_at,
@@ -1882,7 +1913,7 @@ export class Store {
         paused: agent.paused === 1,
         demo: agent.demo === 1,
         tags: agent.tags ?? "",
-        level: agent.level >= 1 && agent.level <= 5 ? agent.level : 1,
+        level: agent.level,
         ownerName: agent.owner,
         online: agent.paused !== 1 && !!agent.last_seen_at && Date.parse(agent.last_seen_at) > fresh,
       })),
