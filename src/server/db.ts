@@ -144,5 +144,38 @@ export function openDatabase(path: string): DatabaseSync {
   if (path !== ":memory:") db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+function migrate(db: DatabaseSync) {
+  const names = (table: string) =>
+    new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
+    );
+  const add = (table: string, column: string, definition: string) => {
+    if (!names(table).has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  };
+  add("agents", "tags", "tags TEXT NOT NULL DEFAULT ''");
+  add("tasks", "acceptance", "acceptance TEXT NOT NULL DEFAULT ''");
+  add("tasks", "mode", "mode TEXT NOT NULL DEFAULT 'single'");
+  add("tasks", "max_lanes", "max_lanes INTEGER NOT NULL DEFAULT 1");
+  add("tasks", "tags", "tags TEXT NOT NULL DEFAULT ''");
+  add("tasks", "parent_id", "parent_id TEXT");
+  add("tasks", "lane", "lane INTEGER");
+  add("tasks", "bid_until", "bid_until TEXT");
+  add("tasks", "direction", "direction TEXT NOT NULL DEFAULT ''");
+  add("tasks", "deliverable_ref", "deliverable_ref TEXT");
+  add("tasks", "deliverable_summary", "deliverable_summary TEXT");
+  add("tasks", "winner_task_id", "winner_task_id TEXT");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bids (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      approach TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (task_id, agent_id)
+    );
+  `);
 }

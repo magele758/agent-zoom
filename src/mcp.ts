@@ -8,7 +8,10 @@ export interface ChatApi {
   say(input: { roomId: string; body: string; kind?: string; taskId?: string }): Promise<unknown>;
   wait(after: number, timeoutMs: number): Promise<unknown>;
   listTasks(roomId: string): Promise<unknown>;
+  getTask(taskId: string): Promise<unknown>;
   claim(taskId: string, role: string): Promise<unknown>;
+  bid(taskId: string, approach: string): Promise<unknown>;
+  deliver(taskId: string, ref: string, summary: string): Promise<unknown>;
   heartbeat(taskId: string): Promise<unknown>;
   ready(taskId: string): Promise<unknown>;
   review(taskId: string, verdict: string, body: string): Promise<unknown>;
@@ -47,11 +50,12 @@ export function createMcpServer(api: ChatApi) {
   server.registerTool(
     "say",
     {
-      description: "在频道发言。kind 可以是 chat、question、progress。progress 必须带 taskId，且你是实现者。用 @句柄 点名才会唤醒对方。",
+      description:
+        "在频道发言。kind 可以是 chat、question、progress、direction、blocked、decision。后四种最多 280 字，必须带 taskId，且你是实现者。direction 是一句方向，blocked 是一句卡住，decision 是给其他方案的短决定。用 @句柄 点名才会唤醒对方。不要贴 diff 或子 agent 过程。",
       inputSchema: {
         roomId: z.string(),
         body: z.string(),
-        kind: z.enum(["chat", "question", "progress"]).optional(),
+        kind: z.enum(["chat", "question", "progress", "direction", "blocked", "decision"]).optional(),
         taskId: z.string().optional(),
       },
     },
@@ -61,7 +65,7 @@ export function createMcpServer(api: ChatApi) {
     "wait",
     {
       description:
-        "阻塞到出现与你相关的事件：有人 @ 你、新指令、轮到评审或测试、你占着的任务有新消息。无关闲聊不会返回。超时就再调一次，不要空转轮询。",
+        "阻塞到出现与你相关的事件：有人 @ 你、请你投标、你中标或没中、轮到评审或测试、你占着的任务有新消息。返回的是短通知，接着用 get_task 看任务卡。无关闲聊不会返回。超时就再调一次。",
       inputSchema: {
         after: z.number().optional(),
         timeoutMs: z.number().optional(),
@@ -71,16 +75,42 @@ export function createMcpServer(api: ChatApi) {
   );
   server.registerTool(
     "list_tasks",
-    { description: "查看频道里的任务和槽位。", inputSchema: { roomId: z.string() } },
+    { description: "查看频道里的父任务。并行方案在父任务的 lanes 里，不单独占一行。", inputSchema: { roomId: z.string() } },
     async ({ roomId }) => text(await api.listTasks(roomId)),
+  );
+  server.registerTool(
+    "get_task",
+    {
+      description: "读取一张任务卡：目标、验收、方案编号、交付引用。收到 awarded 或 bid_open 后用事件里的任务 id 调用。",
+      inputSchema: { taskId: z.string() },
+    },
+    async ({ taskId }) => text(await api.getTask(taskId)),
   );
   server.registerTool(
     "claim",
     {
-      description: "原子认领槽位。role 是 implementer、reviewer 或 tester。失败就说明别人已经拿了，不要开工。",
+      description:
+        "原子认领槽位。role 是 implementer、reviewer 或 tester。实现槽只在任务开着时能直接认领；正在投标会失败，改用 bid。失败就不要开工。实现者不能领自己的评审或测试。",
       inputSchema: { taskId: z.string(), role: z.enum(["implementer", "reviewer", "tester"]) },
     },
     async ({ taskId, role }) => text(await api.claim(taskId, role)),
+  );
+  server.registerTool(
+    "bid",
+    {
+      description: "投标。只在任务处于投标中、且你空闲并匹配标签时调用。approach 写两到三句做法，不要贴 diff。",
+      inputSchema: { taskId: z.string(), approach: z.string() },
+    },
+    async ({ taskId, approach }) => text(await api.bid(taskId, approach)),
+  );
+  server.registerTool(
+    "deliver",
+    {
+      description:
+        "实现者交付。ref 是分支、worktree、PR 或 workspace:id。summary 说明做了什么。没有引用不能进评审。子 agent 的过程留在你本地。",
+      inputSchema: { taskId: z.string(), ref: z.string(), summary: z.string() },
+    },
+    async ({ taskId, ref, summary }) => text(await api.deliver(taskId, ref, summary)),
   );
   server.registerTool(
     "heartbeat",
@@ -89,13 +119,14 @@ export function createMcpServer(api: ChatApi) {
   );
   server.registerTool(
     "mark_ready",
-    { description: "实现者提交评审。", inputSchema: { taskId: z.string() } },
+    { description: "已停用。请改用 deliver 提交交付引用和说明。", inputSchema: { taskId: z.string() } },
     async ({ taskId }) => text(await api.ready(taskId)),
   );
   server.registerTool(
     "review",
     {
-      description: "评审。先 claim reviewer。verdict 是 approve、request_changes 或 question。",
+      description:
+        "评审。先 claim reviewer。verdict 是 approve、request_changes 或 question。打回时要写明哪条验收没过。一次通过就进入测试。",
       inputSchema: {
         taskId: z.string(),
         verdict: z.enum(["approve", "request_changes", "question"]),

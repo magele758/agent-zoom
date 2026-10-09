@@ -86,6 +86,9 @@ export function createApp(store: Store) {
         body: String(body.body ?? ""),
         kind: body.kind ? String(body.kind) : "chat",
         taskId: body.taskId ? String(body.taskId) : null,
+        acceptance: body.acceptance ? String(body.acceptance) : undefined,
+        parallel: Boolean(body.parallel),
+        tags: body.tags ? String(body.tags) : undefined,
       }),
     );
   });
@@ -104,7 +107,12 @@ export function createApp(store: Store) {
   app.post("/api/enroll", async (c) => {
     const body = await c.req.json();
     return c.json(
-      store.enroll(String(body.code ?? ""), String(body.handle ?? ""), String(body.runtime ?? "custom")),
+      store.enroll(
+        String(body.code ?? ""),
+        String(body.handle ?? ""),
+        String(body.runtime ?? "custom"),
+        body.tags ? String(body.tags) : "",
+      ),
     );
   });
 
@@ -176,6 +184,23 @@ export function createApp(store: Store) {
   app.post("/api/agent/tasks/:id/ready", (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     return c.json(store.markReady(agent, c.req.param("id")));
+  });
+
+  app.get("/api/agent/tasks/:id", (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    return c.json(store.getTask(agent, c.req.param("id")));
+  });
+
+  app.post("/api/agent/tasks/:id/bid", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.bid(agent, c.req.param("id"), String(body.approach ?? "")));
+  });
+
+  app.post("/api/agent/tasks/:id/deliver", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.deliver(agent, c.req.param("id"), String(body.ref ?? ""), String(body.summary ?? "")));
   });
 
   app.post("/api/agent/tasks/:id/review", async (c) => {
@@ -272,7 +297,10 @@ function apiFor(store: Store, agent: Principal & { type: "agent" }): ChatApi {
     say: async (input) => store.postMessage(agent, input.roomId, input),
     wait: async (after, timeoutMs) => waitInbox(store, agent.id, after, timeoutMs),
     listTasks: async (roomId) => store.listTasks(agent, roomId),
+    getTask: async (taskId) => store.getTask(agent, taskId),
     claim: async (taskId, role) => store.claim(agent, taskId, role as "implementer"),
+    bid: async (taskId, approach) => store.bid(agent, taskId, approach),
+    deliver: async (taskId, ref, summary) => store.deliver(agent, taskId, ref, summary),
     heartbeat: async (taskId) => store.heartbeat(agent, taskId),
     ready: async (taskId) => store.markReady(agent, taskId),
     review: async (taskId, verdict, body) => store.review(agent, taskId, verdict, body),

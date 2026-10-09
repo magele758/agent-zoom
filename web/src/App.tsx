@@ -6,6 +6,11 @@ const KIND_LABEL: Record<string, string> = {
   instruction: "指令",
   question: "提问",
   progress: "进度",
+  direction: "方向",
+  blocked: "卡住",
+  decision: "决定",
+  bid: "投标",
+  deliverable: "交付",
   review: "评审",
   test_result: "测试",
   system: "系统",
@@ -13,12 +18,14 @@ const KIND_LABEL: Record<string, string> = {
 
 const STATUS_LABEL: Record<string, string> = {
   open: "待认领",
+  bidding: "投标中",
   claimed: "已认领",
   working: "实现中",
   in_review: "评审中",
   changes: "需修改",
   in_test: "测试中",
   done: "完成",
+  dispute: "待裁定",
   failed: "失败",
   canceled: "取消",
 };
@@ -32,9 +39,18 @@ const STEPS = [
 ];
 
 function stepIndex(status: string) {
+  if (status === "bidding") return 0;
   if (status === "claimed" || status === "changes") return 1;
+  if (status === "dispute" || status === "failed") return STEPS.length - 1;
   const index = STEPS.findIndex((step) => step.id === status);
   return index === -1 ? 0 : index;
+}
+
+function stepClass(status: string, index: number, current: number) {
+  if (status === "dispute" || status === "failed") return index < STEPS.length - 1 ? "done" : "";
+  if (index < current || status === "done") return "done";
+  if (index === current) return "now";
+  return "";
 }
 
 function timeLabel(iso: string) {
@@ -185,13 +201,17 @@ function Gate({ onEnter }: { onEnter: (name: string) => Promise<void> }) {
           }
         }}
       >
-        <p className="eyebrow">Agent Chatroom</p>
-        <h1>工位</h1>
-        <p className="lede">一个频道里放人和 coding agent。你下指令，他们自己认领，别的 agent 评审、提问、测试。</p>
-        <label htmlFor="name">你的名字</label>
-        <input id="name" data-testid="name-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="比如 彭磊" autoFocus />
-        {error ? <p className="error">{error}</p> : null}
-        <button data-testid="enter" type="submit" disabled={pending || !name.trim()}>进入工作室</button>
+        <div className="gate-copy">
+          <p className="eyebrow">Agent Chatroom</p>
+          <h1>工位</h1>
+          <p className="lede">一个频道里放人和 coding agent。你下指令，他们自己认领，别的 agent 评审、提问、测试。</p>
+        </div>
+        <div className="gate-plate">
+          <label htmlFor="name">你的名字</label>
+          <input id="name" data-testid="name-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="比如 彭磊" autoFocus />
+          {error ? <p className="error">{error}</p> : null}
+          <button data-testid="enter" type="submit" disabled={pending || !name.trim()}>进入工作室</button>
+        </div>
       </form>
     </main>
   );
@@ -263,6 +283,9 @@ function Channel({
   onError: (message: string) => void;
 }) {
   const [body, setBody] = useState("");
+  const [acceptance, setAcceptance] = useState("");
+  const [parallel, setParallel] = useState(false);
+  const [tags, setTags] = useState("");
   const [kind, setKind] = useState<"chat" | "question" | "instruction">("instruction");
   const [taskId, setTaskId] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -306,7 +329,7 @@ function Channel({
         }}
       >
         {snap && snap.messages.length === 0 ? (
-          <p className="empty">还没有消息。用「下指令」发一条需求，在场的 agent 会自己认领。</p>
+          <p className="empty">还没有消息。用「下指令」发一条需求。只有一位空闲 agent 匹配时会直接认领，多位就先投标。</p>
         ) : null}
         {snap?.messages.map((message) =>
           message.kind === "system" ? (
@@ -337,8 +360,18 @@ function Channel({
           if (!snap || !body.trim()) return;
           setPending(true);
           try {
-            await api.post(snap.room.id, body, kind, kind === "instruction" ? null : taskId);
+            await api.post(snap.room.id, {
+              body,
+              kind,
+              taskId: kind === "instruction" ? null : taskId,
+              acceptance: kind === "instruction" ? acceptance : undefined,
+              parallel: kind === "instruction" ? parallel : undefined,
+              tags: kind === "instruction" ? tags : undefined,
+            });
             setBody("");
+            setAcceptance("");
+            setTags("");
+            setParallel(false);
             onPosted();
           } catch (reason) {
             onError(reason instanceof Error ? reason.message : "发送失败");
@@ -374,6 +407,37 @@ function Channel({
             <button type="button" onClick={() => setTaskId(null)}>取消</button>
           </p>
         ) : null}
+        {kind === "instruction" ? (
+          <div className="composer-extra">
+            <label className="sr" htmlFor="acceptance">验收</label>
+            <textarea
+              id="acceptance"
+              data-testid="acceptance"
+              rows={2}
+              value={acceptance}
+              placeholder="验收标准。不填就用上面的指令。"
+              onChange={(event) => setAcceptance(event.target.value)}
+            />
+            <label className="sr" htmlFor="task-tags">标签</label>
+            <input
+              id="task-tags"
+              data-testid="task-tags"
+              type="text"
+              value={tags}
+              placeholder="标签，用逗号分开。不填则所有空闲 agent 都能做"
+              onChange={(event) => setTags(event.target.value)}
+            />
+            <label className="checkline">
+              <input
+                data-testid="parallel"
+                type="checkbox"
+                checked={parallel}
+                onChange={(event) => setParallel(event.target.checked)}
+              />
+              并行方案，最多 3 条。各自隔离，都通过后留给人裁定
+            </label>
+          </div>
+        ) : null}
         <label className="sr" htmlFor="composer">消息</label>
         <textarea
           id="composer"
@@ -381,7 +445,7 @@ function Channel({
           ref={box}
           rows={3}
           value={body}
-          placeholder={kind === "instruction" ? "写下要做完的需求。用 @句柄 点名某个 agent。" : "写给房间。用 @句柄 才会叫醒那个 agent。"}
+          placeholder={kind === "instruction" ? "写下要做完的需求。匹配的空闲 agent 会认领或投标。" : "写给房间。用 @句柄 才会叫醒那个 agent。"}
           onChange={(event) => setBody(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -453,11 +517,11 @@ function SidePanel({
               <button type="button" className="handle" onClick={() => onMention(agent.handle)}>
                 {agent.ownerName} / {agent.handle}
               </button>
-              <em>{agent.demo ? "演示" : agent.runtime}</em>
+              <em>{agent.demo ? "演示" : agent.runtime}{agent.tags ? ` · ${agent.tags}` : ""}</em>
             </li>
           ))}
         </ul>
-        <p className="fine">点句柄会把 @句柄 放进输入框。房间历史成员都能读。只有被点名，或占着这条任务槽位的 agent，会收到推送。</p>
+        <p className="fine">点句柄会把 @句柄 放进输入框。房间历史成员都能读。推送只发给被点名的、在投标的，和占着槽位的 agent。</p>
       </section>
       <section className="invite-block">
         <h2>成员和 agent</h2>
@@ -495,7 +559,7 @@ function SidePanel({
         {code ? (
           <p className="code" data-testid="join-code-value">
             <code>{code}</code>
-            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex</span>
+            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags build</span>
           </p>
         ) : null}
       </section>
@@ -523,38 +587,73 @@ function TaskCard({
   task,
   onChanged,
   onError,
+  nested = false,
+  winning = false,
 }: {
   task: Task;
   onChanged: () => void;
   onError: (message: string) => void;
+  nested?: boolean;
+  winning?: boolean;
 }) {
   const current = stepIndex(task.status);
   const closed = task.status === "done" || task.status === "canceled";
+  const lanes = task.lanes ?? [];
+  const showFlow = lanes.length === 0;
   return (
-    <article className={`task status-${task.status}`}>
+    <article className={`task status-${task.status}${nested ? " lane" : ""}${winning ? " winner" : ""}`}>
       <header>
         <h3>{task.title}</h3>
         <span className="pill">{STATUS_LABEL[task.status] ?? task.status}</span>
       </header>
-      <ol className="steps">
-        {STEPS.map((step, index) => (
-          <li key={step.id} className={index < current || task.status === "done" ? "done" : index === current ? "now" : ""}>
-            {step.label}
-          </li>
-        ))}
-      </ol>
-      <ul className="slots">
-        {(["implementer", "reviewer", "tester"] as const).map((role) => {
-          const claim = task.claims.find((item) => item.role === role);
-          const label = role === "implementer" ? "实现" : role === "reviewer" ? "评审" : "测试";
-          return (
-            <li key={role}>
-              <span>{label}</span>
-              <strong>{claim ? claim.handle : "空"}</strong>
+      {task.acceptance && task.acceptance !== task.body ? <p className="note">验收：{task.acceptance}</p> : null}
+      {task.tags ? <p className="note">标签：{task.tags}</p> : null}
+      {task.direction ? <p className="note">方向：{task.direction}</p> : null}
+      {task.deliverableRef ? (
+        <p className="note">
+          交付：<code>{task.deliverableRef}</code>
+          {task.deliverableSummary ? ` ${task.deliverableSummary}` : ""}
+        </p>
+      ) : null}
+      {task.mode === "parallel" && !nested ? <p className="note">并行方案，最多 {task.maxLanes ?? 3} 条。隔离方式由 agent 自己定。</p> : null}
+      {task.status === "dispute" ? <p className="note">多条方案都通过了。放行只关掉这张卡，不会合并代码。</p> : null}
+      {showFlow ? (
+        <ol className="steps">
+          {STEPS.map((step, index) => (
+            <li key={step.id} className={stepClass(task.status, index, current)}>
+              {step.label}
             </li>
-          );
-        })}
-      </ul>
+          ))}
+        </ol>
+      ) : null}
+      {showFlow ? (
+        <ul className="slots">
+          {(["implementer", "reviewer", "tester"] as const).map((role) => {
+            const claim = task.claims.find((item) => item.role === role);
+            const label = role === "implementer" ? "实现" : role === "reviewer" ? "评审" : "测试";
+            return (
+              <li key={role}>
+                <span>{label}</span>
+                <strong className={claim ? "held" : "vacant"}>{claim ? claim.handle : "空"}</strong>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {lanes.length > 0 ? (
+        <div className="lanes">
+          {lanes.map((lane) => (
+            <TaskCard
+              key={lane.id}
+              task={lane}
+              nested
+              winning={task.winnerTaskId === lane.id}
+              onChanged={onChanged}
+              onError={onError}
+            />
+          ))}
+        </div>
+      ) : null}
       {closed ? null : (
         <div className="task-actions">
           <button

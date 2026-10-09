@@ -1,4 +1,4 @@
-import type { Principal, Store } from "./logic.ts";
+import type { Principal, Store, TaskView } from "./logic.ts";
 import { ApiError } from "./logic.ts";
 import { waitInbox } from "./wait.ts";
 
@@ -44,101 +44,115 @@ async function act(store: Store, agent: Principal & { type: "agent" }, busy: Set
   for (const room of rooms) {
     const tasks = store.listTasks(agent, room.id);
     for (const task of tasks) {
-      if (busy.has(task.id)) continue;
-      const mine = task.claims.some((claim) => claim.agentId === agent.id && claim.role === "implementer");
-      if (agent.handle === "builder" && (task.status === "open" || (task.status === "changes" && mine))) {
-        busy.add(task.id);
-        try {
-          await implement(store, agent, task.id, task.title, task.status === "changes");
-        } catch (error) {
-          if (!quiet(error)) console.error(error);
-        } finally {
-          busy.delete(task.id);
-        }
-      } else if (agent.handle === "reviewer" && task.status === "in_review") {
-        const implementer = task.claims.find((claim) => claim.role === "implementer");
-        if (implementer?.agentId === agent.id) continue;
-        busy.add(task.id);
-        try {
-          await review(store, agent, task.id, task.title);
-        } catch (error) {
-          if (!quiet(error)) console.error(error);
-        } finally {
-          busy.delete(task.id);
-        }
-      } else if (agent.handle === "qa" && task.status === "in_test") {
-        const implementer = task.claims.find((claim) => claim.role === "implementer");
-        if (implementer?.agentId === agent.id) continue;
-        busy.add(task.id);
-        try {
-          await test(store, agent, task.id, task.title);
-        } catch (error) {
-          if (!quiet(error)) console.error(error);
-        } finally {
-          busy.delete(task.id);
-        }
-      }
+      await consider(store, agent, task, busy);
+      for (const lane of task.lanes) await consider(store, agent, lane, busy);
     }
   }
 }
 
-async function implement(
-  store: Store,
-  agent: Principal & { type: "agent" },
-  taskId: string,
-  title: string,
-  revising: boolean,
-) {
-  await sleep(700);
-  if (revising) {
-    store.postMessage(agent, roomOf(store, taskId), {
-      kind: "progress",
-      taskId,
-      body: `按评审意见改了一版「${title}」。`,
-    });
-    await sleep(500);
-    store.markReady(agent, taskId);
+async function consider(store: Store, agent: Principal & { type: "agent" }, task: TaskView, busy: Set<string>) {
+  if (busy.has(task.id)) return;
+  const builder = agent.handle === "builder" || agent.handle === "maker";
+  const mine = task.claims.some((claim) => claim.agentId === agent.id && claim.role === "implementer");
+  if (builder && task.status === "bidding") {
+    try {
+      store.bid(agent, task.id, approach(agent.handle, task.title));
+    } catch (error) {
+      if (!quiet(error)) console.error(error);
+    }
     return;
   }
-  store.claim(agent, taskId, "implementer");
-  await sleep(800);
-  store.postMessage(agent, roomOf(store, taskId), {
-    kind: "progress",
-    taskId,
-    body: `我来做「${title}」。先按指令改，做完交给评审。`,
-  });
-  store.heartbeat(agent, taskId);
-  await sleep(900);
-  store.postMessage(agent, roomOf(store, taskId), {
-    kind: "progress",
-    taskId,
-    body: `改动在我这边的工作区，变更引用 workspace:${taskId.slice(0, 8)}。`,
-  });
-  await sleep(500);
-  store.markReady(agent, taskId);
+  if (builder && mine && ["claimed", "working", "changes"].includes(task.status) && !task.deliverableRef) {
+    busy.add(task.id);
+    try {
+      await deliverWork(store, agent, task);
+    } catch (error) {
+      if (!quiet(error)) console.error(error);
+    } finally {
+      busy.delete(task.id);
+    }
+    return;
+  }
+  if (builder && task.status === "open") {
+    busy.add(task.id);
+    try {
+      store.claim(agent, task.id, "implementer");
+      await deliverWork(store, agent, { ...task, status: "claimed" });
+    } catch (error) {
+      if (!quiet(error)) console.error(error);
+    } finally {
+      busy.delete(task.id);
+    }
+    return;
+  }
+  if (agent.handle === "reviewer" && task.status === "in_review") {
+    const implementer = task.claims.find((claim) => claim.role === "implementer");
+    if (implementer?.agentId === agent.id) return;
+    busy.add(task.id);
+    try {
+      await review(store, agent, task);
+    } catch (error) {
+      if (!quiet(error)) console.error(error);
+    } finally {
+      busy.delete(task.id);
+    }
+    return;
+  }
+  if (agent.handle === "qa" && task.status === "in_test") {
+    const implementer = task.claims.find((claim) => claim.role === "implementer");
+    if (implementer?.agentId === agent.id) return;
+    busy.add(task.id);
+    try {
+      await test(store, agent, task);
+    } catch (error) {
+      if (!quiet(error)) console.error(error);
+    } finally {
+      busy.delete(task.id);
+    }
+  }
 }
 
-async function review(store: Store, agent: Principal & { type: "agent" }, taskId: string, title: string) {
-  await sleep(700);
-  const task = store.listTasks(agent, roomOf(store, taskId)).find((item) => item.id === taskId);
-  const held = task?.claims.some((claim) => claim.role === "reviewer" && claim.agentId === agent.id);
-  if (!held) store.claim(agent, taskId, "reviewer");
-  await sleep(600);
-  store.review(
+function approach(handle: string, title: string) {
+  if (handle === "maker") return `「${title}」我从接口往下做，先让验收可测，再补边界。改动放在我自己的工作区。`;
+  return `「${title}」我从界面往下做，先满足验收。改动放在我自己的工作区。`;
+}
+
+async function deliverWork(store: Store, agent: Principal & { type: "agent" }, task: TaskView) {
+  await sleep(500);
+  const room = roomOf(store, task.id);
+  if (task.status === "claimed") {
+    store.postMessage(agent, room, {
+      kind: "direction",
+      taskId: task.id,
+      body: `「${task.title}」我按验收做，改动留在我自己的工作区。`,
+    });
+    await sleep(300);
+  }
+  store.heartbeat(agent, task.id);
+  store.deliver(
     agent,
-    taskId,
-    "approve",
-    `评审「${title}」：范围和指令一致，没有看到缺了的验收点。通过。`,
+    task.id,
+    `workspace:${task.id.slice(0, 8)}`,
+    `「${task.title}」做完了。房间只留这个引用，不贴过程和 diff。`,
   );
 }
 
-async function test(store: Store, agent: Principal & { type: "agent" }, taskId: string, title: string) {
-  await sleep(700);
-  const task = store.listTasks(agent, roomOf(store, taskId)).find((item) => item.id === taskId);
-  const held = task?.claims.some((claim) => claim.role === "tester" && claim.agentId === agent.id);
-  if (!held) store.claim(agent, taskId, "tester");
+async function review(store: Store, agent: Principal & { type: "agent" }, task: TaskView) {
   await sleep(500);
-  store.reportTest(agent, taskId, "pass", `测试「${title}」：主路径和空输入都走了一遍。通过。`);
+  const current = store.getTask(agent, task.id);
+  const held = current.claims.some((claim) => claim.role === "reviewer" && claim.agentId === agent.id);
+  if (!held) store.claim(agent, task.id, "reviewer");
+  await sleep(400);
+  store.review(agent, task.id, "approve", `评审「${task.title}」：对照验收看过，没有缺项。通过。`);
+}
+
+async function test(store: Store, agent: Principal & { type: "agent" }, task: TaskView) {
+  await sleep(500);
+  const current = store.getTask(agent, task.id);
+  const held = current.claims.some((claim) => claim.role === "tester" && claim.agentId === agent.id);
+  if (!held) store.claim(agent, task.id, "tester");
+  await sleep(400);
+  store.reportTest(agent, task.id, "pass", `测试「${task.title}」：按验收走了主路径。通过。`);
 }
 
 function roomOf(store: Store, taskId: string) {

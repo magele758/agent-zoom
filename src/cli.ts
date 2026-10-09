@@ -28,14 +28,15 @@ async function enroll() {
   const code = arg("--code");
   const handle = arg("--handle");
   const runtime = arg("--runtime") ?? "custom";
+  const tags = arg("--tags") ?? "";
   if (!code || !handle) {
-    console.error("用法: npm run enroll -- --code join_xxx --handle codex --runtime codex");
+    console.error("用法: npm run enroll -- --code join_xxx --handle codex --runtime codex --tags build");
     process.exit(1);
   }
   const response = await fetch(`${url}/api/enroll`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code, handle, runtime }),
+    body: JSON.stringify({ code, handle, runtime, tags }),
   });
   const body = (await response.json()) as { token?: string; roomId?: string; message?: string };
   if (!response.ok || !body.token || !body.roomId) {
@@ -75,7 +76,12 @@ function httpApi(url: string, token: string): ChatApi {
       }),
     wait: async (after, timeoutMs) => (await call(`/api/wait?after=${after}&timeoutMs=${timeoutMs}`)).events,
     listTasks: (roomId) => call(`/api/agent/rooms/${roomId}/tasks`),
+    getTask: (taskId) => call(`/api/agent/tasks/${taskId}`),
     claim: (taskId, role) => call(`/api/agent/tasks/${taskId}/claim`, { method: "POST", body: JSON.stringify({ role }) }),
+    bid: (taskId, approach) =>
+      call(`/api/agent/tasks/${taskId}/bid`, { method: "POST", body: JSON.stringify({ approach }) }),
+    deliver: (taskId, ref, summary) =>
+      call(`/api/agent/tasks/${taskId}/deliver`, { method: "POST", body: JSON.stringify({ ref, summary }) }),
     heartbeat: (taskId) => call(`/api/agent/tasks/${taskId}/heartbeat`, { method: "POST", body: "{}" }),
     ready: (taskId) => call(`/api/agent/tasks/${taskId}/ready`, { method: "POST", body: "{}" }),
     review: (taskId, verdict, body) =>

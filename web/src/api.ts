@@ -5,6 +5,7 @@ export type Agent = {
   runtime: string;
   paused: number | boolean;
   demo: number | boolean;
+  tags?: string;
   org_id?: string;
   last_seen_at?: string | null;
   ownerName?: string;
@@ -37,7 +38,19 @@ export type Task = {
   title: string;
   body: string;
   status: string;
+  acceptance?: string;
+  mode?: string;
+  maxLanes?: number;
+  tags?: string;
+  parentId?: string | null;
+  lane?: number | null;
+  direction?: string;
+  deliverableRef?: string | null;
+  deliverableSummary?: string | null;
+  winnerTaskId?: string | null;
+  bidUntil?: string | null;
   claims: Claim[];
+  lanes?: Task[];
   updatedAt: string;
 };
 
@@ -74,8 +87,10 @@ export const api = {
   createRoom: (name: string, topic: string) =>
     request<{ id: string }>("/api/rooms", { method: "POST", body: JSON.stringify({ name, topic }) }),
   snapshot: (roomId: string) => request<Snapshot>(`/api/rooms/${roomId}`),
-  post: (roomId: string, body: string, kind: string, taskId?: string | null) =>
-    request(`/api/rooms/${roomId}/messages`, { method: "POST", body: JSON.stringify({ body, kind, taskId }) }),
+  post: (
+    roomId: string,
+    input: { body: string; kind: string; taskId?: string | null; acceptance?: string; parallel?: boolean; tags?: string },
+  ) => request(`/api/rooms/${roomId}/messages`, { method: "POST", body: JSON.stringify(input) }),
   invite: (roomId: string, name: string) => request(`/api/rooms/${roomId}/members`, { method: "POST", body: JSON.stringify({ name }) }),
   joinCode: (roomId: string) => request<{ code: string; expiresAt: string }>(`/api/rooms/${roomId}/join-codes`, { method: "POST", body: "{}" }),
   pause: (agentId: string, paused: boolean) => request(`/api/agents/${agentId}`, { method: "PATCH", body: JSON.stringify({ paused }) }),

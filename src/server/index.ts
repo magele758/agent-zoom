@@ -21,6 +21,7 @@ if (existsSync("web/dist")) {
   app.get("*", serveStatic({ root: "./web/dist", path: "index.html" }));
 }
 
+store.ensureDemoCast();
 startDemo(store);
 
 const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
