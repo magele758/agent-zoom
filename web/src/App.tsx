@@ -90,11 +90,51 @@ export function App() {
   }, [roomId]);
 
   useEffect(() => {
+    if (!snap) return;
+    setMe((current) => {
+      if (!current) return current;
+      const existing = current.rooms.find((room) => room.id === snap.room.id);
+      if (!existing) return current;
+      const same =
+        existing.project === snap.room.project &&
+        existing.branch === snap.room.branch &&
+        (existing.directories ?? []).join("\n") === (snap.room.directories ?? []).join("\n") &&
+        existing.topic === snap.room.topic &&
+        (existing.currentTopic ?? "") === (snap.room.currentTopic ?? "") &&
+        Boolean(existing.general) === Boolean(snap.room.general) &&
+        Boolean(existing.archived) === Boolean(snap.room.archived) &&
+        Boolean(existing.direct) === Boolean(snap.room.direct);
+      if (same) return current;
+      return {
+        ...current,
+        rooms: current.rooms.map((room) =>
+          room.id === snap.room.id
+            ? {
+                ...room,
+                project: snap.room.project,
+                directories: snap.room.directories,
+                branch: snap.room.branch,
+                topic: snap.room.topic,
+                currentTopic: snap.room.currentTopic ?? "",
+                general: Boolean(snap.room.general),
+                archived: Boolean(snap.room.archived),
+                direct: Boolean(snap.room.direct),
+              }
+            : room,
+        ),
+      };
+    });
+  }, [snap]);
+
+  useEffect(() => {
     if (!roomId) return;
     void refresh();
-    const timer = setInterval(() => void refresh(), 5000);
+    const timer = setInterval(() => {
+      void refresh();
+      void loadMe();
+    }, 5000);
     return () => clearInterval(timer);
-  }, [roomId, refresh]);
+  }, [roomId, refresh, loadMe]);
 
   useEffect(() => {
     if (!me || !roomId) return;
@@ -217,6 +257,18 @@ function Gate({ onEnter }: { onEnter: (name: string) => Promise<void> }) {
   );
 }
 
+function directoryLines(value: string) {
+  return value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+}
+
+function scopeText(scope: { project?: string; directories?: string[]; branch?: string }) {
+  return [
+    scope.project ? `项目 ${scope.project}` : "未指定项目",
+    scope.directories?.length ? scope.directories.join("、") : "未指定目录",
+    scope.branch ? `分支 ${scope.branch}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 function RoomList({
   rooms,
   active,
@@ -231,6 +283,21 @@ function RoomList({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
+  const [currentTopic, setCurrentTopic] = useState("");
+  const [project, setProject] = useState("");
+  const [directories, setDirectories] = useState("");
+  const [branch, setBranch] = useState("");
+  const openRooms = rooms.filter((room) => !room.archived && !room.direct);
+  const directRooms = rooms.filter((room) => room.direct && !room.archived);
+  const archivedRooms = rooms.filter((room) => room.archived && !room.direct);
+  const roomItem = (room: Me["rooms"][number]) => (
+    <li key={room.id}>
+      <button type="button" className={room.id === active ? "room active" : "room"} onClick={() => onPick(room.id)}>
+        <span>{room.name}</span>
+        {room.direct ? <small>私聊</small> : room.project ? <small>{room.project}</small> : null}
+      </button>
+    </li>
+  );
   return (
     <div className="rooms">
       <div className="section-row">
@@ -244,27 +311,48 @@ function RoomList({
           className="stack-form"
           onSubmit={async (event) => {
             event.preventDefault();
-            const room = await api.createRoom(name, topic);
+            const room = await api.createRoom({
+              name,
+              topic,
+              currentTopic,
+              project,
+              directories: directoryLines(directories),
+              branch,
+            });
             setName("");
             setTopic("");
+            setCurrentTopic("");
+            setProject("");
+            setDirectories("");
+            setBranch("");
             setOpen(false);
             await onCreated(room.id);
           }}
         >
           <input aria-label="频道名" value={name} onChange={(event) => setName(event.target.value)} placeholder="频道名" />
-          <input aria-label="频道说明" value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="这个频道用来做什么" />
+          <input aria-label="说明" value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="这个频道用来做什么" />
+          <input aria-label="当前主题" value={currentTopic} onChange={(event) => setCurrentTopic(event.target.value)} placeholder="当前主题" />
+          <input aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} placeholder="项目名，比如 agent-zoom" />
+          <textarea aria-label="工作目录" value={directories} onChange={(event) => setDirectories(event.target.value)} placeholder={"工作目录，一行一个\nweb/src"} />
+          <input aria-label="分支" value={branch} onChange={(event) => setBranch(event.target.value)} placeholder="默认分支，比如 main" />
           <button type="submit" disabled={!name.trim()}>创建</button>
         </form>
       ) : null}
-      <ul>
-        {rooms.map((room) => (
-          <li key={room.id}>
-            <button type="button" className={room.id === active ? "room active" : "room"} onClick={() => onPick(room.id)}>
-              <span>{room.name}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      <ul>{openRooms.map(roomItem)}</ul>
+      {directRooms.length > 0 ? (
+        <div className="direct-rooms" data-testid="direct-list">
+          <div className="section-row">
+            <h2>私聊</h2>
+          </div>
+          <ul>{directRooms.map(roomItem)}</ul>
+        </div>
+      ) : null}
+      {archivedRooms.length > 0 ? (
+        <details className="archived-rooms">
+          <summary>已归档</summary>
+          <ul>{archivedRooms.map(roomItem)}</ul>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -290,6 +378,13 @@ function Channel({
   const [kind, setKind] = useState<"chat" | "question" | "instruction">("instruction");
   const [taskId, setTaskId] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [editingScope, setEditingScope] = useState(false);
+  const [editingText, setEditingText] = useState(false);
+  const [topicDraft, setTopicDraft] = useState("");
+  const [currentTopicDraft, setCurrentTopicDraft] = useState("");
+  const [project, setProject] = useState("");
+  const [directories, setDirectories] = useState("");
+  const [branch, setBranch] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const stick = useRef(true);
@@ -308,8 +403,33 @@ function Channel({
     if (stick.current && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
   }, [snap?.messages.length]);
 
+  const scopeKey = snap
+    ? `${snap.room.id}|${snap.room.project}|${snap.room.branch}|${(snap.room.directories ?? []).join("\n")}`
+    : "";
+  useEffect(() => {
+    if (!snap) return;
+    setEditingScope(false);
+    setProject(snap.room.project ?? "");
+    setDirectories((snap.room.directories ?? []).join("\n"));
+    setBranch(snap.room.branch ?? "");
+  }, [scopeKey]);
+
+  useEffect(() => {
+    setEditingText(false);
+    setKind(snap?.room.direct ? "question" : "instruction");
+  }, [snap?.room.id, snap?.room.direct]);
+
   const selected = snap?.tasks.find((task) => task.id === taskId) ?? null;
   const latest = snap?.messages.at(-1);
+  const changeArchived = async (archived: boolean) => {
+    if (!snap) return;
+    try {
+      await api.setArchived(snap.room.id, archived);
+      onPosted();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : archived ? "没能归档" : "没能取消归档");
+    }
+  };
 
   return (
     <>
@@ -317,6 +437,86 @@ function Channel({
         <div>
           <h1>{snap?.room.name ?? "频道"}</h1>
           <p>{snap?.room.topic}</p>
+          {snap?.room.currentTopic?.trim() ? (
+            <p className="current-topic" data-testid="current-topic">当前：{snap.room.currentTopic}</p>
+          ) : null}
+          {snap?.room.direct ? (
+            <p className="direct-note" data-testid="direct-note">只有参与者能看到这段对话。频道里的其他人看不到。</p>
+          ) : snap ? (
+            <p className="scope" data-testid="room-scope">{scopeText(snap.room)}</p>
+          ) : null}
+          {snap && !snap.room.direct && editingText ? (
+            <form
+              className="scope-form"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                try {
+                  await api.setChannelText(snap.room.id, {
+                    topic: topicDraft.trim(),
+                    currentTopic: currentTopicDraft.trim(),
+                  });
+                  setEditingText(false);
+                  onPosted();
+                } catch (reason) {
+                  onError(reason instanceof Error ? reason.message : "没能保存说明");
+                }
+              }}
+            >
+              <input aria-label="说明" value={topicDraft} onChange={(event) => setTopicDraft(event.target.value)} placeholder="这个频道用来做什么" />
+              <input aria-label="当前主题" value={currentTopicDraft} onChange={(event) => setCurrentTopicDraft(event.target.value)} placeholder="当前主题" />
+              <span className="scope-actions">
+                <button type="submit">保存说明</button>
+                <button type="button" className="text-button" onClick={() => setEditingText(false)}>取消</button>
+              </span>
+            </form>
+          ) : snap && !snap.room.direct ? (
+            <button
+              type="button"
+              className="text-button"
+              data-testid="edit-channel-text"
+              onClick={() => {
+                setTopicDraft(snap.room.topic ?? "");
+                setCurrentTopicDraft(snap.room.currentTopic ?? "");
+                setEditingText(true);
+              }}
+            >
+              改说明
+            </button>
+          ) : null}
+          {snap && !snap.room.direct && editingScope ? (
+            <form
+              className="scope-form"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                try {
+                  await api.setScope(snap.room.id, {
+                    project,
+                    directories: directoryLines(directories),
+                    branch,
+                  });
+                  setEditingScope(false);
+                  onPosted();
+                } catch (reason) {
+                  onError(reason instanceof Error ? reason.message : "没能保存工作范围");
+                }
+              }}
+            >
+              <input aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} placeholder="项目名" />
+              <textarea aria-label="工作目录" value={directories} onChange={(event) => setDirectories(event.target.value)} placeholder={"工作目录，一行一个"} />
+              <input aria-label="分支" value={branch} onChange={(event) => setBranch(event.target.value)} placeholder="默认分支" />
+              <span className="scope-actions">
+                <button type="submit">保存范围</button>
+                <button type="button" className="text-button" onClick={() => setEditingScope(false)}>取消</button>
+              </span>
+            </form>
+          ) : snap && !snap.room.direct ? (
+            <button type="button" className="text-button" data-testid="edit-scope" onClick={() => setEditingScope(true)}>改工作范围</button>
+          ) : null}
+          {snap && !snap.room.general && !snap.room.archived && !snap.room.direct ? (
+            <button type="button" className="text-button" data-testid="archive-room" onClick={() => void changeArchived(true)}>
+              归档频道
+            </button>
+          ) : null}
         </div>
         <span className="you">你是 {meName}</span>
       </header>
@@ -354,6 +554,14 @@ function Channel({
         <p className="sr" aria-live="polite">{latest ? `${latest.authorName} ${KIND_LABEL[latest.kind] ?? ""} ${latest.body}` : ""}</p>
       </div>
       {error ? <p className="error banner">{error}</p> : null}
+      {snap?.room.archived ? (
+        <div className="composer">
+          <p className="fine">这个频道已归档。历史还在。</p>
+          <button type="button" className="text-button" data-testid="unarchive-room" onClick={() => void changeArchived(false)}>
+            取消归档
+          </button>
+        </div>
+      ) : (
       <form
         className="composer"
         onSubmit={async (event) => {
@@ -385,11 +593,16 @@ function Channel({
       >
         <div className="kinds" role="radiogroup" aria-label="消息类型">
           {(
-            [
-              ["instruction", "下指令"],
-              ["chat", "发言"],
-              ["question", "提问"],
-            ] as const
+            snap?.room.direct
+              ? ([
+                  ["question", "提问"],
+                  ["chat", "发言"],
+                ] as const)
+              : ([
+                  ["instruction", "下指令"],
+                  ["chat", "发言"],
+                  ["question", "提问"],
+                ] as const)
           ).map(([value, label]) => (
             <button
               key={value}
@@ -409,6 +622,9 @@ function Channel({
             发进「{selected.title}」，会唤醒占着槽位的 agent。
             <button type="button" onClick={() => setTaskId(null)}>取消</button>
           </p>
+        ) : null}
+        {kind === "instruction" && snap && !snap.room.archived && !(snap.room.directories?.length) ? (
+          <p className="scope-hint" data-testid="scope-hint">这个频道还没有工作目录。项目请另开频道，填上目录和分支。大厅只适合公告。</p>
         ) : null}
         {kind === "instruction" ? (
           <div className="composer-extra">
@@ -446,7 +662,7 @@ function Channel({
                 checked={complex}
                 onChange={(event) => setComplex(event.target.checked)}
               />
-              复杂任务。优先交给等级 3 以上的 agent，没有就退回全体
+              复杂任务。有等级 3 及以上的空闲 agent 时只交给他们，没有就退回全体
             </label>
           </div>
         ) : null}
@@ -457,7 +673,13 @@ function Channel({
           ref={box}
           rows={3}
           value={body}
-          placeholder={kind === "instruction" ? "写下要做完的需求。匹配的空闲 agent 会认领或投标。" : "写给房间。用 @句柄 才会叫醒那个 agent。"}
+          placeholder={
+            snap?.room.direct
+              ? "只有这段私聊里的人能看到。先问对方在做什么，避免重复开工。"
+              : kind === "instruction"
+                ? "写下要做完的需求。匹配的空闲 agent 会认领或投标。"
+                : "写给房间。用 @句柄 才会叫醒那个 agent。"
+          }
           onChange={(event) => setBody(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -471,6 +693,7 @@ function Channel({
           <button data-testid="send" type="submit" disabled={pending || !body.trim()}>发送</button>
         </div>
       </form>
+      )}
     </>
   );
 }
@@ -529,7 +752,12 @@ function SidePanel({
               <button type="button" className="handle" onClick={() => onMention(agent.handle)}>
                 {agent.ownerName} / {agent.handle}
               </button>
-              <em>{agent.demo ? "演示" : agent.runtime}{agent.tags ? ` · ${agent.tags}` : ""}</em>
+              <em title={[agent.machine, agent.cwd].filter(Boolean).join(" · ") || undefined}>
+                {agent.demo ? "演示" : agent.runtime}
+                {agent.tags ? ` · ${agent.tags}` : ""}
+                {agent.machine ? ` · ${agent.machine}` : ""}
+                {agent.cwd ? ` · ${agent.cwd}` : ""}
+              </em>
               <select
                 className="level"
                 aria-label={`${agent.handle} 的等级`}
@@ -551,7 +779,7 @@ function SidePanel({
             </li>
           ))}
         </ul>
-        <p className="fine">点句柄会把 @句柄 放进输入框。房间历史成员都能读。推送只发给被点名的、在投标的，和占着槽位的 agent。</p>
+        <p className="fine">点句柄会把 @句柄 放进输入框。房间历史成员都能读。复杂任务优先叫醒等级 3 及以上；点名不受等级限制。</p>
       </section>
       <section className="invite-block">
         <h2>成员和 agent</h2>
@@ -589,7 +817,7 @@ function SidePanel({
         {code ? (
           <p className="code" data-testid="join-code-value">
             <code>{code}</code>
-            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags build --level 1</span>
+            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags build --level 1 --cwd /你的/项目</span>
           </p>
         ) : null}
       </section>
@@ -638,7 +866,10 @@ function TaskCard({
       </header>
       {task.acceptance && task.acceptance !== task.body ? <p className="note">验收：{task.acceptance}</p> : null}
       {task.tags ? <p className="note">标签：{task.tags}</p> : null}
-      {task.complex && !nested ? <p className="note">复杂任务，优先交给等级 3 以上的 agent。</p> : null}
+      {task.scope && (task.scope.project || task.scope.directories.length || task.scope.branch) ? (
+        <p className="note">工作范围：{scopeText(task.scope)}</p>
+      ) : null}
+      {task.complex && !nested ? <p className="note">复杂任务。等级 3 及以上优先，没有就退回全体匹配者。</p> : null}
       {task.direction ? <p className="note">方向：{task.direction}</p> : null}
       {task.deliverableRef ? (
         <p className="note">

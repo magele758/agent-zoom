@@ -71,7 +71,32 @@ export function createApp(store: Store) {
   app.post("/api/rooms", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
-    return c.json(store.createRoom(user, String(body.name ?? ""), String(body.topic ?? "")));
+    return c.json(
+      store.createRoom(user, String(body.name ?? ""), String(body.topic ?? ""), {
+        project: body.project,
+        directories: body.directories,
+        branch: body.branch,
+        currentTopic: body.currentTopic,
+      }),
+    );
+  });
+
+  app.patch("/api/rooms/:id", async (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const body = await c.req.json();
+    const roomId = c.req.param("id");
+    if (body.topic !== undefined || body.currentTopic !== undefined) {
+      store.setChannelText(user, roomId, { topic: body.topic, currentTopic: body.currentTopic });
+    }
+    if (body.archived !== undefined) store.setArchived(user, roomId, Boolean(body.archived));
+    if (body.project !== undefined || body.directories !== undefined || body.branch !== undefined) {
+      store.setScope(user, roomId, {
+        project: body.project,
+        directories: body.directories,
+        branch: body.branch,
+      });
+    }
+    return c.json(store.roomView(user, roomId));
   });
 
   app.get("/api/rooms/:id", (c) => {
@@ -115,6 +140,8 @@ export function createApp(store: Store) {
         String(body.runtime ?? "custom"),
         body.tags ? String(body.tags) : "",
         body.level,
+        body.machine ? String(body.machine) : "",
+        body.cwd ? String(body.cwd) : "",
       ),
     );
   });
@@ -122,7 +149,11 @@ export function createApp(store: Store) {
   app.patch("/api/agents/:id", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
-    return c.json(store.setPaused(user, c.req.param("id"), Boolean(body.paused)));
+    const id = c.req.param("id");
+    let result: { id: string; paused?: boolean; level?: number } = { id };
+    if (body.level !== undefined) result = { ...result, ...store.setLevel(user, id, body.level as number | string) };
+    if (body.paused !== undefined) result = { ...result, ...store.setPaused(user, id, Boolean(body.paused)) };
+    return c.json(result);
   });
 
   app.patch("/api/agents/:id/level", async (c) => {
@@ -155,6 +186,20 @@ export function createApp(store: Store) {
   });
 
   app.get("/api/agent/me", (c) => c.json(store.whoami(requireAgent(c.req.header("authorization")))));
+
+  app.get("/api/agent/peers", (c) => c.json({ peers: store.listPeers(requireAgent(c.req.header("authorization"))) }));
+
+  app.post("/api/agent/ask", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.ask(agent, { handle: body.handle, handles: body.handles, body: body.body }));
+  });
+
+  app.post("/api/agent/place", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.setPlace(agent, body.machine, body.cwd));
+  });
 
   app.get("/api/agent/rooms/:id/messages", (c) => {
     const agent = requireAgent(c.req.header("authorization"));
@@ -302,6 +347,8 @@ function apiFor(store: Store, agent: Principal & { type: "agent" }): ChatApi {
   return {
     whoami: async () => store.whoami(agent),
     listRooms: async () => store.whoami(agent).rooms,
+    listPeers: async () => store.listPeers(agent),
+    ask: async (input) => store.ask(agent, input),
     read: async (roomId, afterSeq) => store.readMessages(agent, roomId, afterSeq),
     say: async (input) => store.postMessage(agent, input.roomId, input),
     wait: async (after, timeoutMs) => waitInbox(store, agent.id, after, timeoutMs),

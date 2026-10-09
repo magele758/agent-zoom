@@ -29,6 +29,31 @@ export type Principal =
 
 export type Role = "implementer" | "reviewer" | "tester";
 
+export type RoomScope = { project: string; directories: string[]; branch: string };
+
+export type RoomChannel = RoomScope & {
+  topic: string;
+  currentTopic: string;
+  general: boolean;
+  archived: boolean;
+  direct: boolean;
+};
+
+type RoomRecord = {
+  id: string;
+  org_id: string;
+  name: string;
+  topic: string;
+  current_topic: string;
+  general: number;
+  archived: number;
+  direct: number;
+  project: string;
+  directories: string;
+  branch: string;
+  created_at: string;
+};
+
 type InboxKind = "mention" | "thread" | "task_open" | "bid_open" | "awarded" | "bid_lost" | "review_needed" | "test_needed" | "dispute";
 
 type TaskRow = {
@@ -53,6 +78,7 @@ type TaskRow = {
   deliverable_ref: string | null;
   deliverable_summary: string | null;
   winner_task_id: string | null;
+  review_returns: number;
 };
 
 export type TaskView = {
@@ -73,6 +99,7 @@ export type TaskView = {
   deliverableSummary: string | null;
   winnerTaskId: string | null;
   bidUntil: string | null;
+  scope: RoomScope;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -117,6 +144,62 @@ const ROLE_LABEL: Record<Role, string> = {
 
 function parseTags(value: string | null | undefined) {
   return [...new Set(String(value ?? "").toLowerCase().split(/[\s,，]+/).filter(Boolean))].slice(0, 8);
+}
+
+const DIRECTORY_LIMIT = 8;
+const TOPIC_LIMIT = 250;
+
+function trimTopic(value: string) {
+  return value.trim().slice(0, TOPIC_LIMIT);
+}
+
+function trimCurrentTopic(value: unknown) {
+  return String(value ?? "").replace(/[\r\n\0]/g, "").trim().slice(0, TOPIC_LIMIT);
+}
+
+function cleanLine(value: unknown, max: number) {
+  return String(value ?? "").replace(/[\r\n\0]/g, " ").trim().slice(0, max);
+}
+
+function parseDirectories(value: unknown) {
+  const raw = Array.isArray(value) ? value.map((item) => String(item)) : String(value ?? "").split(/[\n,，]+/);
+  const directories: string[] = [];
+  for (const item of raw) {
+    const path = item.trim().replaceAll("\\", "/");
+    if (!path) continue;
+    if (path.length > 200) throw new ApiError(400, "bad_path", "单个目录最多 200 个字符");
+    if (!directories.includes(path)) directories.push(path);
+  }
+  if (directories.length > DIRECTORY_LIMIT) throw new ApiError(400, "bad_scope", "一个频道最多 8 个目录");
+  return directories;
+}
+
+function readDirectories(stored: string | null | undefined) {
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored) as unknown;
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean).slice(0, DIRECTORY_LIMIT);
+  } catch {
+    return stored.split("\n").map((item) => item.trim()).filter(Boolean).slice(0, DIRECTORY_LIMIT);
+  }
+  return [];
+}
+
+function scopeFrom(row: { project?: string | null; directories?: string | null; branch?: string | null }): RoomScope {
+  return {
+    project: row.project ?? "",
+    directories: readDirectories(row.directories),
+    branch: row.branch ?? "",
+  };
+}
+
+function scopeLabel(scope: RoomScope) {
+  const parts = [
+    scope.project ? `项目 ${scope.project}` : "",
+    scope.directories.length ? `目录 ${scope.directories.join("、")}` : "",
+    scope.branch ? `分支 ${scope.branch}` : "",
+  ].filter(Boolean);
+  return parts.length ? `${parts.join("。")}。` : "未指定项目和目录。";
 }
 
 function clampLevel(value: unknown) {
@@ -207,7 +290,7 @@ export class Store {
         roomId = uuid();
         this.db
           .prepare(
-            "INSERT INTO rooms (id, org_id, name, topic, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO rooms (id, org_id, name, topic, general, created_by, created_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
           )
           .run(
             roomId,
@@ -331,34 +414,161 @@ export class Store {
   }
 
   listRooms(userId: string) {
-    return this.db
+    const rows = this.db
       .prepare(
-        `SELECT r.id, r.org_id, r.name, r.topic, r.created_at
+        `SELECT r.id, r.org_id, r.name, r.topic, r.current_topic, r.general, r.archived, r.direct,
+                r.project, r.directories, r.branch, r.created_at
          FROM rooms r
          JOIN room_members m ON m.room_id = r.id
          WHERE m.principal_type = 'user' AND m.principal_id = ?
          ORDER BY r.created_at`,
       )
-      .all(userId) as Array<{ id: string; org_id: string; name: string; topic: string; created_at: string }>;
+      .all(userId) as RoomRecord[];
+    return rows.map((row) => ({
+      id: row.id,
+      org_id: row.org_id,
+      name: row.name,
+      created_at: row.created_at,
+      ...this.channelView(row),
+    }));
   }
 
-  createRoom(user: Principal & { type: "user" }, name: string, topic: string) {
+  createRoom(
+    user: Principal & { type: "user" },
+    name: string,
+    topic: string,
+    scope: { project?: unknown; directories?: unknown; branch?: unknown; currentTopic?: unknown } = {},
+  ) {
     const clean = name.trim();
     if (!clean || clean.length > 40) throw new ApiError(400, "bad_name", "频道名需要 1 到 40 个字");
     const org = this.db
       .prepare("SELECT org_id FROM org_members WHERE user_id = ? ORDER BY role DESC LIMIT 1")
       .get(user.id) as { org_id: string } | undefined;
     if (!org) throw new ApiError(400, "no_org", "还没有工作室");
+    const topicText = trimTopic(topic);
+    const currentTopic = trimCurrentTopic(scope.currentTopic);
+    const project = cleanLine(scope.project, 80);
+    const branch = cleanLine(scope.branch, 200);
+    const directories = parseDirectories(scope.directories);
     const room = this.transaction(() => {
       const id = uuid();
       this.db
-        .prepare("INSERT INTO rooms (id, org_id, name, topic, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(id, org.org_id, clean, topic.trim().slice(0, 200), user.id, nowIso());
+        .prepare(
+          `INSERT INTO rooms
+             (id, org_id, name, topic, current_topic, project, directories, branch, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(id, org.org_id, clean, topicText, currentTopic, project, JSON.stringify(directories), branch, user.id, nowIso());
       this.addRoomMember(id, "user", user.id);
-      return { id, name: clean, topic: topic.trim().slice(0, 200), org_id: org.org_id };
+      return {
+        id,
+        name: clean,
+        org_id: org.org_id,
+        topic: topicText,
+        currentTopic,
+        general: false,
+        archived: false,
+        direct: false,
+        project,
+        directories,
+        branch,
+      };
     });
     this.flush();
     return room;
+  }
+
+  setScope(
+    user: Principal & { type: "user" },
+    roomId: string,
+    input: { project?: unknown; directories?: unknown; branch?: unknown },
+  ) {
+    this.assertMember(user, roomId);
+    const current = scopeFrom(this.roomRow(roomId));
+    const next: RoomScope = {
+      project: input.project === undefined ? current.project : cleanLine(input.project, 80),
+      directories: input.directories === undefined ? current.directories : parseDirectories(input.directories),
+      branch: input.branch === undefined ? current.branch : cleanLine(input.branch, 200),
+    };
+    const same =
+      next.project === current.project &&
+      next.branch === current.branch &&
+      next.directories.join("\n") === current.directories.join("\n");
+    if (same) return { roomId, ...next };
+    const result = this.transaction(() => {
+      this.db
+        .prepare("UPDATE rooms SET project = ?, directories = ?, branch = ? WHERE id = ?")
+        .run(next.project, JSON.stringify(next.directories), next.branch, roomId);
+      const summary = `工作范围已更新。${scopeLabel(next)}`;
+      this.insertMessage({
+        roomId,
+        authorType: "system",
+        authorId: "system",
+        taskId: null,
+        kind: "system",
+        body: summary,
+        addressed: [],
+      });
+      const holders = this.db
+        .prepare(
+          `SELECT c.agent_id, MIN(c.task_id) AS task_id
+           FROM task_claims c
+           JOIN tasks t ON t.id = c.task_id
+           WHERE t.room_id = ? AND c.state = 'active'
+           GROUP BY c.agent_id`,
+        )
+        .all(roomId) as Array<{ agent_id: string; task_id: string }>;
+      for (const holder of holders) this.pushInbox(holder.agent_id, roomId, "thread", holder.task_id, summary);
+      return { roomId, ...next };
+    });
+    this.flush();
+    return result;
+  }
+
+  setChannelText(
+    user: Principal & { type: "user" },
+    roomId: string,
+    input: { topic?: unknown; currentTopic?: unknown },
+  ) {
+    this.assertMember(user, roomId);
+    const room = this.roomRow(roomId);
+    const topic = input.topic === undefined ? room.topic : trimTopic(String(input.topic));
+    const currentTopic = input.currentTopic === undefined ? room.current_topic : trimCurrentTopic(input.currentTopic);
+    if (topic !== room.topic || currentTopic !== room.current_topic) {
+      this.db.prepare("UPDATE rooms SET topic = ?, current_topic = ? WHERE id = ?").run(topic, currentTopic, roomId);
+      this.dirtyRooms.add(roomId);
+      this.flush();
+    }
+    return this.roomView(user, roomId);
+  }
+
+  setArchived(user: Principal & { type: "user" }, roomId: string, archived: boolean) {
+    this.assertMember(user, roomId);
+    const room = this.roomRow(roomId);
+    if (room.direct === 1) throw new ApiError(400, "direct_room", "私聊不用归档");
+    if (room.general === 1 && archived) throw new ApiError(403, "general_room", "大厅不能归档");
+    const next = archived ? 1 : 0;
+    if (room.archived === next) return this.roomView(user, roomId);
+    const result = this.transaction(() => {
+      this.db.prepare("UPDATE rooms SET archived = ? WHERE id = ?").run(next, roomId);
+      this.insertMessage({
+        roomId,
+        authorType: "system",
+        authorId: "system",
+        taskId: null,
+        kind: "system",
+        body: archived ? "频道已归档。历史还在，取消归档后可以继续发言。" : "频道已取消归档。",
+        addressed: [],
+      });
+      return this.presentRoom(this.roomRow(roomId));
+    });
+    this.flush();
+    return result;
+  }
+
+  roomView(user: Principal & { type: "user" }, roomId: string) {
+    this.assertMember(user, roomId);
+    return this.presentRoom(this.roomRow(roomId));
   }
 
   invite(user: Principal & { type: "user" }, roomId: string, name: string) {
@@ -410,7 +620,15 @@ export class Store {
     return { code, expiresAt, roomId };
   }
 
-  enroll(code: string, handle: string, runtime: string, tags = "", level: unknown = MIN_LEVEL) {
+  enroll(
+    code: string,
+    handle: string,
+    runtime: string,
+    tags = "",
+    level: unknown = MIN_LEVEL,
+    machine = "",
+    cwd = "",
+  ) {
     const cleanHandle = handle.trim().toLowerCase();
     if (!/^[a-z][a-z0-9-]{1,31}$/.test(cleanHandle)) {
       throw new ApiError(400, "bad_handle", "句柄要用小写字母开头，只含小写字母、数字和短横线");
@@ -436,11 +654,14 @@ export class Store {
       const id = uuid();
       const token = `agt_${randomBytes(24).toString("base64url")}`;
       const cleanTags = parseTags(tags).join(",");
+      const cleanLevel = clampLevel(level);
+      const cleanMachine = cleanLine(machine, 80);
+      const cleanCwd = cleanLine(cwd, 200);
       this.db
         .prepare(
           `INSERT INTO agents
-           (id, org_id, owner_user_id, handle, runtime, token_hash, tags, level, paused, demo, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+           (id, org_id, owner_user_id, handle, runtime, token_hash, tags, level, machine, cwd, paused, demo, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
         )
         .run(
           id,
@@ -450,7 +671,9 @@ export class Store {
           cleanRuntime,
           hashToken(token),
           cleanTags,
-          clampLevel(level),
+          cleanLevel,
+          cleanMachine,
+          cleanCwd,
           nowIso(),
         );
       this.db.prepare("UPDATE join_codes SET used_by_agent_id = ? WHERE code = ?").run(id, code);
@@ -461,18 +684,33 @@ export class Store {
         authorId: "system",
         taskId: null,
         kind: "system",
-        body: `${cleanHandle} 接入了频道（${cleanRuntime}）`,
+        body: `${cleanHandle} 接入了频道（${cleanRuntime}）${cleanMachine ? `，机器 ${cleanMachine}` : ""}${cleanCwd ? `，目录 ${cleanCwd}` : ""}`,
         addressed: [],
       });
       this.refreshOpen(row.room_id);
       return {
         token,
-        agent: { id, handle: cleanHandle, runtime: cleanRuntime, orgId: row.org_id, level: clampLevel(level) },
+        agent: {
+          id,
+          handle: cleanHandle,
+          runtime: cleanRuntime,
+          orgId: row.org_id,
+          level: cleanLevel,
+          machine: cleanMachine,
+          cwd: cleanCwd,
+        },
         roomId: row.room_id,
       };
     });
     this.flush();
     return result;
+  }
+
+  setPlace(agent: Principal & { type: "agent" }, machine: unknown, cwd: unknown) {
+    const cleanMachine = cleanLine(machine, 80);
+    const cleanCwd = cleanLine(cwd, 200);
+    this.db.prepare("UPDATE agents SET machine = ?, cwd = ? WHERE id = ?").run(cleanMachine, cleanCwd, agent.id);
+    return { machine: cleanMachine, cwd: cleanCwd };
   }
 
   setPaused(user: Principal & { type: "user" }, agentId: string, paused: boolean) {
@@ -511,6 +749,7 @@ export class Store {
           body: `${user.name} 把 ${row.handle} 的等级从 ${row.level} 调到 ${next}`,
           addressed: [],
         });
+        this.refreshOpen(room.room_id);
       }
       return { id: agentId, level: next };
     });
@@ -526,7 +765,13 @@ export class Store {
     const messages = this.decorateMessages(roomId, 0, 300);
     const tasks = this.tasksInRoom(roomId);
     const locks = this.locksForOrg(room.org_id);
-    return { room: { id: room.id, orgId: room.org_id, name: room.name, topic: room.topic }, members, messages, tasks, locks };
+    return {
+      room: { id: room.id, orgId: room.org_id, name: room.name, ...this.channelView(room) },
+      members,
+      messages,
+      tasks,
+      locks,
+    };
   }
 
   readMessages(principal: Principal, roomId: string, afterSeq: number, limit = 100) {
@@ -548,6 +793,9 @@ export class Store {
     },
   ) {
     this.assertMember(principal, roomId);
+    if (this.roomRow(roomId).archived === 1) {
+      throw new ApiError(409, "archived", "这个频道已归档，先取消归档再发言");
+    }
     const kind = input.kind ?? "chat";
     const body = input.body?.trim() ?? "";
     if (!body) throw new ApiError(400, "empty", "内容是空的");
@@ -567,10 +815,14 @@ export class Store {
     if (kind === "instruction" && principal.type !== "user") {
       throw new ApiError(403, "human_only", "只有人能下指令");
     }
+    if (kind === "instruction" && this.roomRow(roomId).direct === 1) {
+      throw new ApiError(400, "direct_room", "私聊里不能下指令。指令请发到频道。");
+    }
     const addressed = this.resolveMentions(roomId, body);
     const acceptance = (input.acceptance?.trim() || body).slice(0, 2000);
     const tags = parseTags(input.tags).join(",");
     const parallel = Boolean(input.parallel);
+    const complex = Boolean(input.complex);
     const result = this.transaction(() => {
       let taskId = input.taskId ?? null;
       if (kind === "instruction") taskId = null;
@@ -586,6 +838,7 @@ export class Store {
         }
       }
       const createdTaskId = kind === "instruction" ? uuid() : null;
+      const title = createdTaskId ? titleFrom(body) : "";
       const message = this.insertMessage({
         roomId,
         authorType: principal.type,
@@ -601,15 +854,16 @@ export class Store {
           id: createdTaskId,
           roomId,
           messageId: message.id,
-          title: titleFrom(body),
+          title,
           body,
           createdBy: principal.id,
           acceptance,
           mode: parallel ? "parallel" : "single",
           maxLanes: parallel ? 3 : 1,
           tags,
-          complex: Boolean(input.complex),
+          complex,
         });
+        this.db.prepare("UPDATE rooms SET current_topic = ? WHERE id = ?").run(title, roomId);
         this.announce(createdTaskId);
         task = this.publicTask(createdTaskId);
       }
@@ -643,6 +897,7 @@ export class Store {
     const result = this.transaction(() => {
       const task = this.taskRow(taskId);
       this.assertMember(agent, task.room_id);
+      this.assertRoomOpen(task.room_id);
       const implementer = this.holder(taskId, "implementer");
       if ((role === "reviewer" || role === "tester") && implementer === agent.id) {
         throw new ApiError(403, "own_work", "实现者不能评审或测试自己的任务");
@@ -711,10 +966,11 @@ export class Store {
     const result = this.transaction(() => {
       const task = this.taskRow(taskId);
       this.assertMember(agent, task.room_id);
+      this.assertRoomOpen(task.room_id);
       if (task.status !== "bidding") throw new ApiError(409, "bad_state", "现在不在投标");
       if (!task.bid_until || task.bid_until < nowIso()) throw new ApiError(409, "bid_closed", "投标已经截止");
-      if (agent.paused || !this.isIdle(agent.id) || !tagsMatch(parseTags(task.tags), this.agentTags(agent.id))) {
-        throw new ApiError(403, "not_eligible", "只有空闲且标签匹配的 agent 能投标");
+      if (!this.eligibleAgents(task).some((item) => item.id === agent.id)) {
+        throw new ApiError(403, "not_eligible", "只有空闲、未暂停且标签匹配的 agent 能投标");
       }
       if (this.levelBlocked(task, agent.id)) {
         throw new ApiError(403, "level_low", "复杂任务先交给等级 3 以上的 agent");
@@ -756,6 +1012,7 @@ export class Store {
     const result = this.transaction(() => {
       const task = this.taskRow(taskId);
       this.assertMember(agent, task.room_id);
+      this.assertRoomOpen(task.room_id);
       if (!this.activeClaim(taskId, "implementer", agent.id)) {
         throw new ApiError(403, "not_implementer", "只有实现者能交付");
       }
@@ -822,10 +1079,12 @@ export class Store {
     const result = this.transaction(() => {
       const task = this.taskRow(taskId);
       this.assertMember(agent, task.room_id);
+      this.assertRoomOpen(task.room_id);
       if (task.status !== "in_review") throw new ApiError(409, "bad_state", "现在不在评审");
       if (!this.activeClaim(taskId, "reviewer", agent.id)) {
         throw new ApiError(403, "not_reviewer", "先认领评审槽位");
       }
+      const implementer = this.holder(taskId, "implementer");
       const kind = verdict === "question" ? "question" : "review";
       const message = this.insertMessage({
         roomId: task.room_id,
@@ -840,10 +1099,17 @@ export class Store {
         this.finishClaim(taskId, "reviewer", agent.id, "completed");
         this.setStatus(taskId, "in_test");
         this.wakeChecks(task.room_id, taskId, "test_needed", `请测试「${task.title}」`);
+        if ((task.review_returns ?? 0) === 0) {
+          this.nudgeLevel(implementer, 1, task.room_id, taskId, "交付的任务一次评审通过");
+        }
       } else if (verdict === "request_changes") {
         this.finishClaim(taskId, "reviewer", agent.id, "changes");
         this.clearDeliverable(taskId);
         this.setStatus(taskId, "changes");
+        this.db
+          .prepare("UPDATE tasks SET review_returns = COALESCE(review_returns, 0) + 1, updated_at = ? WHERE id = ?")
+          .run(nowIso(), taskId);
+        this.nudgeLevel(implementer, -1, task.room_id, taskId, "交付被打回");
       }
       this.fanout({
         roomId: task.room_id,
@@ -866,6 +1132,7 @@ export class Store {
     const result = this.transaction(() => {
       const task = this.taskRow(taskId);
       this.assertMember(agent, task.room_id);
+      this.assertRoomOpen(task.room_id);
       if (task.status !== "in_test") throw new ApiError(409, "bad_state", "现在不在测试");
       if (!this.activeClaim(taskId, "tester", agent.id)) throw new ApiError(403, "not_tester", "先认领测试槽位");
       const message = this.insertMessage({
@@ -1053,20 +1320,135 @@ export class Store {
   whoami(agent: Principal & { type: "agent" }) {
     const rooms = this.db
       .prepare(
-        `SELECT r.id, r.name, r.topic FROM rooms r
+        `SELECT r.id, r.name, r.topic, r.current_topic, r.general, r.archived, r.direct, r.project, r.directories, r.branch
+         FROM rooms r
          JOIN room_members m ON m.room_id = r.id
          WHERE m.principal_type = 'agent' AND m.principal_id = ?`,
       )
-      .all(agent.id);
+      .all(agent.id) as Array<{
+      id: string;
+      name: string;
+      topic: string;
+      current_topic: string;
+      general: number;
+      archived: number;
+      direct: number;
+      project: string;
+      directories: string;
+      branch: string;
+    }>;
+    const place = this.db.prepare("SELECT machine, cwd FROM agents WHERE id = ?").get(agent.id) as
+      | { machine: string; cwd: string }
+      | undefined;
     return {
       id: agent.id,
       handle: agent.handle,
       orgId: agent.orgId,
       paused: agent.paused,
       level: this.agentLevel(agent.id),
-      rooms,
+      tags: this.agentTags(agent.id).join(","),
+      machine: place?.machine ?? "",
+      cwd: place?.cwd ?? "",
+      rooms: rooms.map((room) => ({ id: room.id, name: room.name, ...this.channelView(room) })),
       visibility:
-        "房间历史对成员可读。wait 只返回点名、投标、中标、评审、测试和你占着的任务线程。不推送无关闲聊，也不塞进整段历史。",
+        "频道历史只有该频道的成员能读。私聊和私有小群只有参与者能读。wait 会推送点名、私聊、投标、中标、评审、测试和你占着的任务线程。不推送无关闲聊，也不塞进整段历史。",
+    };
+  }
+
+  listPeers(agent: Principal & { type: "agent" }) {
+    const peers = this.db
+      .prepare(
+        `SELECT DISTINCT a.id, a.handle, a.level, a.tags, a.machine, a.cwd, a.paused, a.last_seen_at
+         FROM agents a
+         JOIN room_members theirs ON theirs.principal_type = 'agent' AND theirs.principal_id = a.id
+         JOIN room_members mine ON mine.room_id = theirs.room_id AND mine.principal_type = 'agent' AND mine.principal_id = ?
+         JOIN rooms r ON r.id = mine.room_id AND r.direct = 0 AND r.archived = 0
+         WHERE a.id != ?
+         ORDER BY a.handle`,
+      )
+      .all(agent.id, agent.id) as Array<{
+      id: string;
+      handle: string;
+      level: number;
+      tags: string;
+      machine: string;
+      cwd: string;
+      paused: number;
+      last_seen_at: string | null;
+    }>;
+    const sharedRooms = this.db.prepare(
+      `SELECT DISTINCT r.id, r.name
+       FROM rooms r
+       JOIN room_members mine ON mine.room_id = r.id AND mine.principal_type = 'agent' AND mine.principal_id = ?
+       JOIN room_members theirs ON theirs.room_id = r.id AND theirs.principal_type = 'agent' AND theirs.principal_id = ?
+       WHERE r.direct = 0 AND r.archived = 0
+       ORDER BY r.created_at`,
+    );
+    const working = this.db.prepare(
+      `SELECT t.id AS task_id, t.title, t.status, t.room_id, r.name AS room_name, c.role
+       FROM task_claims c
+       JOIN tasks t ON t.id = c.task_id
+       JOIN rooms r ON r.id = t.room_id
+       WHERE c.agent_id = ? AND c.state = 'active' AND t.status NOT IN ('done', 'canceled', 'failed')
+       ORDER BY t.updated_at DESC`,
+    );
+    const fresh = Date.now() - 20_000;
+    return peers.map((peer) => ({
+      id: peer.id,
+      handle: peer.handle,
+      level: peer.level,
+      tags: peer.tags ?? "",
+      machine: peer.machine ?? "",
+      cwd: peer.cwd ?? "",
+      paused: peer.paused === 1,
+      online: peer.paused !== 1 && !!peer.last_seen_at && Date.parse(peer.last_seen_at) > fresh,
+      rooms: sharedRooms.all(agent.id, peer.id) as Array<{ id: string; name: string }>,
+      working: (working.all(peer.id) as Array<{
+        task_id: string;
+        title: string;
+        status: string;
+        room_id: string;
+        room_name: string;
+        role: string;
+      }>).map((task) => ({
+        taskId: task.task_id,
+        title: task.title,
+        status: task.status,
+        role: task.role,
+        roomId: task.room_id,
+        roomName: task.room_name,
+      })),
+    }));
+  }
+
+  ask(agent: Principal & { type: "agent" }, input: { handle?: unknown; handles?: unknown; body: unknown }) {
+    const raw = [
+      ...(Array.isArray(input.handles) ? input.handles : []),
+      ...(input.handle == null || input.handle === "" ? [] : [input.handle]),
+    ];
+    const handles = [
+      ...new Set(raw.map((item) => String(item).trim().toLowerCase().replace(/^@/, "")).filter(Boolean)),
+    ];
+    if (handles.length < 1 || handles.length > 6) {
+      throw new ApiError(400, "bad_handles", "私聊要指定 1 到 6 个句柄");
+    }
+    if (handles.includes(agent.handle)) throw new ApiError(400, "bad_handles", "不用问自己");
+    const body = String(input.body ?? "").trim();
+    if (!body) throw new ApiError(400, "empty", "内容是空的");
+    if (body.length > 8000) throw new ApiError(400, "too_long", "一条消息最多 8000 字");
+    const peers = this.listPeers(agent);
+    const targets = handles.map((handle) => {
+      const peer = peers.find((item) => item.handle === handle);
+      if (!peer) throw new ApiError(404, "no_peer", `你和 ${handle} 不在同一个频道，不能私聊`);
+      return peer;
+    });
+    const room = this.openConversation(agent, targets.map((peer) => peer.id));
+    const posted = this.postMessage(agent, room.id, { kind: "question", body });
+    return {
+      roomId: room.id,
+      direct: true,
+      handles: [agent.handle, ...handles].sort(),
+      message: posted.message,
     };
   }
 
@@ -1143,6 +1525,69 @@ export class Store {
       .run(roomId, type, id, nowIso());
   }
 
+  private openConversation(agent: Principal & { type: "agent" }, peerIds: string[]) {
+    const ids = [...new Set([agent.id, ...peerIds])].sort();
+    const existing = this.findDirectRoom(agent.orgId, ids);
+    if (existing) return existing;
+    const handles = ids.map((id) => this.handleOf(id)).sort();
+    const name = handles.join("、").slice(0, 40);
+    const result = this.transaction(() => {
+      const id = uuid();
+      this.db
+        .prepare(
+          `INSERT INTO rooms (id, org_id, name, topic, direct, created_by, created_at)
+           VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        )
+        .run(id, agent.orgId, name, "只有参与者能看到的对话。", agent.ownerUserId, nowIso());
+      const owners = new Set<string>();
+      for (const memberId of ids) {
+        this.addRoomMember(id, "agent", memberId);
+        const owner = this.db.prepare("SELECT owner_user_id FROM agents WHERE id = ?").get(memberId) as {
+          owner_user_id: string;
+        };
+        owners.add(owner.owner_user_id);
+      }
+      for (const ownerId of owners) this.addRoomMember(id, "user", ownerId);
+      this.insertMessage({
+        roomId: id,
+        authorType: "system",
+        authorId: "system",
+        taskId: null,
+        kind: "system",
+        body: `这段对话只有 ${handles.join("、")} 能看到。频道里的其他人看不到。`,
+        addressed: [],
+      });
+      return this.roomRow(id);
+    });
+    this.flush();
+    return result;
+  }
+
+  private findDirectRoom(orgId: string, agentIds: string[]) {
+    const wanted = agentIds.slice().sort().join("\0");
+    const rooms = this.db.prepare("SELECT id FROM rooms WHERE org_id = ? AND direct = 1").all(orgId) as Array<{
+      id: string;
+    }>;
+    const membersOf = this.db.prepare(
+      `SELECT principal_id FROM room_members WHERE room_id = ? AND principal_type = 'agent'`,
+    );
+    for (const room of rooms) {
+      const members = membersOf.all(room.id) as Array<{ principal_id: string }>;
+      const key = members
+        .map((item) => item.principal_id)
+        .sort()
+        .join("\0");
+      if (key === wanted) return this.roomRow(room.id);
+    }
+    return null;
+  }
+
+  private assertRoomOpen(roomId: string) {
+    if (this.roomRow(roomId).archived === 1) {
+      throw new ApiError(409, "archived", "这个频道已归档，先取消归档再继续");
+    }
+  }
+
   private assertMember(principal: Principal, roomId: string) {
     const row = this.db
       .prepare(
@@ -1153,11 +1598,39 @@ export class Store {
   }
 
   private roomRow(roomId: string) {
-    const row = this.db.prepare("SELECT * FROM rooms WHERE id = ?").get(roomId) as
-      | { id: string; org_id: string; name: string; topic: string }
-      | undefined;
+    const row = this.db.prepare("SELECT * FROM rooms WHERE id = ?").get(roomId) as RoomRecord | undefined;
     if (!row) throw new ApiError(404, "no_room", "没有这个频道");
     return row;
+  }
+
+  private channelView(row: {
+    topic: string;
+    current_topic?: string | null;
+    general?: number | null;
+    archived?: number | null;
+    direct?: number | null;
+    project?: string | null;
+    directories?: string | null;
+    branch?: string | null;
+  }): RoomChannel {
+    return {
+      topic: row.topic,
+      currentTopic: row.current_topic ?? "",
+      general: row.general === 1,
+      archived: row.archived === 1,
+      direct: row.direct === 1,
+      ...scopeFrom(row),
+    };
+  }
+
+  private presentRoom(row: RoomRecord) {
+    return {
+      id: row.id,
+      org_id: row.org_id,
+      name: row.name,
+      created_at: row.created_at,
+      ...this.channelView(row),
+    };
   }
 
   private taskRow(taskId: string) {
@@ -1168,6 +1641,31 @@ export class Store {
 
   private setStatus(taskId: string, status: string) {
     this.db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(status, nowIso(), taskId);
+    if (status !== "done" && status !== "canceled" && status !== "failed") return;
+    const task = this.db.prepare("SELECT room_id, parent_id FROM tasks WHERE id = ?").get(taskId) as {
+      room_id: string;
+      parent_id: string | null;
+    };
+    if (task.parent_id) return;
+    this.syncCurrentTopic(task.room_id);
+  }
+
+  private syncCurrentTopic(roomId: string) {
+    const active = this.db
+      .prepare(
+        `SELECT title FROM tasks
+         WHERE room_id = ? AND parent_id IS NULL AND status NOT IN ('done', 'canceled', 'failed')
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT 1`,
+      )
+      .get(roomId) as { title: string } | undefined;
+    const next = active?.title ?? "";
+    const current = this.db.prepare("SELECT current_topic FROM rooms WHERE id = ?").get(roomId) as
+      | { current_topic: string }
+      | undefined;
+    if (!current || current.current_topic === next) return;
+    this.db.prepare("UPDATE rooms SET current_topic = ? WHERE id = ?").run(next, roomId);
+    this.dirtyRooms.add(roomId);
   }
 
   private activeClaim(taskId: string, role: Role, agentId: string) {
@@ -1228,8 +1726,8 @@ export class Store {
       .prepare(
         `INSERT INTO tasks (
            id, room_id, message_id, title, body, status, created_by, created_at, updated_at,
-           acceptance, mode, max_lanes, tags, complex, direction
-         ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+           acceptance, mode, max_lanes, tags, direction, complex
+         ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, '', ?)`,
       )
       .run(
         input.id,
@@ -1289,7 +1787,7 @@ export class Store {
     return row.n;
   }
 
-  private eligibleAgents(task: TaskRow) {
+  private matchedIdle(task: TaskRow) {
     const wanted = parseTags(task.tags);
     const agents = this.db
       .prepare(
@@ -1298,7 +1796,11 @@ export class Store {
          WHERE m.room_id = ? AND a.paused = 0`,
       )
       .all(task.room_id) as Array<{ id: string; tags: string; level: number }>;
-    const matched = agents.filter((agent) => tagsMatch(wanted, parseTags(agent.tags)) && this.isIdle(agent.id));
+    return agents.filter((agent) => tagsMatch(wanted, parseTags(agent.tags)) && this.isIdle(agent.id));
+  }
+
+  private eligibleAgents(task: TaskRow) {
+    const matched = this.matchedIdle(task);
     if (!task.complex) return matched;
     const strong = matched.filter((agent) => agent.level >= STRONG_LEVEL);
     return strong.length > 0 ? strong : matched;
@@ -1306,14 +1808,20 @@ export class Store {
 
   private bidsFor(taskId: string) {
     return this.db
-      .prepare("SELECT id, agent_id, approach, created_at FROM bids WHERE task_id = ? ORDER BY created_at, agent_id")
-      .all(taskId) as Array<{ id: string; agent_id: string; approach: string; created_at: string }>;
+      .prepare("SELECT id, agent_id, approach, created_at, rowid FROM bids WHERE task_id = ? ORDER BY created_at, rowid")
+      .all(taskId) as Array<{ id: string; agent_id: string; approach: string; created_at: string; rowid: number }>;
   }
 
-  private cardSummary(task: { title: string; body: string; acceptance?: string | null; lane?: number | null }, prefix: string) {
+  private cardSummary(
+    task: { room_id?: string; title: string; body: string; acceptance?: string | null; lane?: number | null; complex?: number },
+    prefix: string,
+  ) {
     const acceptance = (task.acceptance || task.body || "").replace(/\s+/g, " ").slice(0, 80);
     const lane = task.lane ? `方案${task.lane}。` : "";
-    return `${prefix}。${lane}目标：${task.title}。验收：${acceptance}`;
+    const complex = task.complex ? "复杂。" : "";
+    const scope = task.room_id ? scopeFrom(this.roomRow(task.room_id)) : { project: "", directories: [], branch: "" };
+    const where = scope.project || scope.directories.length || scope.branch ? scopeLabel(scope) : "";
+    return `${prefix}。${where}${complex}${lane}目标：${task.title}。验收：${acceptance}`;
   }
 
   private pushInbox(agentId: string, roomId: string, eventType: InboxKind, refId: string, summary: string) {
@@ -1335,13 +1843,16 @@ export class Store {
       this.db
         .prepare("UPDATE tasks SET status = 'bidding', bid_until = ?, updated_at = ? WHERE id = ?")
         .run(until, nowIso(), taskId);
+      const narrowed = Boolean(task.complex) && this.matchedIdle(task).some((agent) => agent.level >= STRONG_LEVEL);
+      const scope = !task.complex ? "" : narrowed ? "只包括等级 3 及以上。" : "没有等级 3 及以上的人，所以包括全体匹配者。";
+      const scoreRule = task.complex ? "标签、负载和等级" : "标签和负载";
       this.insertMessage({
         roomId: task.room_id,
         authorType: "system",
         authorId: "system",
         taskId,
         kind: "system",
-        body: `有 ${eligible.length} 位空闲 agent 能做${task.complex ? "（复杂任务，优先等级 3 以上）" : ""}。${Math.round(BID_MS / 1000)} 秒内用 bid 写两到三句做法，服务器按标签${task.complex ? "、等级" : ""}和负载授标。`,
+        body: `有 ${eligible.length} 位空闲 agent 能做。${scope}${Math.round(BID_MS / 1000)} 秒内用 bid 写两到三句做法，服务器按${scoreRule}授标。`,
         addressed: [],
       });
       for (const agent of eligible) {
@@ -1370,7 +1881,14 @@ export class Store {
       return;
     }
     const wanted = parseTags(task.tags);
-    const ranked = bids
+    const eligible = new Set(this.eligibleAgents(task).map((agent) => agent.id));
+    const openBids = bids.filter((bid) => eligible.has(bid.agent_id));
+    if (openBids.length === 0) {
+      this.db.prepare("UPDATE tasks SET status = 'open', bid_until = NULL, updated_at = ? WHERE id = ?").run(nowIso(), taskId);
+      this.announce(taskId);
+      return;
+    }
+    const ranked = openBids
       .map((bid) => {
         const have = this.agentTags(bid.agent_id);
         const overlap = wanted.filter((tag) => have.includes(tag)).length;
@@ -1379,7 +1897,7 @@ export class Store {
         const score = overlap * 10 + idle * 5 - this.loadOf(bid.agent_id) * 3 + levelBonus;
         return { ...bid, score };
       })
-      .sort((a, b) => b.score - a.score || a.created_at.localeCompare(b.created_at) || a.agent_id.localeCompare(b.agent_id));
+      .sort((a, b) => b.score - a.score || a.created_at.localeCompare(b.created_at) || a.rowid - b.rowid);
     this.db.prepare("UPDATE tasks SET bid_until = NULL, updated_at = ? WHERE id = ?").run(nowIso(), taskId);
     if (task.mode === "parallel" && !task.parent_id) {
       const lanes = Math.min(3, Math.max(1, task.max_lanes || 1), ranked.length);
@@ -1406,7 +1924,7 @@ export class Store {
             stamp,
             task.acceptance,
             task.tags,
-            task.complex,
+            task.complex ? 1 : 0,
             task.id,
             lane,
           );
@@ -1431,7 +1949,9 @@ export class Store {
         body: `授标：${names}。各自隔离改动，做完只交引用和说明。`,
         addressed: [],
       });
-      for (const loser of ranked.slice(lanes)) {
+      const winnerIds = new Set(winners.map((bid) => bid.agent_id));
+      for (const loser of bids) {
+        if (winnerIds.has(loser.agent_id)) continue;
         this.pushInbox(loser.agent_id, task.room_id, "bid_lost", task.id, `这次没中标：${task.title}`);
       }
       return;
@@ -1449,9 +1969,38 @@ export class Store {
       addressed: [],
     });
     this.pushInbox(winner.agent_id, task.room_id, "awarded", task.id, this.cardSummary(task, "你中标实现"));
-    for (const loser of ranked.slice(1)) {
+    for (const loser of bids) {
+      if (loser.agent_id === winner.agent_id) continue;
       this.pushInbox(loser.agent_id, task.room_id, "bid_lost", task.id, `这次没中标：${task.title}`);
     }
+  }
+
+  private nudgeLevel(agentId: string | null, delta: number, roomId: string, taskId: string, reason: string) {
+    if (!agentId || delta === 0) return;
+    const row = this.db.prepare("SELECT handle, level FROM agents WHERE id = ?").get(agentId) as
+      | { handle: string; level: number }
+      | undefined;
+    if (!row) return;
+    const current = row.level >= 1 && row.level <= 5 ? row.level : 1;
+    const next = Math.min(5, Math.max(1, current + delta));
+    if (next === current) return;
+    this.db.prepare("UPDATE agents SET level = ? WHERE id = ?").run(next, agentId);
+    const message = this.insertMessage({
+      roomId,
+      authorType: "system",
+      authorId: "system",
+      taskId,
+      kind: "system",
+      body: `${row.handle} 的等级从 ${current} 调到 ${next}：${reason}。`,
+      addressed: [],
+    });
+    this.fanout({
+      roomId,
+      author: { type: "system", id: "system" },
+      message,
+      addressed: [],
+      taskId,
+    });
   }
 
   private clearDeliverable(taskId: string) {
@@ -1547,9 +2096,8 @@ export class Store {
     if (children.some((child) => !terminal.has(child.status))) return;
     const done = children.filter((child) => child.status === "done");
     if (done.length === 1) {
-      this.db
-        .prepare("UPDATE tasks SET status = 'done', winner_task_id = ?, updated_at = ? WHERE id = ?")
-        .run(done[0].id, nowIso(), parentId);
+      this.setStatus(parentId, "done");
+      this.db.prepare("UPDATE tasks SET winner_task_id = ? WHERE id = ?").run(done[0].id, parentId);
       this.insertMessage({
         roomId: parent.room_id,
         authorType: "system",
@@ -1649,6 +2197,12 @@ export class Store {
         .run(agentId, input.roomId, eventType, input.message.task_id ?? input.message.id, summary.slice(0, 240), nowIso());
       this.queue("agent", agentId);
     };
+    if (this.roomRow(input.roomId).direct === 1) {
+      const members = this.db
+        .prepare(`SELECT principal_id FROM room_members WHERE room_id = ? AND principal_type = 'agent'`)
+        .all(input.roomId) as Array<{ principal_id: string }>;
+      for (const member of members) push(member.principal_id, "mention", `私聊：${input.message.body}`);
+    }
     for (const item of input.addressed) {
       push(item.id, "mention", input.message.body);
     }
@@ -1795,6 +2349,7 @@ export class Store {
       deliverableSummary: task.deliverable_summary ?? null,
       winnerTaskId: task.winner_task_id ?? null,
       bidUntil: task.bid_until ?? null,
+      scope: scopeFrom(this.roomRow(task.room_id)),
       createdBy: task.created_by,
       createdAt: task.created_at,
       updatedAt: task.updated_at,
@@ -1819,7 +2374,7 @@ export class Store {
       .all(roomId) as Array<{ id: string; name: string }>;
     const agents = this.db
       .prepare(
-        `SELECT a.id, a.handle, a.runtime, a.paused, a.demo, a.tags, a.level, a.last_seen_at, u.name AS owner
+        `SELECT a.id, a.handle, a.runtime, a.paused, a.demo, a.tags, a.level, a.machine, a.cwd, a.last_seen_at, u.name AS owner
          FROM room_members m
          JOIN agents a ON a.id = m.principal_id
          JOIN users u ON u.id = a.owner_user_id
@@ -1834,6 +2389,8 @@ export class Store {
       demo: number;
       tags: string;
       level: number;
+      machine: string;
+      cwd: string;
       last_seen_at: string | null;
       owner: string;
     }>;
@@ -1852,6 +2409,8 @@ export class Store {
         demo: agent.demo === 1,
         tags: agent.tags ?? "",
         level: agent.level,
+        machine: agent.machine ?? "",
+        cwd: agent.cwd ?? "",
         ownerName: agent.owner,
         online: agent.paused !== 1 && !!agent.last_seen_at && Date.parse(agent.last_seen_at) > fresh,
       })),

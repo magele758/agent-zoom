@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS rooms (
   org_id TEXT NOT NULL REFERENCES orgs(id),
   name TEXT NOT NULL,
   topic TEXT NOT NULL DEFAULT '',
+  current_topic TEXT NOT NULL DEFAULT '',
+  general INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0,
+  direct INTEGER NOT NULL DEFAULT 0,
   created_by TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL
 );
@@ -170,6 +174,18 @@ function migrate(db: DatabaseSync) {
   add("tasks", "deliverable_ref", "deliverable_ref TEXT");
   add("tasks", "deliverable_summary", "deliverable_summary TEXT");
   add("tasks", "winner_task_id", "winner_task_id TEXT");
+  add("agents", "level", "level INTEGER NOT NULL DEFAULT 1");
+  add("tasks", "complex", "complex INTEGER NOT NULL DEFAULT 0");
+  add("tasks", "review_returns", "review_returns INTEGER NOT NULL DEFAULT 0");
+  add("rooms", "project", "project TEXT NOT NULL DEFAULT ''");
+  add("rooms", "directories", "directories TEXT NOT NULL DEFAULT '[]'");
+  add("rooms", "branch", "branch TEXT NOT NULL DEFAULT ''");
+  add("rooms", "current_topic", "current_topic TEXT NOT NULL DEFAULT ''");
+  add("rooms", "general", "general INTEGER NOT NULL DEFAULT 0");
+  add("rooms", "archived", "archived INTEGER NOT NULL DEFAULT 0");
+  add("rooms", "direct", "direct INTEGER NOT NULL DEFAULT 0");
+  add("agents", "machine", "machine TEXT NOT NULL DEFAULT ''");
+  add("agents", "cwd", "cwd TEXT NOT NULL DEFAULT ''");
   db.exec(`
     CREATE TABLE IF NOT EXISTS bids (
       id TEXT PRIMARY KEY,
@@ -180,4 +196,25 @@ function migrate(db: DatabaseSync) {
       UNIQUE (task_id, agent_id)
     );
   `);
+  markGeneralRooms(db);
+}
+
+function markGeneralRooms(db: DatabaseSync) {
+  const orgs = db.prepare("SELECT id FROM orgs").all() as Array<{ id: string }>;
+  const roomsInOrg = db.prepare("SELECT id, created_at FROM rooms WHERE org_id = ?");
+  const generalRoom = db.prepare("SELECT id FROM rooms WHERE org_id = ? AND general = 1 LIMIT 1");
+  const markGeneral = db.prepare("UPDATE rooms SET general = 1 WHERE id = ?");
+  for (const org of orgs) {
+    if (generalRoom.get(org.id)) continue;
+    const rooms = roomsInOrg.all(org.id) as Array<{ id: string; created_at: string }>;
+    if (rooms.length === 0) continue;
+    rooms.sort((left, right) => {
+      if (left.created_at < right.created_at) return -1;
+      if (left.created_at > right.created_at) return 1;
+      if (left.id < right.id) return -1;
+      if (left.id > right.id) return 1;
+      return 0;
+    });
+    markGeneral.run(rooms[0].id);
+  }
 }
