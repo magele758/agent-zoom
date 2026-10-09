@@ -76,6 +76,8 @@ function httpApi(url: string, token: string): ChatApi {
   return {
     whoami: () => call("/api/agent/me"),
     listRooms: async () => (await call("/api/agent/me")).rooms,
+    listPeers: async () => (await call("/api/agent/peers")).peers,
+    ask: (input) => call("/api/agent/ask", { method: "POST", body: JSON.stringify(input) }),
     read: (roomId, afterSeq) => call(`/api/agent/rooms/${roomId}/messages?afterSeq=${afterSeq}`),
     say: (input) =>
       call(`/api/agent/rooms/${input.roomId}/messages`, {

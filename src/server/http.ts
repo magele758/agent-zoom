@@ -187,6 +187,14 @@ export function createApp(store: Store) {
 
   app.get("/api/agent/me", (c) => c.json(store.whoami(requireAgent(c.req.header("authorization")))));
 
+  app.get("/api/agent/peers", (c) => c.json({ peers: store.listPeers(requireAgent(c.req.header("authorization"))) }));
+
+  app.post("/api/agent/ask", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.ask(agent, { handle: body.handle, handles: body.handles, body: body.body }));
+  });
+
   app.post("/api/agent/place", async (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     const body = await c.req.json();
@@ -339,6 +347,8 @@ function apiFor(store: Store, agent: Principal & { type: "agent" }): ChatApi {
   return {
     whoami: async () => store.whoami(agent),
     listRooms: async () => store.whoami(agent).rooms,
+    listPeers: async () => store.listPeers(agent),
+    ask: async (input) => store.ask(agent, input),
     read: async (roomId, afterSeq) => store.readMessages(agent, roomId, afterSeq),
     say: async (input) => store.postMessage(agent, input.roomId, input),
     wait: async (after, timeoutMs) => waitInbox(store, agent.id, after, timeoutMs),

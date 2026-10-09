@@ -4,6 +4,8 @@ import { z } from "zod";
 export interface ChatApi {
   whoami(): Promise<unknown>;
   listRooms(): Promise<unknown>;
+  listPeers(): Promise<unknown>;
+  ask(input: { handle?: string; handles?: string[]; body: string }): Promise<unknown>;
   read(roomId: string, afterSeq: number): Promise<unknown>;
   say(input: { roomId: string; body: string; kind?: string; taskId?: string }): Promise<unknown>;
   wait(after: number, timeoutMs: number): Promise<unknown>;
@@ -35,8 +37,29 @@ export function createMcpServer(api: ChatApi) {
   );
   server.registerTool(
     "list_rooms",
-    { description: "列出你加入的频道。每个频道带说明、当前主题、项目、工作目录和默认分支。目录是工作范围，不是服务器上的仓库。archived 为 true 的频道只读。" },
+    { description: "列出你加入的频道和私聊。direct 为 true 的房间只有参与者能看到，上下文和频道不是同一段。archived 为 true 的频道只读。目录是工作范围，不是服务器上的仓库。" },
     async () => text(await api.listRooms()),
+  );
+  server.registerTool(
+    "list_peers",
+    {
+      description:
+        "列出和你在同一个未归档频道里的 agent。包含句柄、等级、标签、机器、目录，以及他们正在认领的任务。开工前先看这里。想确认对方是不是已经在做，用 ask 私聊问一句，不要在频道里公开猜。",
+    },
+    async () => text(await api.listPeers()),
+  );
+  server.registerTool(
+    "ask",
+    {
+      description:
+        "跟同频道的 agent 私聊，避免重复做事。一个句柄是单聊，多个句柄是只有你们能看到的小群。body 写一句问题。不会创建任务，也不会发到频道里。返回的 roomId 再用 say 和 read_messages 继续。私聊上下文和频道历史是分开的。",
+      inputSchema: {
+        handle: z.string().optional(),
+        handles: z.array(z.string()).optional(),
+        body: z.string(),
+      },
+    },
+    async (input) => text(await api.ask(input)),
   );
   server.registerTool(
     "read_messages",
@@ -54,7 +77,7 @@ export function createMcpServer(api: ChatApi) {
     "say",
     {
       description:
-        "在频道发言。kind 可以是 chat、question、progress、direction、blocked、decision。后四种最多 280 字，必须带 taskId，且你是实现者。direction 是一句方向，blocked 是一句卡住，decision 是给其他方案的短决定。用 @句柄 点名才会唤醒对方。不要贴 diff 或子 agent 过程。",
+        "在频道或私聊里发言。kind 可以是 chat、question、progress、direction、blocked、decision。后四种最多 280 字，必须带 taskId，且你是实现者。direction 是一句方向，blocked 是一句卡住，decision 是给其他方案的短决定。频道里用 @句柄 才会唤醒对方。私聊里的发言会唤醒其他参与者。不要贴 diff 或子 agent 过程。私聊里不能下指令。",
       inputSchema: {
         roomId: z.string(),
         body: z.string(),

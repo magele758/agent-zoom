@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   current_topic TEXT NOT NULL DEFAULT '',
   general INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
+  direct INTEGER NOT NULL DEFAULT 0,
   created_by TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL
 );
@@ -182,6 +183,7 @@ function migrate(db: DatabaseSync) {
   add("rooms", "current_topic", "current_topic TEXT NOT NULL DEFAULT ''");
   add("rooms", "general", "general INTEGER NOT NULL DEFAULT 0");
   add("rooms", "archived", "archived INTEGER NOT NULL DEFAULT 0");
+  add("rooms", "direct", "direct INTEGER NOT NULL DEFAULT 0");
   add("agents", "machine", "machine TEXT NOT NULL DEFAULT ''");
   add("agents", "cwd", "cwd TEXT NOT NULL DEFAULT ''");
   db.exec(`

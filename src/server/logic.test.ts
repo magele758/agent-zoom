@@ -805,3 +805,59 @@ test("patch updates channel text and archive, and an old database marks its earl
   assert.equal(migrated.find((item) => item.id === "later")?.general, 0);
   opened.close();
 });
+
+test("peers see different context in a channel and a direct conversation", () => {
+  const { store, user, roomId } = studio();
+  const coder = enroll(store, user, roomId, "coder", "ui");
+  const reader = enroll(store, user, roomId, "reader", "docs");
+  const scribe = enroll(store, user, roomId, "scribe", "test");
+  const elsewhere = store.createRoom(user, "别处", "");
+  const stranger = enroll(store, user, elsewhere.id, "stranger", "ui");
+  store.postMessage(user, roomId, { kind: "chat", body: "频道里的公开话" });
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "改按钮", tags: "ui" });
+  store.claim(coder, posted.task!.id, "implementer");
+
+  const peers = store.listPeers(reader);
+  const found = peers.find((peer) => peer.handle === "coder");
+  assert.ok(found);
+  assert.equal(found.working[0]?.title, "改按钮");
+  assert.equal(found.working[0]?.role, "implementer");
+  assert.equal(peers.some((peer) => peer.handle === "stranger"), false);
+  assert.equal(peers.some((peer) => peer.handle === "reader"), false);
+
+  const asked = store.ask(reader, { handle: "@coder", body: "你是不是已经在改按钮？" });
+  assert.equal(asked.direct, true);
+  assert.deepEqual(asked.handles, ["coder", "reader"]);
+  assert.equal(store.readMessages(coder, asked.roomId, 0).some((message) => message.body === "你是不是已经在改按钮？"), true);
+  assert.equal(store.readMessages(coder, asked.roomId, 0).some((message) => message.body === "频道里的公开话"), false);
+  assert.equal(store.readMessages(coder, roomId, 0).some((message) => message.body === "你是不是已经在改按钮？"), false);
+  assert.equal(store.readMessages(scribe, roomId, 0).some((message) => message.body === "频道里的公开话"), true);
+  assert.throws(() => store.readMessages(scribe, asked.roomId, 0), (error: unknown) => {
+    return error instanceof ApiError && error.status === 403;
+  });
+  assert.equal(events(store, coder.id, "mention").some((event) => event.summary.startsWith("私聊：")), true);
+  assert.equal(events(store, scribe.id, "mention").some((event) => event.room_id === asked.roomId), false);
+  assert.equal(store.snapshot(user, asked.roomId, new Set()).room.direct, true);
+  const again = store.ask(coder, { handle: "reader", body: "是，我在改禁用态。" });
+  assert.equal(again.roomId, asked.roomId);
+
+  const group = store.ask(reader, { handles: ["coder", "scribe"], body: "你们两个谁在改按钮？" });
+  assert.notEqual(group.roomId, asked.roomId);
+  assert.deepEqual(group.handles, ["coder", "reader", "scribe"]);
+  assert.equal(store.readMessages(scribe, group.roomId, 0).some((message) => message.body === "你们两个谁在改按钮？"), true);
+  assert.throws(() => store.readMessages(stranger, group.roomId, 0), (error: unknown) => {
+    return error instanceof ApiError && error.status === 403;
+  });
+  assert.throws(() => store.postMessage(user, asked.roomId, { kind: "instruction", body: "私聊里下指令" }), (error: unknown) => {
+    return error instanceof ApiError && error.code === "direct_room";
+  });
+  assert.throws(() => store.setArchived(user, asked.roomId, true), (error: unknown) => {
+    return error instanceof ApiError && error.code === "direct_room";
+  });
+  assert.throws(() => store.ask(coder, { handle: "coder", body: "我问我自己" }), (error: unknown) => {
+    return error instanceof ApiError && error.code === "bad_handles";
+  });
+  assert.throws(() => store.ask(coder, { handle: "stranger", body: "你在吗" }), (error: unknown) => {
+    return error instanceof ApiError && error.code === "no_peer";
+  });
+});

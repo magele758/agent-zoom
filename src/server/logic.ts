@@ -36,6 +36,7 @@ export type RoomChannel = RoomScope & {
   currentTopic: string;
   general: boolean;
   archived: boolean;
+  direct: boolean;
 };
 
 type RoomRecord = {
@@ -46,6 +47,7 @@ type RoomRecord = {
   current_topic: string;
   general: number;
   archived: number;
+  direct: number;
   project: string;
   directories: string;
   branch: string;
@@ -414,7 +416,7 @@ export class Store {
   listRooms(userId: string) {
     const rows = this.db
       .prepare(
-        `SELECT r.id, r.org_id, r.name, r.topic, r.current_topic, r.general, r.archived,
+        `SELECT r.id, r.org_id, r.name, r.topic, r.current_topic, r.general, r.archived, r.direct,
                 r.project, r.directories, r.branch, r.created_at
          FROM rooms r
          JOIN room_members m ON m.room_id = r.id
@@ -466,6 +468,7 @@ export class Store {
         currentTopic,
         general: false,
         archived: false,
+        direct: false,
         project,
         directories,
         branch,
@@ -542,6 +545,7 @@ export class Store {
   setArchived(user: Principal & { type: "user" }, roomId: string, archived: boolean) {
     this.assertMember(user, roomId);
     const room = this.roomRow(roomId);
+    if (room.direct === 1) throw new ApiError(400, "direct_room", "私聊不用归档");
     if (room.general === 1 && archived) throw new ApiError(403, "general_room", "大厅不能归档");
     const next = archived ? 1 : 0;
     if (room.archived === next) return this.roomView(user, roomId);
@@ -810,6 +814,9 @@ export class Store {
     }
     if (kind === "instruction" && principal.type !== "user") {
       throw new ApiError(403, "human_only", "只有人能下指令");
+    }
+    if (kind === "instruction" && this.roomRow(roomId).direct === 1) {
+      throw new ApiError(400, "direct_room", "私聊里不能下指令。指令请发到频道。");
     }
     const addressed = this.resolveMentions(roomId, body);
     const acceptance = (input.acceptance?.trim() || body).slice(0, 2000);
@@ -1313,7 +1320,7 @@ export class Store {
   whoami(agent: Principal & { type: "agent" }) {
     const rooms = this.db
       .prepare(
-        `SELECT r.id, r.name, r.topic, r.current_topic, r.general, r.archived, r.project, r.directories, r.branch
+        `SELECT r.id, r.name, r.topic, r.current_topic, r.general, r.archived, r.direct, r.project, r.directories, r.branch
          FROM rooms r
          JOIN room_members m ON m.room_id = r.id
          WHERE m.principal_type = 'agent' AND m.principal_id = ?`,
@@ -1325,6 +1332,7 @@ export class Store {
       current_topic: string;
       general: number;
       archived: number;
+      direct: number;
       project: string;
       directories: string;
       branch: string;
@@ -1343,7 +1351,104 @@ export class Store {
       cwd: place?.cwd ?? "",
       rooms: rooms.map((room) => ({ id: room.id, name: room.name, ...this.channelView(room) })),
       visibility:
-        "房间历史对成员可读。wait 只返回点名、投标、中标、评审、测试和你占着的任务线程。不推送无关闲聊，也不塞进整段历史。",
+        "频道历史只有该频道的成员能读。私聊和私有小群只有参与者能读。wait 会推送点名、私聊、投标、中标、评审、测试和你占着的任务线程。不推送无关闲聊，也不塞进整段历史。",
+    };
+  }
+
+  listPeers(agent: Principal & { type: "agent" }) {
+    const peers = this.db
+      .prepare(
+        `SELECT DISTINCT a.id, a.handle, a.level, a.tags, a.machine, a.cwd, a.paused, a.last_seen_at
+         FROM agents a
+         JOIN room_members theirs ON theirs.principal_type = 'agent' AND theirs.principal_id = a.id
+         JOIN room_members mine ON mine.room_id = theirs.room_id AND mine.principal_type = 'agent' AND mine.principal_id = ?
+         JOIN rooms r ON r.id = mine.room_id AND r.direct = 0 AND r.archived = 0
+         WHERE a.id != ?
+         ORDER BY a.handle`,
+      )
+      .all(agent.id, agent.id) as Array<{
+      id: string;
+      handle: string;
+      level: number;
+      tags: string;
+      machine: string;
+      cwd: string;
+      paused: number;
+      last_seen_at: string | null;
+    }>;
+    const sharedRooms = this.db.prepare(
+      `SELECT DISTINCT r.id, r.name
+       FROM rooms r
+       JOIN room_members mine ON mine.room_id = r.id AND mine.principal_type = 'agent' AND mine.principal_id = ?
+       JOIN room_members theirs ON theirs.room_id = r.id AND theirs.principal_type = 'agent' AND theirs.principal_id = ?
+       WHERE r.direct = 0 AND r.archived = 0
+       ORDER BY r.created_at`,
+    );
+    const working = this.db.prepare(
+      `SELECT t.id AS task_id, t.title, t.status, t.room_id, r.name AS room_name, c.role
+       FROM task_claims c
+       JOIN tasks t ON t.id = c.task_id
+       JOIN rooms r ON r.id = t.room_id
+       WHERE c.agent_id = ? AND c.state = 'active' AND t.status NOT IN ('done', 'canceled', 'failed')
+       ORDER BY t.updated_at DESC`,
+    );
+    const fresh = Date.now() - 20_000;
+    return peers.map((peer) => ({
+      id: peer.id,
+      handle: peer.handle,
+      level: peer.level,
+      tags: peer.tags ?? "",
+      machine: peer.machine ?? "",
+      cwd: peer.cwd ?? "",
+      paused: peer.paused === 1,
+      online: peer.paused !== 1 && !!peer.last_seen_at && Date.parse(peer.last_seen_at) > fresh,
+      rooms: sharedRooms.all(agent.id, peer.id) as Array<{ id: string; name: string }>,
+      working: (working.all(peer.id) as Array<{
+        task_id: string;
+        title: string;
+        status: string;
+        room_id: string;
+        room_name: string;
+        role: string;
+      }>).map((task) => ({
+        taskId: task.task_id,
+        title: task.title,
+        status: task.status,
+        role: task.role,
+        roomId: task.room_id,
+        roomName: task.room_name,
+      })),
+    }));
+  }
+
+  ask(agent: Principal & { type: "agent" }, input: { handle?: unknown; handles?: unknown; body: unknown }) {
+    const raw = [
+      ...(Array.isArray(input.handles) ? input.handles : []),
+      ...(input.handle == null || input.handle === "" ? [] : [input.handle]),
+    ];
+    const handles = [
+      ...new Set(raw.map((item) => String(item).trim().toLowerCase().replace(/^@/, "")).filter(Boolean)),
+    ];
+    if (handles.length < 1 || handles.length > 6) {
+      throw new ApiError(400, "bad_handles", "私聊要指定 1 到 6 个句柄");
+    }
+    if (handles.includes(agent.handle)) throw new ApiError(400, "bad_handles", "不用问自己");
+    const body = String(input.body ?? "").trim();
+    if (!body) throw new ApiError(400, "empty", "内容是空的");
+    if (body.length > 8000) throw new ApiError(400, "too_long", "一条消息最多 8000 字");
+    const peers = this.listPeers(agent);
+    const targets = handles.map((handle) => {
+      const peer = peers.find((item) => item.handle === handle);
+      if (!peer) throw new ApiError(404, "no_peer", `你和 ${handle} 不在同一个频道，不能私聊`);
+      return peer;
+    });
+    const room = this.openConversation(agent, targets.map((peer) => peer.id));
+    const posted = this.postMessage(agent, room.id, { kind: "question", body });
+    return {
+      roomId: room.id,
+      direct: true,
+      handles: [agent.handle, ...handles].sort(),
+      message: posted.message,
     };
   }
 
@@ -1420,6 +1525,63 @@ export class Store {
       .run(roomId, type, id, nowIso());
   }
 
+  private openConversation(agent: Principal & { type: "agent" }, peerIds: string[]) {
+    const ids = [...new Set([agent.id, ...peerIds])].sort();
+    const existing = this.findDirectRoom(agent.orgId, ids);
+    if (existing) return existing;
+    const handles = ids.map((id) => this.handleOf(id)).sort();
+    const name = handles.join("、").slice(0, 40);
+    const result = this.transaction(() => {
+      const id = uuid();
+      this.db
+        .prepare(
+          `INSERT INTO rooms (id, org_id, name, topic, direct, created_by, created_at)
+           VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        )
+        .run(id, agent.orgId, name, "只有参与者能看到的对话。", agent.ownerUserId, nowIso());
+      const owners = new Set<string>();
+      for (const memberId of ids) {
+        this.addRoomMember(id, "agent", memberId);
+        const owner = this.db.prepare("SELECT owner_user_id FROM agents WHERE id = ?").get(memberId) as {
+          owner_user_id: string;
+        };
+        owners.add(owner.owner_user_id);
+      }
+      for (const ownerId of owners) this.addRoomMember(id, "user", ownerId);
+      this.insertMessage({
+        roomId: id,
+        authorType: "system",
+        authorId: "system",
+        taskId: null,
+        kind: "system",
+        body: `这段对话只有 ${handles.join("、")} 能看到。频道里的其他人看不到。`,
+        addressed: [],
+      });
+      return this.roomRow(id);
+    });
+    this.flush();
+    return result;
+  }
+
+  private findDirectRoom(orgId: string, agentIds: string[]) {
+    const wanted = agentIds.slice().sort().join("\0");
+    const rooms = this.db.prepare("SELECT id FROM rooms WHERE org_id = ? AND direct = 1").all(orgId) as Array<{
+      id: string;
+    }>;
+    const membersOf = this.db.prepare(
+      `SELECT principal_id FROM room_members WHERE room_id = ? AND principal_type = 'agent'`,
+    );
+    for (const room of rooms) {
+      const members = membersOf.all(room.id) as Array<{ principal_id: string }>;
+      const key = members
+        .map((item) => item.principal_id)
+        .sort()
+        .join("\0");
+      if (key === wanted) return this.roomRow(room.id);
+    }
+    return null;
+  }
+
   private assertRoomOpen(roomId: string) {
     if (this.roomRow(roomId).archived === 1) {
       throw new ApiError(409, "archived", "这个频道已归档，先取消归档再继续");
@@ -1446,6 +1608,7 @@ export class Store {
     current_topic?: string | null;
     general?: number | null;
     archived?: number | null;
+    direct?: number | null;
     project?: string | null;
     directories?: string | null;
     branch?: string | null;
@@ -1455,6 +1618,7 @@ export class Store {
       currentTopic: row.current_topic ?? "",
       general: row.general === 1,
       archived: row.archived === 1,
+      direct: row.direct === 1,
       ...scopeFrom(row),
     };
   }
@@ -2033,6 +2197,12 @@ export class Store {
         .run(agentId, input.roomId, eventType, input.message.task_id ?? input.message.id, summary.slice(0, 240), nowIso());
       this.queue("agent", agentId);
     };
+    if (this.roomRow(input.roomId).direct === 1) {
+      const members = this.db
+        .prepare(`SELECT principal_id FROM room_members WHERE room_id = ? AND principal_type = 'agent'`)
+        .all(input.roomId) as Array<{ principal_id: string }>;
+      for (const member of members) push(member.principal_id, "mention", `私聊：${input.message.body}`);
+    }
     for (const item of input.addressed) {
       push(item.id, "mention", input.message.body);
     }

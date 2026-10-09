@@ -102,7 +102,8 @@ export function App() {
         existing.topic === snap.room.topic &&
         (existing.currentTopic ?? "") === (snap.room.currentTopic ?? "") &&
         Boolean(existing.general) === Boolean(snap.room.general) &&
-        Boolean(existing.archived) === Boolean(snap.room.archived);
+        Boolean(existing.archived) === Boolean(snap.room.archived) &&
+        Boolean(existing.direct) === Boolean(snap.room.direct);
       if (same) return current;
       return {
         ...current,
@@ -117,6 +118,7 @@ export function App() {
                 currentTopic: snap.room.currentTopic ?? "",
                 general: Boolean(snap.room.general),
                 archived: Boolean(snap.room.archived),
+                direct: Boolean(snap.room.direct),
               }
             : room,
         ),
@@ -127,9 +129,12 @@ export function App() {
   useEffect(() => {
     if (!roomId) return;
     void refresh();
-    const timer = setInterval(() => void refresh(), 5000);
+    const timer = setInterval(() => {
+      void refresh();
+      void loadMe();
+    }, 5000);
     return () => clearInterval(timer);
-  }, [roomId, refresh]);
+  }, [roomId, refresh, loadMe]);
 
   useEffect(() => {
     if (!me || !roomId) return;
@@ -282,13 +287,14 @@ function RoomList({
   const [project, setProject] = useState("");
   const [directories, setDirectories] = useState("");
   const [branch, setBranch] = useState("");
-  const openRooms = rooms.filter((room) => !room.archived);
-  const archivedRooms = rooms.filter((room) => room.archived);
+  const openRooms = rooms.filter((room) => !room.archived && !room.direct);
+  const directRooms = rooms.filter((room) => room.direct && !room.archived);
+  const archivedRooms = rooms.filter((room) => room.archived && !room.direct);
   const roomItem = (room: Me["rooms"][number]) => (
     <li key={room.id}>
       <button type="button" className={room.id === active ? "room active" : "room"} onClick={() => onPick(room.id)}>
         <span>{room.name}</span>
-        {room.project ? <small>{room.project}</small> : null}
+        {room.direct ? <small>私聊</small> : room.project ? <small>{room.project}</small> : null}
       </button>
     </li>
   );
@@ -333,6 +339,14 @@ function RoomList({
         </form>
       ) : null}
       <ul>{openRooms.map(roomItem)}</ul>
+      {directRooms.length > 0 ? (
+        <div className="direct-rooms" data-testid="direct-list">
+          <div className="section-row">
+            <h2>私聊</h2>
+          </div>
+          <ul>{directRooms.map(roomItem)}</ul>
+        </div>
+      ) : null}
       {archivedRooms.length > 0 ? (
         <details className="archived-rooms">
           <summary>已归档</summary>
@@ -402,7 +416,8 @@ function Channel({
 
   useEffect(() => {
     setEditingText(false);
-  }, [snap?.room.id]);
+    setKind(snap?.room.direct ? "question" : "instruction");
+  }, [snap?.room.id, snap?.room.direct]);
 
   const selected = snap?.tasks.find((task) => task.id === taskId) ?? null;
   const latest = snap?.messages.at(-1);
@@ -425,8 +440,12 @@ function Channel({
           {snap?.room.currentTopic?.trim() ? (
             <p className="current-topic" data-testid="current-topic">当前：{snap.room.currentTopic}</p>
           ) : null}
-          {snap ? <p className="scope" data-testid="room-scope">{scopeText(snap.room)}</p> : null}
-          {snap && editingText ? (
+          {snap?.room.direct ? (
+            <p className="direct-note" data-testid="direct-note">只有参与者能看到这段对话。频道里的其他人看不到。</p>
+          ) : snap ? (
+            <p className="scope" data-testid="room-scope">{scopeText(snap.room)}</p>
+          ) : null}
+          {snap && !snap.room.direct && editingText ? (
             <form
               className="scope-form"
               onSubmit={async (event) => {
@@ -450,7 +469,7 @@ function Channel({
                 <button type="button" className="text-button" onClick={() => setEditingText(false)}>取消</button>
               </span>
             </form>
-          ) : snap ? (
+          ) : snap && !snap.room.direct ? (
             <button
               type="button"
               className="text-button"
@@ -464,7 +483,7 @@ function Channel({
               改说明
             </button>
           ) : null}
-          {snap && editingScope ? (
+          {snap && !snap.room.direct && editingScope ? (
             <form
               className="scope-form"
               onSubmit={async (event) => {
@@ -490,10 +509,10 @@ function Channel({
                 <button type="button" className="text-button" onClick={() => setEditingScope(false)}>取消</button>
               </span>
             </form>
-          ) : (
+          ) : snap && !snap.room.direct ? (
             <button type="button" className="text-button" data-testid="edit-scope" onClick={() => setEditingScope(true)}>改工作范围</button>
-          )}
-          {snap && !snap.room.general && !snap.room.archived ? (
+          ) : null}
+          {snap && !snap.room.general && !snap.room.archived && !snap.room.direct ? (
             <button type="button" className="text-button" data-testid="archive-room" onClick={() => void changeArchived(true)}>
               归档频道
             </button>
@@ -574,11 +593,16 @@ function Channel({
       >
         <div className="kinds" role="radiogroup" aria-label="消息类型">
           {(
-            [
-              ["instruction", "下指令"],
-              ["chat", "发言"],
-              ["question", "提问"],
-            ] as const
+            snap?.room.direct
+              ? ([
+                  ["question", "提问"],
+                  ["chat", "发言"],
+                ] as const)
+              : ([
+                  ["instruction", "下指令"],
+                  ["chat", "发言"],
+                  ["question", "提问"],
+                ] as const)
           ).map(([value, label]) => (
             <button
               key={value}
@@ -649,7 +673,13 @@ function Channel({
           ref={box}
           rows={3}
           value={body}
-          placeholder={kind === "instruction" ? "写下要做完的需求。匹配的空闲 agent 会认领或投标。" : "写给房间。用 @句柄 才会叫醒那个 agent。"}
+          placeholder={
+            snap?.room.direct
+              ? "只有这段私聊里的人能看到。先问对方在做什么，避免重复开工。"
+              : kind === "instruction"
+                ? "写下要做完的需求。匹配的空闲 agent 会认领或投标。"
+                : "写给房间。用 @句柄 才会叫醒那个 agent。"
+          }
           onChange={(event) => setBody(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {

@@ -7,6 +7,7 @@ export type Room = {
   currentTopic: string;
   general: boolean;
   archived: boolean;
+  direct: boolean;
   created_at: string;
 } & RoomScope;
 export type Agent = {
@@ -77,6 +78,7 @@ export type Snapshot = {
     currentTopic: string;
     general: boolean;
     archived: boolean;
+    direct: boolean;
   } & RoomScope;
   members: {
     users: Array<{ id: string; name: string; online: boolean }>;

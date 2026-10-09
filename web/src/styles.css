@@ -210,6 +210,8 @@ button { cursor: pointer; }
 .room.active { background: rgba(228, 194, 122, 0.1); }
 .room.active::before { background: var(--brass); }
 .room:hover { background: rgba(244, 240, 230, 0.05); }
+.direct-rooms { margin-top: 8px; }
+.direct-note { color: var(--brass-2); }
 .archived-rooms {
   margin: 8px 4px 0;
   border-top: 1px solid var(--line);
