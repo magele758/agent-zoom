@@ -29,14 +29,15 @@ async function enroll() {
   const handle = arg("--handle");
   const runtime = arg("--runtime") ?? "custom";
   const tags = arg("--tags") ?? "";
+  const level = Number(arg("--level") ?? 1);
   if (!code || !handle) {
-    console.error("用法: npm run enroll -- --code join_xxx --handle codex --runtime codex --tags build");
+    console.error("用法: npm run enroll -- --code join_xxx --handle codex --runtime codex --tags build --level 1");
     process.exit(1);
   }
   const response = await fetch(`${url}/api/enroll`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code, handle, runtime, tags }),
+    body: JSON.stringify({ code, handle, runtime, tags, level }),
   });
   const body = (await response.json()) as { token?: string; roomId?: string; message?: string };
   if (!response.ok || !body.token || !body.roomId) {

@@ -285,6 +285,7 @@ function Channel({
   const [body, setBody] = useState("");
   const [acceptance, setAcceptance] = useState("");
   const [parallel, setParallel] = useState(false);
+  const [complex, setComplex] = useState(false);
   const [tags, setTags] = useState("");
   const [kind, setKind] = useState<"chat" | "question" | "instruction">("instruction");
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -367,11 +368,13 @@ function Channel({
               acceptance: kind === "instruction" ? acceptance : undefined,
               parallel: kind === "instruction" ? parallel : undefined,
               tags: kind === "instruction" ? tags : undefined,
+              complex: kind === "instruction" ? complex : undefined,
             });
             setBody("");
             setAcceptance("");
             setTags("");
             setParallel(false);
+            setComplex(false);
             onPosted();
           } catch (reason) {
             onError(reason instanceof Error ? reason.message : "发送失败");
@@ -435,6 +438,15 @@ function Channel({
                 onChange={(event) => setParallel(event.target.checked)}
               />
               并行方案，最多 3 条。各自隔离，都通过后留给人裁定
+            </label>
+            <label className="checkline">
+              <input
+                data-testid="complex"
+                type="checkbox"
+                checked={complex}
+                onChange={(event) => setComplex(event.target.checked)}
+              />
+              复杂任务。优先交给等级 3 以上的 agent，没有就退回全体
             </label>
           </div>
         ) : null}
@@ -512,12 +524,30 @@ function SidePanel({
             </li>
           ))}
           {snap.members.agents.map((agent) => (
-            <li key={agent.id}>
+            <li key={agent.id} className="with-level">
               <i className={agent.online ? "dot on" : "dot"} aria-hidden="true" />
               <button type="button" className="handle" onClick={() => onMention(agent.handle)}>
                 {agent.ownerName} / {agent.handle}
               </button>
               <em>{agent.demo ? "演示" : agent.runtime}{agent.tags ? ` · ${agent.tags}` : ""}</em>
+              <select
+                className="level"
+                aria-label={`${agent.handle} 的等级`}
+                data-testid={`level-${agent.handle}`}
+                value={agent.level ?? 1}
+                onChange={async (event) => {
+                  try {
+                    await api.setLevel(agent.id, Number(event.target.value));
+                    onChanged();
+                  } catch (reason) {
+                    onError(reason instanceof Error ? reason.message : "没能改等级");
+                  }
+                }}
+              >
+                {[1, 2, 3, 4, 5].map((level) => (
+                  <option key={level} value={level}>Lv{level}</option>
+                ))}
+              </select>
             </li>
           ))}
         </ul>
@@ -559,7 +589,7 @@ function SidePanel({
         {code ? (
           <p className="code" data-testid="join-code-value">
             <code>{code}</code>
-            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags build</span>
+            <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags build --level 1</span>
           </p>
         ) : null}
       </section>
@@ -608,6 +638,7 @@ function TaskCard({
       </header>
       {task.acceptance && task.acceptance !== task.body ? <p className="note">验收：{task.acceptance}</p> : null}
       {task.tags ? <p className="note">标签：{task.tags}</p> : null}
+      {task.complex && !nested ? <p className="note">复杂任务，优先交给等级 3 以上的 agent。</p> : null}
       {task.direction ? <p className="note">方向：{task.direction}</p> : null}
       {task.deliverableRef ? (
         <p className="note">

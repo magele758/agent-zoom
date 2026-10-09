@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createApp } from "./http.ts";
 import { ApiError, openStore, type Principal, type Store } from "./logic.ts";
 
 function studio(name = "磊") {
@@ -258,4 +259,76 @@ test("the stop hook only consumes events once", () => {
   store.postMessage(user, roomId, { kind: "chat", body: "@coder 回来看一眼" });
   assert.equal(store.takePending(coder.id).length, 1);
   assert.equal(store.takePending(coder.id).length, 0);
+});
+
+function enrollAt(store: Store, user: Principal & { type: "user" }, roomId: string, handle: string, level: number) {
+  const code = store.createJoinCode(user, roomId);
+  const joined = store.enroll(code.code, handle, "codex", "lab", level);
+  const agent = store.agentByToken(joined.token);
+  assert.ok(agent && agent.type === "agent");
+  return agent;
+}
+
+test("levels are clamped on enroll and humans can change them", () => {
+  const { store, user, roomId } = studio();
+  const high = enrollAt(store, user, roomId, "high", 99);
+  const low = enrollAt(store, user, roomId, "low", -3);
+  const members = store.snapshot(user, roomId, new Set()).members.agents;
+  assert.equal(members.find((a) => a.id === high.id)?.level, 5);
+  assert.equal(members.find((a) => a.id === low.id)?.level, 1);
+  assert.equal(store.setLevel(user, low.id, 4).level, 4);
+  assert.equal(store.setLevel(user, low.id, "bad").level, 1);
+  const outsider = store.userBySession(store.session("别人").token);
+  assert.ok(outsider && outsider.type === "user");
+  assert.throws(() => store.setLevel(outsider, low.id, 3), (error: unknown) => {
+    return error instanceof ApiError && error.code === "no_agent";
+  });
+});
+
+test("a complex task goes to strong agents only, a normal task ignores level", () => {
+  const { store, user, roomId } = studio();
+  const strong = enrollAt(store, user, roomId, "strong", 4);
+  const weak = enrollAt(store, user, roomId, "weak", 1);
+  const complex = store.postMessage(user, roomId, { kind: "instruction", body: "重写同步引擎", tags: "lab", complex: true });
+  assert.equal(complex.task?.complex, true);
+  assert.equal(complex.task?.status, "open");
+  assert.equal(events(store, strong.id, "task_open").length, 1);
+  assert.equal(events(store, weak.id, "task_open").length, 0);
+  assert.throws(() => store.claim(weak, complex.task!.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "level_low";
+  });
+  const plain = store.postMessage(user, roomId, { kind: "instruction", body: "改个文案", tags: "lab" });
+  assert.equal(plain.task?.status, "bidding");
+  assert.equal(events(store, weak.id, "bid_open").length, 1);
+  store.claim(strong, complex.task!.id, "implementer");
+});
+
+test("a complex task falls back to everyone when nobody is strong, and level lifts the bid score", () => {
+  const { store, user, roomId } = studio();
+  const one = enrollAt(store, user, roomId, "one", 2);
+  const two = enrollAt(store, user, roomId, "two", 1);
+  const fallback = store.postMessage(user, roomId, { kind: "instruction", body: "复杂但没人够强", tags: "lab", complex: true });
+  assert.equal(fallback.task?.status, "bidding");
+  store.bid(two, fallback.task!.id, "我先来。");
+  const awarded = store.bid(one, fallback.task!.id, "我稍后。");
+  assert.equal(awarded.claims.find((claim) => claim.role === "implementer")?.agentId, one.id);
+});
+
+test("an @mention lets a low-level agent take a complex task", () => {
+  const { store, user, roomId } = studio();
+  enrollAt(store, user, roomId, "strong", 5);
+  const weak = enrollAt(store, user, roomId, "weak", 1);
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "@weak 你来做这个复杂的", tags: "lab", complex: true });
+  assert.equal(store.claim(weak, posted.task!.id, "implementer").status, "claimed");
+});
+
+test("complex parallel tasks bid normally, and malformed JSON is a 400", async () => {
+  const { store, user, roomId } = studio();
+  enrollAt(store, user, roomId, "alpha", 3);
+  enrollAt(store, user, roomId, "beta", 3);
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "并行复杂", tags: "lab", complex: true, parallel: true });
+  assert.equal(posted.task?.status, "bidding");
+  const { app } = createApp(store);
+  const response = await app.request("/api/session", { method: "POST", body: "{oops", headers: { "content-type": "application/json" } });
+  assert.equal(response.status, 400);
 });

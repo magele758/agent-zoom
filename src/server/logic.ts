@@ -7,6 +7,10 @@ export const LOCK_MS = 120_000;
 const JOIN_MS = 30 * 60 * 1000;
 const BID_MS = 8_000;
 const REVIEWER_LIMIT = 3;
+export const MIN_LEVEL = 1;
+export const MAX_LEVEL = 5;
+export const STRONG_LEVEL = 3;
+const LEVEL_WEIGHT = 4;
 
 export class ApiError extends Error {
   constructor(
@@ -41,6 +45,7 @@ type TaskRow = {
   mode: string;
   max_lanes: number;
   tags: string;
+  complex: number;
   parent_id: string | null;
   lane: number | null;
   bid_until: string | null;
@@ -60,6 +65,7 @@ export type TaskView = {
   mode: string;
   maxLanes: number;
   tags: string;
+  complex: boolean;
   parentId: string | null;
   lane: number | null;
   direction: string;
@@ -111,6 +117,12 @@ const ROLE_LABEL: Record<Role, string> = {
 
 function parseTags(value: string | null | undefined) {
   return [...new Set(String(value ?? "").toLowerCase().split(/[\s,，]+/).filter(Boolean))].slice(0, 8);
+}
+
+function clampLevel(value: unknown) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return MIN_LEVEL;
+  return Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, n));
 }
 
 function tagsMatch(wanted: string[], have: string[]) {
@@ -312,7 +324,7 @@ export class Store {
     const rooms = this.listRooms(user.id);
     const agents = this.db
       .prepare(
-        `SELECT id, handle, runtime, paused, demo, org_id, last_seen_at FROM agents WHERE owner_user_id = ? ORDER BY created_at`,
+        `SELECT id, handle, runtime, paused, demo, level, org_id, last_seen_at FROM agents WHERE owner_user_id = ? ORDER BY created_at`,
       )
       .all(user.id);
     return { user: { id: user.id, name: user.name }, orgs, rooms, agents };
@@ -398,7 +410,7 @@ export class Store {
     return { code, expiresAt, roomId };
   }
 
-  enroll(code: string, handle: string, runtime: string, tags = "") {
+  enroll(code: string, handle: string, runtime: string, tags = "", level: unknown = MIN_LEVEL) {
     const cleanHandle = handle.trim().toLowerCase();
     if (!/^[a-z][a-z0-9-]{1,31}$/.test(cleanHandle)) {
       throw new ApiError(400, "bad_handle", "句柄要用小写字母开头，只含小写字母、数字和短横线");
@@ -427,10 +439,20 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO agents
-           (id, org_id, owner_user_id, handle, runtime, token_hash, tags, paused, demo, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+           (id, org_id, owner_user_id, handle, runtime, token_hash, tags, level, paused, demo, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
         )
-        .run(id, row.org_id, row.created_by, cleanHandle, cleanRuntime, hashToken(token), cleanTags, nowIso());
+        .run(
+          id,
+          row.org_id,
+          row.created_by,
+          cleanHandle,
+          cleanRuntime,
+          hashToken(token),
+          cleanTags,
+          clampLevel(level),
+          nowIso(),
+        );
       this.db.prepare("UPDATE join_codes SET used_by_agent_id = ? WHERE code = ?").run(id, code);
       this.addRoomMember(row.room_id, "agent", id);
       this.insertMessage({
@@ -445,7 +467,7 @@ export class Store {
       this.refreshOpen(row.room_id);
       return {
         token,
-        agent: { id, handle: cleanHandle, runtime: cleanRuntime, orgId: row.org_id },
+        agent: { id, handle: cleanHandle, runtime: cleanRuntime, orgId: row.org_id, level: clampLevel(level) },
         roomId: row.room_id,
       };
     });
@@ -461,6 +483,39 @@ export class Store {
     if (row.owner_user_id !== user.id) throw new ApiError(403, "not_owner", "只能暂停自己接入的 agent");
     this.db.prepare("UPDATE agents SET paused = ? WHERE id = ?").run(paused ? 1 : 0, agentId);
     return { id: agentId, paused };
+  }
+
+  setLevel(user: Principal & { type: "user" }, agentId: string, level: unknown) {
+    const next = clampLevel(level);
+    const result = this.transaction(() => {
+      const row = this.db
+        .prepare(
+          `SELECT a.handle, a.level FROM agents a
+           JOIN org_members m ON m.org_id = a.org_id AND m.user_id = ?
+           WHERE a.id = ?`,
+        )
+        .get(user.id, agentId) as { handle: string; level: number } | undefined;
+      if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
+      if (row.level === next) return { id: agentId, level: next };
+      this.db.prepare("UPDATE agents SET level = ? WHERE id = ?").run(next, agentId);
+      const rooms = this.db
+        .prepare("SELECT room_id FROM room_members WHERE principal_type = 'agent' AND principal_id = ?")
+        .all(agentId) as Array<{ room_id: string }>;
+      for (const room of rooms) {
+        this.insertMessage({
+          roomId: room.room_id,
+          authorType: "system",
+          authorId: "system",
+          taskId: null,
+          kind: "system",
+          body: `${user.name} 把 ${row.handle} 的等级从 ${row.level} 调到 ${next}`,
+          addressed: [],
+        });
+      }
+      return { id: agentId, level: next };
+    });
+    this.flush();
+    return result;
   }
 
   snapshot(principal: Principal, roomId: string, onlineUserIds: ReadonlySet<string>) {
@@ -489,6 +544,7 @@ export class Store {
       acceptance?: string;
       parallel?: boolean;
       tags?: string;
+      complex?: boolean;
     },
   ) {
     this.assertMember(principal, roomId);
@@ -552,6 +608,7 @@ export class Store {
           mode: parallel ? "parallel" : "single",
           maxLanes: parallel ? 3 : 1,
           tags,
+          complex: Boolean(input.complex),
         });
         this.announce(createdTaskId);
         task = this.publicTask(createdTaskId);
@@ -599,6 +656,9 @@ export class Store {
       }
       if (role === "implementer" && !tagsMatch(parseTags(task.tags), this.agentTags(agent.id))) {
         throw new ApiError(403, "not_eligible", "标签不匹配，这条任务不交给你");
+      }
+      if (role === "implementer" && task.status === "open" && this.levelBlocked(task, agent.id)) {
+        throw new ApiError(403, "level_low", "复杂任务先交给等级 3 以上的 agent");
       }
       if (role === "implementer" && task.status === "bidding") {
         throw new ApiError(409, "bid_first", "正在投标，用 bid 写下做法");
@@ -655,6 +715,9 @@ export class Store {
       if (!task.bid_until || task.bid_until < nowIso()) throw new ApiError(409, "bid_closed", "投标已经截止");
       if (agent.paused || !this.isIdle(agent.id) || !tagsMatch(parseTags(task.tags), this.agentTags(agent.id))) {
         throw new ApiError(403, "not_eligible", "只有空闲且标签匹配的 agent 能投标");
+      }
+      if (this.levelBlocked(task, agent.id)) {
+        throw new ApiError(403, "level_low", "复杂任务先交给等级 3 以上的 agent");
       }
       try {
         this.db
@@ -1000,6 +1063,7 @@ export class Store {
       handle: agent.handle,
       orgId: agent.orgId,
       paused: agent.paused,
+      level: this.agentLevel(agent.id),
       rooms,
       visibility:
         "房间历史对成员可读。wait 只返回点名、投标、中标、评审、测试和你占着的任务线程。不推送无关闲聊，也不塞进整段历史。",
@@ -1157,14 +1221,15 @@ export class Store {
     mode: string;
     maxLanes: number;
     tags: string;
+    complex: boolean;
   }) {
     const stamp = nowIso();
     this.db
       .prepare(
         `INSERT INTO tasks (
            id, room_id, message_id, title, body, status, created_by, created_at, updated_at,
-           acceptance, mode, max_lanes, tags, direction
-         ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, '')`,
+           acceptance, mode, max_lanes, tags, complex, direction
+         ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, '')`,
       )
       .run(
         input.id,
@@ -1179,6 +1244,7 @@ export class Store {
         input.mode,
         input.maxLanes,
         input.tags,
+        input.complex ? 1 : 0,
       );
     return this.publicTask(input.id);
   }
@@ -1196,6 +1262,17 @@ export class Store {
   private agentTags(agentId: string) {
     const row = this.db.prepare("SELECT tags FROM agents WHERE id = ?").get(agentId) as { tags: string } | undefined;
     return parseTags(row?.tags);
+  }
+
+  private agentLevel(agentId: string) {
+    const row = this.db.prepare("SELECT level FROM agents WHERE id = ?").get(agentId) as { level: number } | undefined;
+    return row?.level ?? MIN_LEVEL;
+  }
+
+  private levelBlocked(task: TaskRow, agentId: string) {
+    if (!task.complex || this.agentLevel(agentId) >= STRONG_LEVEL) return false;
+    if (!this.eligibleAgents(task).some((agent) => agent.level >= STRONG_LEVEL)) return false;
+    return !this.resolveMentions(task.room_id, task.body).some((item) => item.id === agentId);
   }
 
   private isIdle(agentId: string) {
@@ -1216,12 +1293,15 @@ export class Store {
     const wanted = parseTags(task.tags);
     const agents = this.db
       .prepare(
-        `SELECT a.id, a.tags FROM agents a
+        `SELECT a.id, a.tags, a.level FROM agents a
          JOIN room_members m ON m.principal_id = a.id AND m.principal_type = 'agent'
          WHERE m.room_id = ? AND a.paused = 0`,
       )
-      .all(task.room_id) as Array<{ id: string; tags: string }>;
-    return agents.filter((agent) => tagsMatch(wanted, parseTags(agent.tags)) && this.isIdle(agent.id));
+      .all(task.room_id) as Array<{ id: string; tags: string; level: number }>;
+    const matched = agents.filter((agent) => tagsMatch(wanted, parseTags(agent.tags)) && this.isIdle(agent.id));
+    if (!task.complex) return matched;
+    const strong = matched.filter((agent) => agent.level >= STRONG_LEVEL);
+    return strong.length > 0 ? strong : matched;
   }
 
   private bidsFor(taskId: string) {
@@ -1261,7 +1341,7 @@ export class Store {
         authorId: "system",
         taskId,
         kind: "system",
-        body: `有 ${eligible.length} 位空闲 agent 能做。${Math.round(BID_MS / 1000)} 秒内用 bid 写两到三句做法，服务器按标签和负载授标。`,
+        body: `有 ${eligible.length} 位空闲 agent 能做${task.complex ? "（复杂任务，优先等级 3 以上）" : ""}。${Math.round(BID_MS / 1000)} 秒内用 bid 写两到三句做法，服务器按标签${task.complex ? "、等级" : ""}和负载授标。`,
         addressed: [],
       });
       for (const agent of eligible) {
@@ -1295,7 +1375,8 @@ export class Store {
         const have = this.agentTags(bid.agent_id);
         const overlap = wanted.filter((tag) => have.includes(tag)).length;
         const idle = this.isIdle(bid.agent_id) ? 1 : 0;
-        const score = overlap * 10 + idle * 5 - this.loadOf(bid.agent_id) * 3;
+        const levelBonus = task.complex ? this.agentLevel(bid.agent_id) * LEVEL_WEIGHT : 0;
+        const score = overlap * 10 + idle * 5 - this.loadOf(bid.agent_id) * 3 + levelBonus;
         return { ...bid, score };
       })
       .sort((a, b) => b.score - a.score || a.created_at.localeCompare(b.created_at) || a.agent_id.localeCompare(b.agent_id));
@@ -1311,8 +1392,8 @@ export class Store {
           .prepare(
             `INSERT INTO tasks (
                id, room_id, message_id, title, body, status, created_by, created_at, updated_at,
-               acceptance, mode, max_lanes, tags, parent_id, lane, direction
-             ) VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, 'single', 1, ?, ?, ?, '')`,
+               acceptance, mode, max_lanes, tags, complex, parent_id, lane, direction
+             ) VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, 'single', 1, ?, ?, ?, ?, '')`,
           )
           .run(
             childId,
@@ -1325,6 +1406,7 @@ export class Store {
             stamp,
             task.acceptance,
             task.tags,
+            task.complex,
             task.id,
             lane,
           );
@@ -1705,6 +1787,7 @@ export class Store {
       mode: task.mode ?? "single",
       maxLanes: task.max_lanes ?? 1,
       tags: task.tags ?? "",
+      complex: task.complex === 1,
       parentId: task.parent_id ?? null,
       lane: task.lane ?? null,
       direction: task.direction ?? "",
@@ -1736,7 +1819,7 @@ export class Store {
       .all(roomId) as Array<{ id: string; name: string }>;
     const agents = this.db
       .prepare(
-        `SELECT a.id, a.handle, a.runtime, a.paused, a.demo, a.tags, a.last_seen_at, u.name AS owner
+        `SELECT a.id, a.handle, a.runtime, a.paused, a.demo, a.tags, a.level, a.last_seen_at, u.name AS owner
          FROM room_members m
          JOIN agents a ON a.id = m.principal_id
          JOIN users u ON u.id = a.owner_user_id
@@ -1750,6 +1833,7 @@ export class Store {
       paused: number;
       demo: number;
       tags: string;
+      level: number;
       last_seen_at: string | null;
       owner: string;
     }>;
@@ -1767,6 +1851,7 @@ export class Store {
         paused: agent.paused === 1,
         demo: agent.demo === 1,
         tags: agent.tags ?? "",
+        level: agent.level,
         ownerName: agent.owner,
         online: agent.paused !== 1 && !!agent.last_seen_at && Date.parse(agent.last_seen_at) > fresh,
       })),

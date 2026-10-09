@@ -40,6 +40,7 @@ export function createApp(store: Store) {
   };
 
   app.onError((error, c) => {
+    if (error instanceof SyntaxError) return c.json({ error: "bad_json", message: "请求体不是合法 JSON" }, 400);
     if (error instanceof ApiError) return c.json({ error: error.code, message: error.message }, error.status as 400);
     console.error(error);
     return c.json({ error: "internal", message: "服务出错了" }, 500);
@@ -89,6 +90,7 @@ export function createApp(store: Store) {
         acceptance: body.acceptance ? String(body.acceptance) : undefined,
         parallel: Boolean(body.parallel),
         tags: body.tags ? String(body.tags) : undefined,
+        complex: Boolean(body.complex),
       }),
     );
   });
@@ -112,6 +114,7 @@ export function createApp(store: Store) {
         String(body.handle ?? ""),
         String(body.runtime ?? "custom"),
         body.tags ? String(body.tags) : "",
+        body.level,
       ),
     );
   });
@@ -120,6 +123,12 @@ export function createApp(store: Store) {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
     return c.json(store.setPaused(user, c.req.param("id"), Boolean(body.paused)));
+  });
+
+  app.patch("/api/agents/:id/level", async (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const body = await c.req.json();
+    return c.json(store.setLevel(user, c.req.param("id"), body.level));
   });
 
   app.post("/api/tasks/:id/cancel", (c) => {

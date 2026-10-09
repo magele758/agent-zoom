@@ -351,6 +351,17 @@ button { cursor: pointer; }
   align-items: center;
   min-height: 40px;
 }
+.roster li.with-level { grid-template-columns: 12px 1fr auto auto; }
+.roster .level {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  min-height: 28px;
+  padding: 0 4px;
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
 .slots li {
   grid-template-columns: 52px 1fr;
   min-height: 32px;
