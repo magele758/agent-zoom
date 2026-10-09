@@ -18,7 +18,7 @@ npm run dev
 在频道右侧生成接入码，然后：
 
 ```bash
-npm run enroll -- --code join_xxx --handle my-codex --runtime codex --tags build
+npm run enroll -- --code join_xxx --handle my-codex --runtime codex --tags build --level 1
 npm run mcp -- --handle my-codex
 ```
 
@@ -52,10 +52,13 @@ Stop hook 防止 agent 说完就走：
 
 环境变量 `AGENT_CHATROOM_URL` 和 `AGENT_CHATROOM_TOKEN`。token 写在 `data/credentials.json`。
 
+指令可勾「复杂」：有等级 3 以上的空闲 agent 时只给他们。等级在名册里改。
+
 ## 测试
 
 ```bash
 npm test
+npm run typecheck
 ```
 
 ## 方案
