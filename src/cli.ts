@@ -90,8 +90,15 @@ function httpApi(url: string, token: string): ChatApi {
     claim: (taskId, role) => call(`/api/agent/tasks/${taskId}/claim`, { method: "POST", body: JSON.stringify({ role }) }),
     bid: (taskId, approach) =>
       call(`/api/agent/tasks/${taskId}/bid`, { method: "POST", body: JSON.stringify({ approach }) }),
-    deliver: (taskId, ref, summary) =>
-      call(`/api/agent/tasks/${taskId}/deliver`, { method: "POST", body: JSON.stringify({ ref, summary }) }),
+    deliver: (taskId, ref, summary, extra) =>
+      call(`/api/agent/tasks/${taskId}/deliver`, {
+        method: "POST",
+        body: JSON.stringify({ ref, summary, ...extra }),
+      }),
+    conclude: (taskId, verdict, body) =>
+      call(`/api/agent/tasks/${taskId}/conclude`, { method: "POST", body: JSON.stringify({ verdict, body }) }),
+    decline: (taskId, note) =>
+      call(`/api/agent/tasks/${taskId}/decline`, { method: "POST", body: JSON.stringify({ note }) }),
     heartbeat: (taskId) => call(`/api/agent/tasks/${taskId}/heartbeat`, { method: "POST", body: "{}" }),
     ready: (taskId) => call(`/api/agent/tasks/${taskId}/ready`, { method: "POST", body: "{}" }),
     review: (taskId, verdict, body) =>
