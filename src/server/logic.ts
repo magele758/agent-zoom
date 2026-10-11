@@ -154,6 +154,7 @@ export type TaskView = {
   assigneeHandle: string;
   handles: string[];
   deliverableBody: string | null;
+  conclusions: Array<{ handle: string; verdict: string }>;
   gate: boolean;
   offerUntil: string | null;
   scope: RoomScope;
@@ -1382,8 +1383,8 @@ export class Store {
              verdict = excluded.verdict, body = excluded.body, created_at = excluded.created_at`,
         )
         .run(uuid(), taskId, agent.handle, verdict, text, nowIso());
-      const closed = this.closeReview(this.taskRow(taskId), false);
-      if (!closed) this.note(task, `${agent.handle} 交了复核：${verdict}`);
+      this.note(task, reviewLine(agent.handle, verdict, text));
+      this.closeReview(this.taskRow(taskId), false);
       return this.publicTask(taskId);
     });
     this.flush();
@@ -3032,6 +3033,10 @@ export class Store {
       assigneeHandle: task.assignee_handle ?? "",
       handles: parseHandlesJson(task.handles_json),
       deliverableBody: task.deliverable_body ?? null,
+      conclusions:
+        task.step_role === "review"
+          ? this.conclusions(task.id).map((note) => ({ handle: note.handle, verdict: note.verdict }))
+          : [],
       gate: task.gate === 1,
       offerUntil: task.offer_until ?? null,
       scope: scopeFrom(this.roomRow(task.room_id)),
@@ -3272,6 +3277,16 @@ export class Store {
     this.saveArtifact(task.id, ref, summary, artifact);
     const parent = this.taskRow(task.pipeline_id!);
     this.finishRole(task.id, "implementer", "completed");
+    const message = this.insertMessage({
+      roomId: task.room_id,
+      authorType: "agent",
+      authorId: agent.id,
+      taskId: task.id,
+      kind: "deliverable",
+      body: `${ref}\nQA ${verdict === "pass" ? "通过" : "未通过"}：${summary}`,
+      addressed: [],
+    });
+    this.fanout({ roomId: task.room_id, author: agent, message, addressed: [], taskId: task.id });
     if (verdict === "pass") {
       this.setStatus(task.id, "done");
       this.setStatus(parent.id, "done");
@@ -3623,6 +3638,12 @@ export class Store {
       | undefined;
     return row?.id;
   }
+}
+
+function reviewLine(handle: string, verdict: string, body: string) {
+  const flat = body.replace(/\s+/g, " ").trim();
+  const excerpt = flat.length > 120 ? `${flat.slice(0, 120)}…` : flat;
+  return `${handle} 交了复核：${verdict}${excerpt ? `。${excerpt}` : ""}`;
 }
 
 function titleFrom(body: string) {
