@@ -2,6 +2,23 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { GROUPS, groupById, groupOf } from "../groups.ts";
 import { openDatabase } from "./db.ts";
+import {
+  ARTIFACT_LIMIT,
+  CROSS_RETURN_LIMIT,
+  OFFER_HOLD,
+  QA_RETURN_LIMIT,
+  REF_LIMIT,
+  SUMMARY_LIMIT,
+  composeHandoff,
+  parseHandlesJson,
+  parsePipeline,
+  PipelineInputError,
+  reviewBounce,
+  reviewPacket,
+  roleLabel,
+  withShots,
+  normalizeShots,
+} from "./pipeline.ts";
 
 export const LEASE_MS = 10 * 60 * 1000;
 export const LOCK_MS = 120_000;
@@ -96,6 +113,19 @@ type TaskRow = {
   winner_task_id: string | null;
   review_returns: number;
   design_pending: string;
+  pipeline_id: string | null;
+  step_index: number | null;
+  step_role: string | null;
+  assignee_handle: string;
+  handles_json: string;
+  steps_json: string;
+  deliverable_body: string | null;
+  gate: number;
+  qa_returns: number;
+  cross_returns: number;
+  offer_until: string | null;
+  offer_index: number | null;
+  claim_timeout_ms: number;
 };
 
 export type TaskView = {
@@ -118,6 +148,14 @@ export type TaskView = {
   bidUntil: string | null;
   designPending: string[];
   designs: Array<{ handle: string; group: string; body: string }>;
+  pipelineId: string | null;
+  stepIndex: number | null;
+  stepRole: string | null;
+  assigneeHandle: string;
+  handles: string[];
+  deliverableBody: string | null;
+  gate: boolean;
+  offerUntil: string | null;
   scope: RoomScope;
   createdBy: string;
   createdAt: string;
@@ -1027,6 +1065,7 @@ export class Store {
       parallel?: boolean;
       tags?: string;
       complex?: boolean;
+      steps?: unknown;
     },
   ) {
     if (principal.type === "agent") this.assertAwake(principal);
@@ -1090,23 +1129,36 @@ export class Store {
       });
       let task = null;
       if (createdTaskId) {
-        this.insertTask({
-          id: createdTaskId,
-          roomId,
-          messageId: message.id,
-          title,
-          body,
-          createdBy: principal.id,
-          acceptance,
-          mode: parallel ? "parallel" : "single",
-          maxLanes: parallel ? 3 : 1,
-          tags: designPending || tags,
-          complex,
-          designPending,
-        });
+        if (input.steps !== undefined && input.steps !== null) {
+          this.createPipeline({
+            id: createdTaskId,
+            roomId,
+            messageId: message.id,
+            title,
+            body,
+            createdBy: principal.id,
+            acceptance,
+            steps: input.steps,
+          });
+        } else {
+          this.insertTask({
+            id: createdTaskId,
+            roomId,
+            messageId: message.id,
+            title,
+            body,
+            createdBy: principal.id,
+            acceptance,
+            mode: parallel ? "parallel" : "single",
+            maxLanes: parallel ? 3 : 1,
+            tags: designPending || tags,
+            complex,
+            designPending,
+          });
+          if (designPending) this.askDesign(createdTaskId);
+          else this.announce(createdTaskId);
+        }
         this.db.prepare("UPDATE rooms SET current_topic = ? WHERE id = ?").run(title, roomId);
-        if (designPending) this.askDesign(createdTaskId);
-        else this.announce(createdTaskId);
         task = this.publicTask(createdTaskId);
       }
       if (current && taskId && (kind === "progress" || kind === "direction") && current.status === "claimed") {
@@ -1145,6 +1197,9 @@ export class Store {
       const task = this.taskRow(taskId);
       this.assertMember(agent, task.room_id);
       this.assertRoomOpen(task.room_id);
+      if (task.pipeline_id || (task.mode === "pipeline" && !task.step_role)) {
+        return this.claimPipelineStep(agent, task, role);
+      }
       const implementer = this.holder(taskId, "implementer");
       if ((role === "reviewer" || role === "tester") && implementer === agent.id) {
         throw new ApiError(403, "own_work", "实现者不能评审或测试自己的任务");
@@ -1261,16 +1316,23 @@ export class Store {
     return result;
   }
 
-  deliver(agent: Principal & { type: "agent" }, taskId: string, ref: string, summary: string) {
+  deliver(
+    agent: Principal & { type: "agent" },
+    taskId: string,
+    ref: string,
+    summary: string,
+    extra?: { body?: string; verdict?: string; screenshots?: unknown },
+  ) {
     this.assertAwake(agent);
     const cleanRef = ref.trim();
     const text = summary.trim();
-    if (!cleanRef || cleanRef.length > 200) throw new ApiError(400, "bad_ref", "交付要有一条引用，最多 200 字");
-    if (!text || text.length > 1000) throw new ApiError(400, "bad_summary", "交付说明需要 1 到 1000 字");
+    if (!cleanRef || cleanRef.length > REF_LIMIT) throw new ApiError(400, "bad_ref", "交付要有一条引用，最多 200 字");
+    if (!text || text.length > SUMMARY_LIMIT) throw new ApiError(400, "bad_summary", "交付说明需要 1 到 1000 字");
     const result = this.transaction(() => {
       const task = this.taskRow(taskId);
       this.assertMember(agent, task.room_id);
       this.assertRoomOpen(task.room_id);
+      if (task.pipeline_id) return this.deliverPipeline(agent, task, cleanRef, text, extra);
       if (!this.activeClaim(taskId, "implementer", agent.id)) {
         throw new ApiError(403, "not_implementer", "只有实现者能交付");
       }
@@ -1292,6 +1354,61 @@ export class Store {
       });
       this.fanout({ roomId: task.room_id, author: agent, message, addressed: [], taskId });
       this.wakeChecks(task.room_id, taskId, "review_needed", `请检查「${task.title}」。交付 ${cleanRef}`);
+      return this.publicTask(taskId);
+    });
+    this.flush();
+    return result;
+  }
+
+  conclude(agent: Principal & { type: "agent" }, taskId: string, verdict: string, body: string) {
+    if (verdict !== "pass" && verdict !== "changes") {
+      throw new ApiError(400, "bad_verdict", "复核结论是 pass 或 changes");
+    }
+    const text = body.trim();
+    if (!text || text.length > 8000) throw new ApiError(400, "bad_summary", "复核说明需要 1 到 8000 字");
+    const result = this.transaction(() => {
+      const task = this.taskRow(taskId);
+      this.assertMember(agent, task.room_id);
+      this.assertRoomOpen(task.room_id);
+      if (task.step_role !== "review" || !task.pipeline_id) throw new ApiError(409, "bad_state", "这不是复核步");
+      if (task.status !== "open") throw new ApiError(409, "bad_state", "现在不能交复核");
+      const handles = parseHandlesJson(task.handles_json);
+      if (!handles.includes(agent.handle)) throw new ApiError(403, "not_eligible", "这一步没有点你复核");
+      this.db
+        .prepare(
+          `INSERT INTO pipeline_conclusions (id, task_id, handle, verdict, body, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(task_id, handle) DO UPDATE SET
+             verdict = excluded.verdict, body = excluded.body, created_at = excluded.created_at`,
+        )
+        .run(uuid(), taskId, agent.handle, verdict, text, nowIso());
+      const notes = this.conclusions(taskId);
+      if (notes.length < handles.length) {
+        this.note(task, `${agent.handle} 交了复核：${verdict}`);
+        return this.publicTask(taskId);
+      }
+      if (notes.some((note) => note.verdict === "changes")) return this.bounceResearch(task, notes);
+      return this.passReview(task, notes);
+    });
+    this.flush();
+    return result;
+  }
+
+  decline(agent: Principal & { type: "agent" }, taskId: string, note = "") {
+    const text = note.trim().slice(0, 280);
+    const result = this.transaction(() => {
+      const task = this.taskRow(taskId);
+      this.assertMember(agent, task.room_id);
+      if (!task.pipeline_id) throw new ApiError(409, "bad_state", "只有流水线步骤可以拒绝");
+      const handles = parseHandlesJson(task.handles_json);
+      if (handles.length < 2) throw new ApiError(409, "bad_state", "这一步没有下一位");
+      if (agent.handle !== task.assignee_handle) throw new ApiError(403, "not_eligible", "现在没有轮到你");
+      if (!["open", "claimed", "working"].includes(task.status)) throw new ApiError(409, "bad_state", "现在不能拒绝");
+      if (this.activeClaim(taskId, "implementer", agent.id)) {
+        this.finishClaim(taskId, "implementer", agent.id, "released");
+      }
+      if (task.status !== "open") this.setStatus(taskId, "open");
+      this.advanceOffer(taskId, text ? `明确拒绝：${text}` : "明确拒绝");
       return this.publicTask(taskId);
     });
     this.flush();
@@ -1457,7 +1574,10 @@ export class Store {
         addressed: [],
         taskId,
       });
-      if (reopened) this.announce(taskId);
+      if (reopened) {
+        if (task.pipeline_id) this.reofferPipeline(this.taskRow(taskId));
+        else this.announce(taskId);
+      }
       this.offerChecks(agent.id);
       return this.publicTask(taskId);
     });
@@ -1471,6 +1591,7 @@ export class Store {
       this.assertMember(user, task.room_id);
       if (["done", "canceled", "failed"].includes(task.status)) throw new ApiError(409, "bad_state", "这条任务已经结束");
       this.cancelTree(task, user.name);
+      if (task.mode === "pipeline" && !task.pipeline_id) this.cancelPipelineSteps(task.id, user.name);
       if (task.parent_id) this.converge(task.parent_id);
       return this.publicTask(taskId);
     });
@@ -1751,7 +1872,15 @@ export class Store {
     const locks = this.db.prepare("SELECT org_id FROM file_locks WHERE lease_until < ?").all(iso) as Array<{
       org_id: string;
     }>;
-    if (expired.length === 0 && locks.length === 0 && dueBids.length === 0) return { released: 0 };
+    const dueOffers = this.db
+      .prepare(
+        `SELECT id FROM tasks
+         WHERE status = 'open' AND pipeline_id IS NOT NULL AND offer_until IS NOT NULL AND offer_until < ?`,
+      )
+      .all(iso) as Array<{ id: string }>;
+    if (expired.length === 0 && locks.length === 0 && dueBids.length === 0 && dueOffers.length === 0) {
+      return { released: 0 };
+    }
     this.transaction(() => {
       for (const row of expired) {
         this.finishClaim(row.task_id, row.role, row.agent_id, "released");
@@ -1773,9 +1902,14 @@ export class Store {
           addressed: [],
           taskId: row.task_id,
         });
-        if (reopen) this.announce(row.task_id);
+        if (reopen) {
+          const expiredTask = this.taskRow(row.task_id);
+          if (expiredTask.pipeline_id) this.reofferPipeline(expiredTask);
+          else this.announce(row.task_id);
+        }
         this.offerChecks(row.agent_id);
       }
+      for (const offer of dueOffers) this.advanceOffer(offer.id, "超时未认领");
       for (const bid of dueBids) {
         const task = this.taskRow(bid.id);
         if (task.status === "bidding") this.award(task.id);
@@ -2360,6 +2494,7 @@ export class Store {
     const task = this.taskRow(taskId);
     if (parseTags(task.design_pending).length > 0) return;
     if (task.status !== "open") return;
+    if (task.pipeline_id || (task.mode === "pipeline" && !task.step_role)) return;
     const named = this.addressedAgents(task);
     if (named.length > 0) {
       this.dispatchAddressed(task, named);
@@ -2397,7 +2532,11 @@ export class Store {
     const tasks = this.db
       .prepare("SELECT id FROM tasks WHERE room_id = ? AND status = 'open' AND parent_id IS NULL")
       .all(roomId) as Array<{ id: string }>;
-    for (const task of tasks) this.announce(task.id);
+    for (const task of tasks) {
+      const row = this.taskRow(task.id);
+      if (row.pipeline_id) this.nudgePipeline(row);
+      else this.announce(row.id);
+    }
   }
 
   private award(taskId: string) {
@@ -2887,6 +3026,14 @@ export class Store {
       bidUntil: task.bid_until ?? null,
       designPending: parseTags(task.design_pending),
       designs: this.designNotes(task.id),
+      pipelineId: task.pipeline_id ?? null,
+      stepIndex: task.step_index ?? null,
+      stepRole: task.step_role ?? null,
+      assigneeHandle: task.assignee_handle ?? "",
+      handles: parseHandlesJson(task.handles_json),
+      deliverableBody: task.deliverable_body ?? null,
+      gate: task.gate === 1,
+      offerUntil: task.offer_until ?? null,
       scope: scopeFrom(this.roomRow(task.room_id)),
       createdBy: task.created_by,
       createdAt: task.created_at,
@@ -2968,6 +3115,434 @@ export class Store {
       leaseUntil: row.lease_until,
       handle: row.handle,
     }));
+  }
+
+  private createPipeline(input: {
+    id: string;
+    roomId: string;
+    messageId: string;
+    title: string;
+    body: string;
+    createdBy: string;
+    acceptance: string;
+    steps: unknown;
+  }) {
+    let parsed;
+    try {
+      parsed = parsePipeline(input.steps);
+    } catch (error) {
+      if (error instanceof PipelineInputError) throw new ApiError(400, "bad_steps", error.message);
+      throw error;
+    }
+    const stamp = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO tasks (
+           id, room_id, message_id, title, body, status, created_by, created_at, updated_at,
+           acceptance, mode, max_lanes, tags, direction, complex, steps_json, claim_timeout_ms
+         ) VALUES (?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, 'pipeline', 1, '', '', 0, ?, ?)`,
+      )
+      .run(
+        input.id,
+        input.roomId,
+        input.messageId,
+        input.title,
+        input.body,
+        input.createdBy,
+        stamp,
+        stamp,
+        input.acceptance,
+        parsed.raw,
+        parsed.claimTimeoutMs,
+      );
+    parsed.steps.forEach((step, index) => {
+      this.db
+        .prepare(
+          `INSERT INTO tasks (
+             id, room_id, message_id, title, body, status, created_by, created_at, updated_at,
+             acceptance, mode, max_lanes, tags, direction, complex,
+             pipeline_id, step_index, step_role, handles_json, assignee_handle, gate, claim_timeout_ms
+           ) VALUES (?, ?, ?, ?, '等待上一步。', 'blocked', ?, ?, ?, ?, 'single', 1, ?, '', 0, ?, ?, ?, ?, '', ?, ?)`,
+        )
+        .run(
+          uuid(),
+          input.roomId,
+          input.messageId,
+          `${input.title} · ${roleLabel(step.role)}`,
+          input.createdBy,
+          stamp,
+          stamp,
+          input.acceptance,
+          step.role,
+          input.id,
+          index,
+          step.role,
+          JSON.stringify(step.handles),
+          step.gate ? 1 : 0,
+          step.claimTimeoutMs,
+        );
+    });
+    this.note(
+      { room_id: input.roomId, id: input.id },
+      `流水线：${parsed.steps.map((step) => roleLabel(step.role)).join(" → ")}`,
+    );
+    const first = this.pipelineSteps(input.id)[0];
+    if (first) this.openStep(first, input.body);
+  }
+
+  private claimPipelineStep(agent: Principal & { type: "agent" }, task: TaskRow, role: Role) {
+    if (!task.step_role) throw new ApiError(409, "bad_state", "流水线本身不能认领");
+    if (role !== "implementer") throw new ApiError(400, "bad_role", "流水线步骤只认领实现槽");
+    if (task.step_role === "review") throw new ApiError(409, "use_conclude", "复核用 conclude 交 pass 或 changes");
+    if (task.status !== "open") throw new ApiError(409, "bad_state", "这条任务现在不能认领实现");
+    if (agent.handle !== task.assignee_handle) throw new ApiError(403, "not_eligible", "这一步指定给别人");
+    const existing = this.holder(task.id, "implementer");
+    if (existing) throw new ApiError(409, "already_claimed", `这个槽位在 ${this.handleOf(existing)} 手上`);
+    this.insertClaim(task.id, "implementer", agent.id);
+    this.setStatus(task.id, "claimed");
+    this.db.prepare("UPDATE tasks SET offer_until = NULL, updated_at = ? WHERE id = ?").run(nowIso(), task.id);
+    const message = this.insertMessage({
+      roomId: task.room_id,
+      authorType: "system",
+      authorId: "system",
+      taskId: task.id,
+      kind: "system",
+      body: `${agent.handle} 认领了${roleLabel(task.step_role)}`,
+      addressed: [],
+    });
+    this.fanout({
+      roomId: task.room_id,
+      author: { type: "agent", id: agent.id },
+      message,
+      addressed: [],
+      taskId: task.id,
+    });
+    return this.publicTask(task.id);
+  }
+
+  private deliverPipeline(
+    agent: Principal & { type: "agent" },
+    task: TaskRow,
+    ref: string,
+    summary: string,
+    extra?: { body?: string; verdict?: string; screenshots?: unknown },
+  ) {
+    if (task.step_role === "review") throw new ApiError(409, "use_conclude", "复核用 conclude 交 pass 或 changes");
+    if (agent.handle !== task.assignee_handle) throw new ApiError(403, "not_eligible", "这一步指定给别人");
+    const artifact = withShots((extra?.body ?? summary).trim(), normalizeShots(extra?.screenshots));
+    if (!artifact) throw new ApiError(400, "empty", "交付正文是空的");
+    if (artifact.length > ARTIFACT_LIMIT) throw new ApiError(400, "too_long", "产物最多 32000 字");
+    if (task.step_role === "qa") return this.deliverQa(agent, task, ref, summary, artifact, extra?.verdict);
+    if (!this.activeClaim(task.id, "implementer", agent.id)) {
+      throw new ApiError(403, "not_implementer", "只有实现者能交付");
+    }
+    if (!["claimed", "working", "changes"].includes(task.status)) {
+      throw new ApiError(409, "bad_state", "现在不能交付");
+    }
+    this.saveArtifact(task.id, ref, summary, artifact);
+    this.setStatus(task.id, "done");
+    this.finishRole(task.id, "implementer", "completed");
+    const message = this.insertMessage({
+      roomId: task.room_id,
+      authorType: "agent",
+      authorId: agent.id,
+      taskId: task.id,
+      kind: "deliverable",
+      body: `${ref}\n${summary}`,
+      addressed: [],
+    });
+    this.fanout({ roomId: task.room_id, author: agent, message, addressed: [], taskId: task.id });
+    this.openNext(task);
+    return this.publicTask(task.id);
+  }
+
+  private deliverQa(
+    agent: Principal & { type: "agent" },
+    task: TaskRow,
+    ref: string,
+    summary: string,
+    artifact: string,
+    verdict: string | undefined,
+  ) {
+    if (verdict !== "pass" && verdict !== "fail") throw new ApiError(400, "bad_verdict", "QA 结论是 pass 或 fail");
+    if (!["open", "claimed", "working"].includes(task.status)) throw new ApiError(409, "bad_state", "现在不能交付");
+    if (!this.activeClaim(task.id, "implementer", agent.id)) {
+      throw new ApiError(403, "not_implementer", "只有实现者能交付");
+    }
+    this.saveArtifact(task.id, ref, summary, artifact);
+    const parent = this.taskRow(task.pipeline_id!);
+    this.finishRole(task.id, "implementer", "completed");
+    if (verdict === "pass") {
+      this.setStatus(task.id, "done");
+      this.setStatus(parent.id, "done");
+      this.note(task, "QA 通过，流水线做完了");
+      return this.publicTask(task.id);
+    }
+    const used = parent.qa_returns ?? 0;
+    if (used >= QA_RETURN_LIMIT) {
+      this.setStatus(task.id, "blocked");
+      this.note(task, "QA 已打回 3 次，不再自动退回开发。留给人处理。");
+      return this.publicTask(task.id);
+    }
+    this.db.prepare("UPDATE tasks SET qa_returns = ?, updated_at = ? WHERE id = ?").run(used + 1, nowIso(), parent.id);
+    this.setStatus(task.id, "blocked");
+    const build = this.pipelineSteps(parent.id).find((step) => step.step_role === "build");
+    if (!build) {
+      this.note(task, "没有开发步可以退回");
+      return this.publicTask(task.id);
+    }
+    this.finishRole(build.id, "implementer", "released");
+    const body = `${build.body}\nQA 未通过：${summary}\n${artifact}`.slice(0, ARTIFACT_LIMIT);
+    this.db
+      .prepare(
+        `UPDATE tasks SET body = ?, deliverable_ref = NULL, deliverable_summary = NULL, deliverable_body = NULL, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(body, nowIso(), build.id);
+    this.setStatus(build.id, "open");
+    const fresh = this.taskRow(build.id);
+    if (parseHandlesJson(fresh.handles_json).length > 1) this.offerSequential(fresh, 0);
+    else this.offerSingle(fresh);
+    this.note(task, "QA 未通过，退回开发");
+    return this.publicTask(task.id);
+  }
+
+  private passReview(task: TaskRow, notes: Array<{ handle: string; verdict: string; body: string }>) {
+    const research = this.pipelineSteps(task.pipeline_id!).find((step) => step.step_role === "research");
+    const packet = reviewPacket(research?.deliverable_body || research?.body || "", notes);
+    this.saveArtifact(task.id, `review:${task.id.slice(0, 8)}`, "复核通过", packet);
+    this.setStatus(task.id, "done");
+    this.note(task, "复核都通过了");
+    this.openNext(task);
+    return this.publicTask(task.id);
+  }
+
+  private bounceResearch(task: TaskRow, notes: Array<{ handle: string; verdict: string; body: string }>) {
+    const parent = this.taskRow(task.pipeline_id!);
+    if ((parent.cross_returns ?? 0) >= CROSS_RETURN_LIMIT) {
+      this.note(task, "复核已打回 2 次，不再自动退回研究。留给人处理。");
+      return this.publicTask(task.id);
+    }
+    this.db
+      .prepare("UPDATE tasks SET cross_returns = ?, updated_at = ? WHERE id = ?")
+      .run((parent.cross_returns ?? 0) + 1, nowIso(), parent.id);
+    this.db.prepare("DELETE FROM pipeline_conclusions WHERE task_id = ?").run(task.id);
+    this.setStatus(task.id, "blocked");
+    const research = this.pipelineSteps(parent.id).find((step) => step.step_role === "research");
+    if (!research) {
+      this.note(task, "没有研究步可以退回");
+      return this.publicTask(task.id);
+    }
+    this.finishRole(research.id, "implementer", "released");
+    const body = `${research.body}\n${reviewBounce(notes)}`.slice(0, ARTIFACT_LIMIT);
+    this.db
+      .prepare(
+        `UPDATE tasks SET body = ?, deliverable_ref = NULL, deliverable_summary = NULL, deliverable_body = NULL, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(body, nowIso(), research.id);
+    this.setStatus(research.id, "open");
+    this.offerSingle(this.taskRow(research.id));
+    this.note(task, "复核有 changes，退回研究");
+    return this.publicTask(task.id);
+  }
+
+  private openNext(task: TaskRow) {
+    const parentId = task.pipeline_id;
+    if (!parentId) return;
+    const fresh = this.taskRow(task.id);
+    const next = this.pipelineSteps(parentId).find((step) => (step.step_index ?? 0) === (fresh.step_index ?? 0) + 1);
+    if (!next) {
+      this.setStatus(parentId, "done");
+      this.note(fresh, "流水线做完了");
+      return;
+    }
+    const parent = this.taskRow(parentId);
+    const body = composeHandoff({
+      demand: parent.body,
+      acceptance: parent.acceptance ?? "",
+      role: fresh.step_role ?? "",
+      handle: fresh.assignee_handle || "",
+      ref: fresh.deliverable_ref ?? "",
+      summary: fresh.deliverable_summary ?? "",
+      body: fresh.deliverable_body ?? "",
+    });
+    this.openStep(next, body);
+  }
+
+  private openStep(step: TaskRow, body: string) {
+    this.db
+      .prepare(
+        `UPDATE tasks
+         SET body = ?, status = 'open', deliverable_ref = NULL, deliverable_summary = NULL, deliverable_body = NULL, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(body.slice(0, ARTIFACT_LIMIT), nowIso(), step.id);
+    const fresh = this.taskRow(step.id);
+    if (fresh.step_role === "review") this.offerReview(fresh, true);
+    else if (parseHandlesJson(fresh.handles_json).length > 1) this.offerSequential(fresh, 0);
+    else this.offerSingle(fresh);
+  }
+
+  private offerSingle(task: TaskRow) {
+    const handle = parseHandlesJson(task.handles_json)[0] ?? "";
+    this.db
+      .prepare("UPDATE tasks SET assignee_handle = ?, offer_index = 0, offer_until = ?, status = 'open', updated_at = ? WHERE id = ?")
+      .run(handle, OFFER_HOLD, nowIso(), task.id);
+    const agent = handle ? this.agentInRoom(task.room_id, handle) : undefined;
+    if (!agent) {
+      this.db.prepare("UPDATE tasks SET offer_until = NULL, updated_at = ? WHERE id = ?").run(nowIso(), task.id);
+      if (task.assignee_handle !== handle) this.note(task, `${roleLabel(task.step_role ?? "")} 等 ${handle} 接入后再开始`);
+      return;
+    }
+    this.pushInbox(
+      agent.id,
+      task.room_id,
+      "task_open",
+      task.id,
+      this.cardSummary(task, `轮到你做${roleLabel(task.step_role ?? "")}`),
+    );
+  }
+
+  private offerReview(task: TaskRow, announceMissing: boolean) {
+    const handles = parseHandlesJson(task.handles_json);
+    this.db
+      .prepare("UPDATE tasks SET status = 'open', assignee_handle = ?, offer_until = ?, updated_at = ? WHERE id = ?")
+      .run(handles.join(","), OFFER_HOLD, nowIso(), task.id);
+    let missing = false;
+    for (const handle of handles) {
+      if (this.conclusions(task.id).some((note) => note.handle === handle)) continue;
+      const agent = this.agentInRoom(task.room_id, handle);
+      if (!agent) {
+        missing = true;
+        continue;
+      }
+      this.pushInbox(agent.id, task.room_id, "task_open", task.id, `请复核。结论用 pass 或 changes。${task.title}`.slice(0, 240));
+    }
+    if (missing && announceMissing) this.note(task, "复核还缺没接入的句柄");
+  }
+
+  private offerSequential(task: TaskRow, start: number) {
+    const handles = parseHandlesJson(task.handles_json);
+    const timeout = task.claim_timeout_ms || 120_000;
+    for (let index = Math.max(0, start); index < handles.length; index += 1) {
+      const handle = handles[index];
+      const agent = this.agentInRoom(task.room_id, handle);
+      if (!agent) continue;
+      const until = new Date(Date.now() + timeout).toISOString();
+      this.db
+        .prepare(
+          "UPDATE tasks SET assignee_handle = ?, offer_index = ?, offer_until = ?, status = 'open', updated_at = ? WHERE id = ?",
+        )
+        .run(handle, index, until, nowIso(), task.id);
+      this.pushInbox(
+        agent.id,
+        task.room_id,
+        "task_open",
+        task.id,
+        this.cardSummary(task, `轮到你做${roleLabel(task.step_role ?? "")}`),
+      );
+      this.note(task, `${roleLabel(task.step_role ?? "")} 交给 ${handle}。${Math.round(timeout / 1000)} 秒内不认领就交给下一位。`);
+      return;
+    }
+    const alreadyWaiting = task.offer_index === -1;
+    this.db
+      .prepare(
+        "UPDATE tasks SET assignee_handle = '', offer_index = -1, offer_until = NULL, status = 'open', updated_at = ? WHERE id = ?",
+      )
+      .run(nowIso(), task.id);
+    if (!alreadyWaiting) this.note(task, `${roleLabel(task.step_role ?? "")} 的句柄都还没接入`);
+  }
+
+  private advanceOffer(taskId: string, reason: string) {
+    const task = this.taskRow(taskId);
+    if (task.status !== "open" || !task.pipeline_id) return;
+    if (this.holder(taskId, "implementer")) return;
+    const handles = parseHandlesJson(task.handles_json);
+    if (handles.length < 2) return;
+    const current = task.assignee_handle || handles[task.offer_index ?? 0] || "上一位";
+    this.note(task, `${current} ${reason}，交给下一位`);
+    this.offerSequential(task, (task.offer_index ?? 0) + 1);
+  }
+
+  private reofferPipeline(task: TaskRow) {
+    const fresh = this.taskRow(task.id);
+    if (!fresh.pipeline_id || fresh.status !== "open" || fresh.step_role === "review") return;
+    if (parseHandlesJson(fresh.handles_json).length > 1) this.offerSequential(fresh, fresh.offer_index ?? 0);
+    else this.offerSingle(fresh);
+  }
+
+  private nudgePipeline(task: TaskRow) {
+    if (task.status !== "open" || !task.pipeline_id || this.holder(task.id, "implementer")) return;
+    const handles = parseHandlesJson(task.handles_json);
+    if (task.step_role === "review") {
+      this.offerReview(task, false);
+      return;
+    }
+    if (handles.length > 1) {
+      if (task.offer_until) return;
+      const start = task.offer_index === null || task.offer_index < 0 ? 0 : task.offer_index;
+      this.offerSequential(task, start);
+      return;
+    }
+    if (task.offer_until) return;
+    this.offerSingle(task);
+  }
+
+  private cancelPipelineSteps(parentId: string, name: string) {
+    for (const step of this.pipelineSteps(parentId)) {
+      if (["done", "canceled", "failed"].includes(step.status)) continue;
+      this.setStatus(step.id, "canceled");
+      this.finishRole(step.id, "implementer", "released");
+      this.note(step, `${name} 取消了任务`);
+    }
+  }
+
+  private pipelineSteps(parentId: string) {
+    return this.db.prepare("SELECT * FROM tasks WHERE pipeline_id = ? ORDER BY step_index, created_at").all(parentId) as TaskRow[];
+  }
+
+  private conclusions(taskId: string) {
+    return this.db
+      .prepare("SELECT handle, verdict, body FROM pipeline_conclusions WHERE task_id = ? ORDER BY created_at, rowid")
+      .all(taskId) as Array<{ handle: string; verdict: string; body: string }>;
+  }
+
+  private agentInRoom(roomId: string, handle: string) {
+    return this.db
+      .prepare(
+        `SELECT a.id, a.handle, a.paused FROM agents a
+         JOIN room_members m ON m.principal_id = a.id AND m.principal_type = 'agent'
+         WHERE m.room_id = ? AND a.handle = ?`,
+      )
+      .get(roomId, handle) as { id: string; handle: string; paused: number } | undefined;
+  }
+
+  private saveArtifact(taskId: string, ref: string, summary: string, body: string) {
+    this.db
+      .prepare(
+        "UPDATE tasks SET deliverable_ref = ?, deliverable_summary = ?, deliverable_body = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(ref, summary, body, nowIso(), taskId);
+  }
+
+  private note(task: { room_id: string; id: string }, body: string) {
+    const message = this.insertMessage({
+      roomId: task.room_id,
+      authorType: "system",
+      authorId: "system",
+      taskId: task.id,
+      kind: "system",
+      body,
+      addressed: [],
+    });
+    this.fanout({
+      roomId: task.room_id,
+      author: { type: "system", id: "system" },
+      message,
+      addressed: [],
+      taskId: task.id,
+    });
   }
 
   private anyRoom(orgId: string) {

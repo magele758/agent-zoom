@@ -75,6 +75,72 @@ npm run fix-owner -- --from magele758 --to 彭磊 --handles cursor,chatgpt,claud
 
 指令可勾「复杂」：有等级 3 以上的空闲 agent 时只给他们。等级在名册里改。
 
+## 按角色流水线
+
+不带 `steps` 的指令还是原来的认领、评审、测试。带 `steps` 时，房间按顺序建步：上一步的产物写进下一步的正文。产物最多 32000 字。短说明仍最多 1000 字。`gate` 会记在步骤上，默认关；这一版即使写成 `true` 也会直接进入下一步，没有审批页面。
+
+默认顺序是：
+
+```json
+{
+  "gate": false,
+  "steps": [
+    { "role": "research", "handle": "antigravity" },
+    { "role": "review", "handles": ["chatgpt", "grok"] },
+    { "role": "product", "handle": "chatgpt" },
+    { "role": "ui", "handle": "chatgpt" },
+    { "role": "tech", "handle": "cursor" },
+    { "role": "build", "handles": ["cursor", "chatgpt", "claude"], "claimTimeoutMs": 120000 },
+    { "role": "qa", "handle": "grok" }
+  ]
+}
+```
+
+`claimTimeoutMs` 不写就是 120000（2 分钟），范围 1 秒到 30 分钟。开发步按这个列表往后叫：上一位没 enroll、明确 `decline`、或到点还没认领，才叫醒下一位。复核步要每个句柄都交 `conclude`：`pass`，或 `changes` 加说明。有 `changes` 就退回研究，最多 2 次。QA 用 `deliver` 交 `pass` 或 `fail`。`fail` 打回开发，最多 3 次。截图可以是 URL，也可以是本机路径，房间只保存这段文字，不去打开。
+
+Antigravity 和 Cursor、Claude Code 一样走 MCP，不走 webhook。在 Mac 上、房间仓库里：
+
+```bash
+npm run enroll -- --code join_xxx --handle antigravity --runtime antigravity --tags research
+npm run mcp -- --handle antigravity
+```
+
+Claude Code Desktop 用句柄 `claude`，runtime 写 `claude`，MCP 配置和上面的 Cursor 一样，把 `--handle` 换成 `claude`。
+
+ChatGPT 用适配器，不进 `npm start` 或 `npm run dev`：
+
+```bash
+ADAPTER=echo npm run adapt -- --handle chatgpt
+ADAPTER=openai OPENAI_API_KEY=... npm run adapt -- --handle chatgpt
+```
+
+Grok Bot 用 webhook。适配器跟房间待在同一台机器上，把任务 POST 到 `WEBHOOK_URL`。可选请求头 `x-webhook-secret: $WEBHOOK_SECRET`。
+
+请求：
+
+```json
+{ "taskId": "…", "role": "qa", "title": "…", "acceptance": "…", "body": "上一步产物，含分支或 PR、怎么跑、验收" }
+```
+
+响应：
+
+```json
+{
+  "verdict": "pass",
+  "ref": "qa:报告",
+  "summary": "一句结论",
+  "body": "自动化测试、界面、交互、动画各看了什么",
+  "screenshots": ["/home/grok/shots/checkout.png"]
+}
+```
+
+`role` 是 `review` 时，`verdict` 用 `pass` 或 `changes`。是 `qa` 时用 `pass` 或 `fail`。`screenshots` 可省略。没有公网地址也可以写本机路径。
+
+```bash
+ADAPTER=echo npm run adapt -- --handle grok
+ADAPTER=webhook WEBHOOK_URL=http://grok-host/hook WEBHOOK_SECRET=... npm run adapt -- --handle grok
+```
+
 ## 测试
 
 ```bash

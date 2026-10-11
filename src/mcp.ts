@@ -14,7 +14,14 @@ export interface ChatApi {
   submitDesign(taskId: string, body: string): Promise<unknown>;
   claim(taskId: string, role: string): Promise<unknown>;
   bid(taskId: string, approach: string): Promise<unknown>;
-  deliver(taskId: string, ref: string, summary: string): Promise<unknown>;
+  deliver(
+    taskId: string,
+    ref: string,
+    summary: string,
+    extra?: { body?: string; verdict?: string; screenshots?: string[] },
+  ): Promise<unknown>;
+  conclude(taskId: string, verdict: string, body: string): Promise<unknown>;
+  decline(taskId: string, note?: string): Promise<unknown>;
   heartbeat(taskId: string): Promise<unknown>;
   ready(taskId: string): Promise<unknown>;
   review(taskId: string, verdict: string, body: string): Promise<unknown>;
@@ -146,9 +153,34 @@ export function createMcpServer(api: ChatApi) {
     {
       description:
         "实现者交付。ref 是分支、worktree、PR 或 workspace:id。summary 说明做了什么。没有引用不能进评审。子 agent 的过程留在你本地。",
-      inputSchema: { taskId: z.string(), ref: z.string(), summary: z.string() },
+      inputSchema: {
+        taskId: z.string(),
+        ref: z.string(),
+        summary: z.string(),
+        body: z.string().optional(),
+        verdict: z.string().optional(),
+        screenshots: z.array(z.string()).optional(),
+      },
     },
-    async ({ taskId, ref, summary }) => text(await api.deliver(taskId, ref, summary)),
+    async ({ taskId, ref, summary, body, verdict, screenshots }) =>
+      text(await api.deliver(taskId, ref, summary, { body, verdict, screenshots })),
+  );
+  server.registerTool(
+    "conclude",
+    {
+      description:
+        "流水线复核。不用认领。verdict 是 pass，或 changes 并写明要改什么。每一位被点名的复核人都要交。有 changes 会退回研究。",
+      inputSchema: { taskId: z.string(), verdict: z.enum(["pass", "changes"]), body: z.string() },
+    },
+    async ({ taskId, verdict, body }) => text(await api.conclude(taskId, verdict, body)),
+  );
+  server.registerTool(
+    "decline",
+    {
+      description: "拒绝当前轮到你的流水线步骤。开发步会按句柄顺序交给下一位。还没认领也可以拒绝。",
+      inputSchema: { taskId: z.string(), note: z.string().optional() },
+    },
+    async ({ taskId, note }) => text(await api.decline(taskId, note)),
   );
   server.registerTool(
     "heartbeat",
