@@ -8,7 +8,7 @@
     "dev": "concurrently -n server,web -c blue,green \"tsx watch src/server/index.ts\" \"vite\"",
     "start": "tsx src/server/index.ts",
     "build": "vite build",
-    "test": "tsx --test src/server/logic.test.ts src/mentions.test.ts src/local-agents.test.ts src/presence-dispatch.test.ts src/adapter.test.ts src/e2e.test.ts",
+    "test": "tsx --test src/server/logic.test.ts src/mentions.test.ts src/local-agents.test.ts src/view.test.ts src/presence-dispatch.test.ts src/adapter.test.ts src/e2e.test.ts",
     "adapt": "tsx src/adapter.ts",
     "mcp": "tsx src/cli.ts mcp",
     "enroll": "tsx src/cli.ts enroll",

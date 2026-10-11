@@ -3,6 +3,19 @@ import { createPortal } from "react-dom";
 import { groupById, GROUPS, groupLabel, groupOf } from "../../src/groups";
 import { api, type Agent, type Claim, type LocalAgent, type Me, type Snapshot, type Task } from "./api";
 import { mentionAtCaret, mentionReach, settledMentions, splitMentions } from "./mentions";
+import {
+  composerPlaceholder,
+  defaultKind,
+  foldBody,
+  isPipelineParent,
+  isPipelineStep,
+  PIPELINE_STATUS,
+  pipelineOverview,
+  shouldFold,
+  stepSlots,
+  stepsOf,
+  type ComposerKind,
+} from "./view";
 
 const KIND_LABEL: Record<string, string> = {
   chat: "发言",
@@ -21,6 +34,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
+  blocked: "等待",
   open: "待认领",
   bidding: "投标中",
   claimed: "已认领",
@@ -59,6 +73,20 @@ function stepClass(status: string, index: number, current: number) {
 
 function timeLabel(iso: string) {
   return new Date(iso).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+function FoldedBody({ body, known, fold, testId }: { body: string; known: Set<string>; fold: boolean; testId?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!fold) return <RichBody body={body} known={known} />;
+  const { head, hidden } = foldBody(body);
+  return (
+    <div className="folded" data-testid={testId} data-open={open}>
+      <RichBody body={open ? body : head} known={known} />
+      <button type="button" className="text-button fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? "收起" : `展开（还有 ${hidden} 字）`}
+      </button>
+    </div>
+  );
 }
 
 function RichBody({ body, known }: { body: string; known: Set<string> }) {
@@ -446,7 +474,7 @@ function Channel({
   const [parallel, setParallel] = useState(false);
   const [complex, setComplex] = useState(false);
   const [tags, setTags] = useState("");
-  const [kind, setKind] = useState<"chat" | "question" | "instruction">("instruction");
+  const [kind, setKind] = useState<ComposerKind>("chat");
   const [taskId, setTaskId] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [editingScope, setEditingScope] = useState(false);
@@ -513,7 +541,7 @@ function Channel({
 
   useEffect(() => {
     setEditingText(false);
-    setKind(snap?.room.direct ? "question" : "instruction");
+    setKind(defaultKind(Boolean(snap?.room.direct)));
   }, [snap?.room.id, snap?.room.direct]);
 
   const at = mentionAtCaret(body, caret);
@@ -681,7 +709,12 @@ function Channel({
                 ) : null}
                 <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
               </div>
-              <RichBody body={message.body} known={knownHandles} />
+              <FoldedBody
+                body={message.body}
+                known={knownHandles}
+                fold={shouldFold(message.authorType, message.kind, message.body)}
+                testId={`msg-${message.kind}`}
+              />
             </article>
           ),
         )}
@@ -766,7 +799,7 @@ function Channel({
             <textarea
               id="acceptance"
               data-testid="acceptance"
-              rows={2}
+              rows={1}
               value={acceptance}
               placeholder="验收标准。不填就用上面的指令。"
               onChange={(event) => setAcceptance(event.target.value)}
@@ -780,6 +813,7 @@ function Channel({
               placeholder="标签，用逗号分开。不填时，有设计身份就先出方案，否则空闲 agent 都能做"
               onChange={(event) => setTags(event.target.value)}
             />
+            <div className="checkrow">
             <label className="checkline">
               <input
                 data-testid="parallel"
@@ -798,6 +832,7 @@ function Channel({
               />
               复杂任务。有等级 3 及以上的空闲 agent 时只交给他们，没有就退回全体
             </label>
+            </div>
           </div>
         ) : null}
         <label className="sr" htmlFor="composer">消息</label>
@@ -816,19 +851,13 @@ function Channel({
             id="composer"
             data-testid="composer"
             ref={box}
-            rows={3}
+            rows={kind === "instruction" ? 2 : 3}
             value={body}
             aria-autocomplete="list"
             aria-expanded={menuOpen}
             aria-controls={menuOpen ? "mention-menu" : undefined}
             aria-activedescendant={menuOpen && options[activeIndex] ? `mention-option-${options[activeIndex].handle}` : undefined}
-            placeholder={
-              snap?.room.direct
-                ? "只有这段私聊里的人能看到。输入 @ 会列出可以叫醒的 agent。"
-                : kind === "instruction"
-                  ? "写下要做完的需求。不点名时，频道里的 agent 都会收到这句。输入 @ 只叫醒那一个。"
-                  : "写给房间。不点名时，频道里的 agent 都会收到。输入 @ 只叫醒那一个。"
-            }
+            placeholder={composerPlaceholder(kind, Boolean(snap?.room.direct))}
             onChange={(event) => {
               setBody(event.target.value);
               setCaret(event.target.selectionStart ?? 0);
@@ -1122,6 +1151,16 @@ function LocalAgents({
                             <strong>{agent.label}</strong>
                             <span className="handle-name">@{agent.handle}</span>
                             <em>{agent.detail}</em>
+                            {agent.inRoom && !agent.configured && agent.writable ? (
+                              <em className="local-state" data-testid={`local-agent-state-${agent.id}`}>
+                                房间里有同名身份 @{agent.handle}，但本机还没有它的配置。点接入写入。
+                              </em>
+                            ) : null}
+                            {agent.configured && !agent.inRoom ? (
+                              <em className="local-state" data-testid={`local-agent-state-${agent.id}`}>
+                                本机已有配置，还没加入这个频道。
+                              </em>
+                            ) : null}
                           </div>
                           <div className="local-actions">
                             {pickLevel ? (
@@ -1391,7 +1430,7 @@ function SidePanel({
         <div data-testid="task-list">
           {tasks.length === 0 ? <p className="fine">还没有指令。</p> : null}
           {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} agents={snap.members.agents} onChanged={onChanged} onError={onError} />
+            <TaskCard key={task.id} task={task} all={snap.tasks} agents={snap.members.agents} onChanged={onChanged} onError={onError} />
           ))}
         </div>
         {snap.locks.length > 0 ? (
@@ -1408,6 +1447,7 @@ function SidePanel({
 
 function TaskCard({
   task,
+  all = [],
   agents,
   onChanged,
   onError,
@@ -1415,6 +1455,7 @@ function TaskCard({
   winning = false,
 }: {
   task: Task;
+  all?: Task[];
   agents: Agent[];
   onChanged: () => void;
   onError: (message: string) => void;
@@ -1424,12 +1465,17 @@ function TaskCard({
   const current = stepIndex(task.status);
   const closed = task.status === "done" || task.status === "canceled";
   const lanes = task.lanes ?? [];
-  const showFlow = lanes.length === 0;
+  const parent = isPipelineParent(task);
+  const step = isPipelineStep(task);
+  const siblings = step ? stepsOf(task.pipelineId!, all) : [];
+  const overview = parent ? pipelineOverview(task, stepsOf(task.id, all)) : null;
+  const showFlow = lanes.length === 0 && !parent && !step;
+  const label = step || parent ? (PIPELINE_STATUS[task.status] ?? task.status) : (STATUS_LABEL[task.status] ?? task.status);
   return (
-    <article className={`task status-${task.status}${nested ? " lane" : ""}${winning ? " winner" : ""}`}>
+    <article className={`task status-${task.status}${nested ? " lane" : ""}${winning ? " winner" : ""}${parent ? " pipeline" : ""}${step ? " pipeline-step" : ""}`}>
       <header>
         <h3>{task.title}</h3>
-        <span className="pill">{task.designPending?.length ? "出方案" : (STATUS_LABEL[task.status] ?? task.status)}</span>
+        <span className="pill">{task.designPending?.length ? "出方案" : label}</span>
       </header>
       {task.designPending?.length ? (
         <p className="note">先出方案：{labelList(task.designPending)}。他们不改代码。方案齐了再交给实现。</p>
@@ -1451,7 +1497,7 @@ function TaskCard({
       {task.deliverableRef ? (
         <p className="note">
           交付：<code>{task.deliverableRef}</code>
-          {task.deliverableSummary ? ` ${task.deliverableSummary}` : ""}
+          {task.deliverableSummary ? <FoldedNote text={task.deliverableSummary} /> : null}
         </p>
       ) : null}
       {task.mode === "parallel" && !nested ? <p className="note">并行方案，最多 {task.maxLanes ?? 3} 条。隔离方式由 agent 自己定。</p> : null}
@@ -1464,6 +1510,30 @@ function TaskCard({
             </li>
           ))}
         </ol>
+      ) : null}
+      {overview ? (
+        <div className="pipeline-flow" data-testid="pipeline-overview">
+          <p className="note pipeline-where" data-testid="pipeline-where">{overview.where}</p>
+          <ol className="pipeline-steps">
+            {overview.rows.map((row) => (
+              <li key={row.id} className={row.state} data-testid={`pipeline-step-${row.role}`}>
+                <span className="role">{row.label}</span>
+                <strong className={row.owner === "空" ? "vacant" : "held"}>{row.owner}</strong>
+                <em>{row.status}</em>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+      {step ? (
+        <ul className="slots pipeline-slots" data-testid="pipeline-slots">
+          {stepSlots(task, siblings).map((slot) => (
+            <li key={slot.label}>
+              <span>{slot.label}</span>
+              <strong className={slot.held ? "held" : "vacant"}>{slot.value}</strong>
+            </li>
+          ))}
+        </ul>
       ) : null}
       {showFlow ? (
         <ul className="slots">
@@ -1564,6 +1634,22 @@ function TaskCard({
         </div>
       )}
     </article>
+  );
+}
+
+function FoldedNote({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const { head, long } = foldBody(text);
+  return (
+    <>
+      {" "}
+      {open || !long ? text : head}
+      {long ? (
+        <button type="button" className="text-button fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "收起" : "展开"}
+        </button>
+      ) : null}
+    </>
   );
 }
 
