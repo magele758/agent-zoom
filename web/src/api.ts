@@ -17,6 +17,8 @@ export type LocalAgent = {
   runtime: string;
   detail: string;
   writable: boolean;
+  inRoom: boolean;
+  configured: boolean;
   connected: boolean;
 };
 
@@ -76,6 +78,12 @@ export type Task = {
   deliverableSummary?: string | null;
   winnerTaskId?: string | null;
   bidUntil?: string | null;
+  pipelineId?: string | null;
+  stepIndex?: number | null;
+  stepRole?: string | null;
+  assigneeHandle?: string;
+  handles?: string[];
+  conclusions?: Array<{ handle: string; verdict: string }>;
   scope?: RoomScope;
   claims: Claim[];
   lanes?: Task[];

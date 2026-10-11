@@ -1198,6 +1198,99 @@ test("qa failure reopens build and blocks qa until the return limit", () => {
   assert.equal(returns.qa_returns, 3);
 });
 
+function feed(store: Store, user: Principal & { type: "user" }, roomId: string) {
+  return store.snapshot(user, roomId, new Set()).messages as Array<{
+    kind: string;
+    body: string;
+    taskId: string | null;
+    handle: string | null;
+  }>;
+}
+
+test("every reviewer's verdict reaches the feed, including the one that closes the review", () => {
+  const { store, user, roomId } = studio();
+  const researcher = enroll(store, user, roomId, "antigravity");
+  const designer = enroll(store, user, roomId, "chatgpt");
+  const grok = enroll(store, user, roomId, "grok");
+  pipeline(store, user, roomId, {
+    steps: [
+      { role: "research", handle: "antigravity" },
+      { role: "review", handles: ["chatgpt", "grok"] },
+      { role: "product", handle: "chatgpt" },
+    ],
+  });
+  const research = step(store, researcher, roomId, "research");
+  store.claim(researcher, research.id, "implementer");
+  store.deliver(researcher, research.id, "note:1", "研究短说明", { body: "研究发现" });
+  const review = step(store, designer, roomId, "review");
+  store.conclude(designer, review.id, "pass", "echo 复核通过");
+  assert.deepEqual(store.getTask(designer, review.id).conclusions, [{ handle: "chatgpt", verdict: "pass" }]);
+  store.conclude(grok, review.id, "pass", "echo 复核通过");
+  const lines = feed(store, user, roomId)
+    .filter((message) => message.kind === "system")
+    .map((message) => message.body);
+  const chatgptAt = lines.findIndex((line) => line.startsWith("chatgpt 交了复核：pass"));
+  const grokAt = lines.findIndex((line) => line.startsWith("grok 交了复核：pass"));
+  const passedAt = lines.indexOf("复核都通过了");
+  assert.ok(chatgptAt >= 0 && grokAt > chatgptAt && passedAt > grokAt, lines.join("|"));
+  assert.match(lines[grokAt], /echo 复核通过/);
+  assert.equal(store.getTask(designer, review.id).conclusions.length, 2);
+});
+
+test("a long review conclusion is trimmed to one line in the feed", () => {
+  const { store, user, roomId } = studio();
+  const researcher = enroll(store, user, roomId, "antigravity");
+  const designer = enroll(store, user, roomId, "chatgpt");
+  pipeline(store, user, roomId, {
+    steps: [
+      { role: "research", handle: "antigravity" },
+      { role: "review", handle: "chatgpt" },
+    ],
+  });
+  const research = step(store, researcher, roomId, "research");
+  store.claim(researcher, research.id, "implementer");
+  store.deliver(researcher, research.id, "note:1", "短", { body: "研究" });
+  store.conclude(designer, step(store, designer, roomId, "review").id, "changes", `第一行\n${"很长".repeat(200)}`);
+  const line = feed(store, user, roomId).find((message) => message.body.startsWith("chatgpt 交了复核：changes"));
+  assert.ok(line);
+  assert.equal(line.body.includes("\n"), false);
+  assert.ok(line.body.length < 160);
+});
+
+test("qa pass and qa fail both leave a delivery card in the feed", () => {
+  const { store, user, roomId } = studio();
+  const cursor = enroll(store, user, roomId, "cursor");
+  const grok = enroll(store, user, roomId, "grok");
+  pipeline(store, user, roomId, {
+    steps: [
+      { role: "build", handle: "cursor" },
+      { role: "qa", handle: "grok" },
+    ],
+  });
+  const build = step(store, cursor, roomId, "build");
+  store.claim(cursor, build.id, "implementer");
+  store.deliver(cursor, build.id, "branch/pay", "做完了", { body: "npm start" });
+  const qa = step(store, grok, roomId, "qa");
+  store.claim(grok, qa.id, "implementer");
+  store.deliver(grok, qa.id, "qa:local", "按钮没反馈", { body: "详情", verdict: "fail" });
+  const failed = feed(store, user, roomId).filter((message) => message.taskId === qa.id && message.kind === "deliverable");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].handle, "grok");
+  assert.equal(failed[0].body, "qa:local\nQA 未通过：按钮没反馈");
+
+  const again = step(store, cursor, roomId, "build");
+  store.claim(cursor, again.id, "implementer");
+  store.deliver(cursor, again.id, "branch/pay2", "改好了", { body: "npm start" });
+  const qaAgain = step(store, grok, roomId, "qa");
+  store.claim(grok, qaAgain.id, "implementer");
+  store.deliver(grok, qaAgain.id, "echo:qa", "echo 通过。未打开浏览器。", { body: "echo 正文", verdict: "pass" });
+  const cards = feed(store, user, roomId).filter((message) => message.taskId === qa.id && message.kind === "deliverable");
+  assert.equal(cards.length, 2);
+  assert.equal(cards[1].body, "echo:qa\nQA 通过：echo 通过。未打开浏览器。");
+  const bodies = feed(store, user, roomId).map((message) => message.body);
+  assert.ok(bodies.indexOf(cards[1].body) < bodies.indexOf("QA 通过，流水线做完了"));
+});
+
 test("build falls through handles when the first is missing, declines, or times out", () => {
   const missing = studio();
   const assistant = enroll(missing.store, missing.user, missing.roomId, "chatgpt");

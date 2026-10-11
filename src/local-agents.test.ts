@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   configTarget,
   connectInstalled,
+  isConfigured,
   listFromProbe,
   LocalAgentError,
   mcpLaunch,
@@ -29,6 +30,7 @@ const desktop = [
   "Claude.app",
   "ChatGPT.app",
   "Gemini.app",
+  "Antigravity.app",
   "OpenCode.app",
   "Windsurf.app",
   "Visual Studio Code.app",
@@ -36,7 +38,7 @@ const desktop = [
 ];
 
 test("installed clients stay in catalog order and mark who is already in the room", () => {
-  const found = listFromProbe("/h", probe(["claude", "codex", "copilot", "amp"]), apps(desktop), new Set(["cursor"]));
+  const found = listFromProbe("/h", probe(["claude", "codex", "copilot", "amp"]), apps(desktop), new Set(["cursor"]), (id) => id === "cursor");
   assert.deepEqual(
     found.map((agent) => agent.id),
     [
@@ -46,6 +48,7 @@ test("installed clients stay in catalog order and mark who is already in the roo
       "chatgpt",
       "codex",
       "gemini",
+      "antigravity",
       "opencode",
       "windsurf",
       "vscode",
@@ -59,6 +62,53 @@ test("installed clients stay in catalog order and mark who is already in the roo
   assert.equal(found.find((agent) => agent.id === "zed")?.writable, false);
   assert.equal(found.find((agent) => agent.id === "copilot")?.writable, false);
   assert.deepEqual(listFromProbe("/h", probe([]), apps([])), []);
+});
+
+test("a same-named identity in the room is not a local config", () => {
+  const found = listFromProbe("/h", probe(["claude"]), apps(["Cursor.app"]), new Set(["claude", "cursor"]), (id) => id === "cursor");
+  const claude = found.find((agent) => agent.id === "claude");
+  assert.deepEqual(
+    { inRoom: claude?.inRoom, configured: claude?.configured, connected: claude?.connected },
+    { inRoom: true, configured: false, connected: false },
+  );
+  const cursor = found.find((agent) => agent.id === "cursor");
+  assert.equal(cursor?.connected, true);
+  const local = listFromProbe("/h", probe(["claude"]), apps([]), new Set(), () => true).find((agent) => agent.id === "claude");
+  assert.deepEqual({ inRoom: local?.inRoom, configured: local?.configured, connected: local?.connected }, { inRoom: false, configured: true, connected: false });
+});
+
+test("configured is read from the real config files and never writes", () => {
+  const home = mkdtempSync(join(tmpdir(), "local-agents-"));
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { other: {} }, projects: {} }));
+  mkdirSync(join(home, ".cursor"), { recursive: true });
+  writeFileSync(join(home, ".cursor/mcp.json"), JSON.stringify({ mcpServers: { "agent-chatroom": { command: "node" } } }));
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  writeFileSync(join(home, ".codex/config.toml"), '[mcp_servers."agent-chatroom"]\ncommand = "node"\n');
+  const before = readFileSync(join(home, ".claude.json"), "utf8");
+  assert.equal(isConfigured(home, "claude"), false);
+  assert.equal(isConfigured(home, "cursor"), true);
+  assert.equal(isConfigured(home, "chatgpt"), true);
+  assert.equal(isConfigured(home, "codex"), false);
+  assert.equal(isConfigured(home, "gemini"), false);
+  assert.equal(isConfigured(home, "zed"), false);
+  assert.equal(readFileSync(join(home, ".claude.json"), "utf8"), before);
+  writeFileSync(join(home, ".claude.json"), "// comment\n{ \"mcpServers\": { \"agent-chatroom\": {} } }");
+  assert.equal(isConfigured(home, "claude"), true);
+});
+
+test("antigravity is listed and targets its own mcp_config.json", () => {
+  const found = listFromProbe("/h", probe([]), apps(["Antigravity.app"]), new Set(), () => false);
+  const row = found.find((agent) => agent.id === "antigravity");
+  assert.ok(row);
+  assert.equal(row.handle, "antigravity");
+  assert.equal(row.writable, true);
+  assert.match(row.detail, /\.gemini\/antigravity\/mcp_config\.json/);
+  const target = configTarget("/h", "antigravity", mcpLaunch("/repo", "/node", "antigravity"));
+  assert.ok(target && target.kind === "json");
+  assert.equal(target.path, "/h/.gemini/antigravity/mcp_config.json");
+  assert.equal(target.group, "mcpServers");
+  const byDir = listFromProbe("/h", { exists: (path) => path === "/h/.gemini/antigravity", bins: new Set() }, apps([]), new Set(), () => false);
+  assert.deepEqual(byDir.map((agent) => agent.id), ["antigravity"]);
 });
 
 test("json upsert keeps sibling servers", () => {
