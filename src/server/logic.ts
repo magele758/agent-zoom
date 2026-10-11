@@ -1382,13 +1382,9 @@ export class Store {
              verdict = excluded.verdict, body = excluded.body, created_at = excluded.created_at`,
         )
         .run(uuid(), taskId, agent.handle, verdict, text, nowIso());
-      const notes = this.conclusions(taskId);
-      if (notes.length < handles.length) {
-        this.note(task, `${agent.handle} 交了复核：${verdict}`);
-        return this.publicTask(taskId);
-      }
-      if (notes.some((note) => note.verdict === "changes")) return this.bounceResearch(task, notes);
-      return this.passReview(task, notes);
+      const closed = this.closeReview(this.taskRow(taskId), false);
+      if (!closed) this.note(task, `${agent.handle} 交了复核：${verdict}`);
+      return this.publicTask(taskId);
     });
     this.flush();
     return result;
@@ -1909,7 +1905,11 @@ export class Store {
         }
         this.offerChecks(row.agent_id);
       }
-      for (const offer of dueOffers) this.advanceOffer(offer.id, "超时未认领");
+      for (const offer of dueOffers) {
+        const due = this.taskRow(offer.id);
+        if (due.step_role === "review") this.closeReview(due, true);
+        else this.advanceOffer(offer.id, "超时未认领");
+      }
       for (const bid of dueBids) {
         const task = this.taskRow(bid.id);
         if (task.status === "bidding") this.award(task.id);
@@ -2441,7 +2441,7 @@ export class Store {
   }
 
   private addressedAgents(task: TaskRow) {
-    if (task.parent_id) return [];
+    if (task.parent_id || task.pipeline_id || task.mode === "pipeline") return [];
     const kind = this.db.prepare("SELECT kind FROM messages WHERE id = ?").get(task.message_id) as
       | { kind: string }
       | undefined;
@@ -3405,10 +3405,25 @@ export class Store {
   }
 
   private offerReview(task: TaskRow, announceMissing: boolean) {
-    const handles = parseHandlesJson(task.handles_json);
+    const current = this.taskRow(task.id);
+    if (current.status !== "open") return;
+    const due =
+      !announceMissing &&
+      !!current.offer_until &&
+      current.offer_until !== OFFER_HOLD &&
+      Date.parse(current.offer_until) <= Date.now();
+    if (due) {
+      this.closeReview(current, true);
+      return;
+    }
+    const handles = parseHandlesJson(current.handles_json);
+    let until = current.offer_until;
+    if (announceMissing || !until || until === OFFER_HOLD) {
+      until = new Date(Date.now() + (current.claim_timeout_ms || 120_000)).toISOString();
+    }
     this.db
       .prepare("UPDATE tasks SET status = 'open', assignee_handle = ?, offer_until = ?, updated_at = ? WHERE id = ?")
-      .run(handles.join(","), OFFER_HOLD, nowIso(), task.id);
+      .run(handles.join(","), until, nowIso(), current.id);
     let missing = false;
     for (const handle of handles) {
       if (this.conclusions(task.id).some((note) => note.handle === handle)) continue;
@@ -3456,6 +3471,7 @@ export class Store {
 
   private advanceOffer(taskId: string, reason: string) {
     const task = this.taskRow(taskId);
+    if (task.step_role === "review") return;
     if (task.status !== "open" || !task.pipeline_id) return;
     if (this.holder(taskId, "implementer")) return;
     const handles = parseHandlesJson(task.handles_json);
@@ -3511,11 +3527,67 @@ export class Store {
   private agentInRoom(roomId: string, handle: string) {
     return this.db
       .prepare(
-        `SELECT a.id, a.handle, a.paused FROM agents a
+        `SELECT a.id, a.handle, a.paused, a.last_seen_at FROM agents a
          JOIN room_members m ON m.principal_id = a.id AND m.principal_type = 'agent'
          WHERE m.room_id = ? AND a.handle = ?`,
       )
-      .get(roomId, handle) as { id: string; handle: string; paused: number } | undefined;
+      .get(roomId, handle) as
+      | { id: string; handle: string; paused: number; last_seen_at: string | null }
+      | undefined;
+  }
+
+  /** 已接入、没暂停，且 5 分钟内有动静。复核超时只跳过缺席或离线的人。 */
+  private reviewerLive(agent: { paused: number; last_seen_at: string | null }) {
+    return this.isOnline(agent.paused, agent.last_seen_at);
+  }
+
+  private closeReview(task: TaskRow, timedOut: boolean) {
+    const fresh = this.taskRow(task.id);
+    if (fresh.step_role !== "review" || fresh.status !== "open" || !fresh.pipeline_id) return false;
+    const handles = parseHandlesJson(fresh.handles_json);
+    const notes = this.conclusions(fresh.id);
+    const pending = handles.filter((handle) => !notes.some((note) => note.handle === handle));
+    if (pending.length === 0) {
+      this.finishReviewNotes(fresh, notes);
+      return true;
+    }
+    const enrolled = pending.flatMap((handle) => {
+      const agent = this.agentInRoom(fresh.room_id, handle);
+      return agent ? [{ handle, agent }] : [];
+    });
+    const live = enrolled.filter((item) => this.reviewerLive(item.agent));
+    if (!timedOut) {
+      if (enrolled.length === 0 && notes.length > 0) {
+        this.note(fresh, `${pending.join("、")} 没接入，不挡住复核`);
+        this.finishReviewNotes(fresh, notes);
+        return true;
+      }
+      return false;
+    }
+    if (live.length > 0) {
+      const until = new Date(Date.now() + (fresh.claim_timeout_ms || 120_000)).toISOString();
+      this.db.prepare("UPDATE tasks SET offer_until = ?, updated_at = ? WHERE id = ?").run(until, nowIso(), fresh.id);
+      this.note(fresh, `还在等 ${live.map((item) => item.handle).join("、")} 复核`);
+      return false;
+    }
+    if (notes.length === 0) {
+      this.setStatus(fresh.id, "blocked");
+      this.db.prepare("UPDATE tasks SET offer_until = NULL, updated_at = ? WHERE id = ?").run(nowIso(), fresh.id);
+      this.note(fresh, "复核的人都缺席或离线，留给人处理");
+      return true;
+    }
+    this.note(fresh, `${pending.join("、")} 缺席或离线，按已交的复核继续`);
+    this.finishReviewNotes(fresh, notes);
+    return true;
+  }
+
+  private finishReviewNotes(task: TaskRow, notes: Array<{ handle: string; verdict: string; body: string }>) {
+    if (notes.some((note) => note.verdict === "changes")) this.bounceResearch(task, notes);
+    else this.passReview(task, notes);
+    const after = this.taskRow(task.id);
+    if (after.status === "open") {
+      this.db.prepare("UPDATE tasks SET offer_until = NULL, updated_at = ? WHERE id = ?").run(nowIso(), task.id);
+    }
   }
 
   private saveArtifact(taskId: string, ref: string, summary: string, body: string) {

@@ -86,17 +86,21 @@ npm run fix-owner -- --from magele758 --to 彭磊 --handles cursor,chatgpt,claud
   "gate": false,
   "steps": [
     { "role": "research", "handle": "antigravity" },
-    { "role": "review", "handles": ["chatgpt", "grok"] },
+    { "role": "review", "handles": ["chatgpt", "grok", "ppeng"] },
     { "role": "product", "handle": "chatgpt" },
     { "role": "ui", "handle": "chatgpt" },
     { "role": "tech", "handle": "cursor" },
-    { "role": "build", "handles": ["cursor", "chatgpt", "claude"], "claimTimeoutMs": 120000 },
+    { "role": "build", "handles": ["cursor", "ppeng", "chatgpt", "claude"], "claimTimeoutMs": 120000 },
     { "role": "qa", "handle": "grok" }
   ]
 }
 ```
 
-`claimTimeoutMs` 不写就是 120000（2 分钟），范围 1 秒到 30 分钟。开发步按这个列表往后叫：上一位没 enroll、明确 `decline`、或到点还没认领，才叫醒下一位。复核步要每个句柄都交 `conclude`：`pass`，或 `changes` 加说明。有 `changes` 就退回研究，最多 2 次。QA 用 `deliver` 交 `pass` 或 `fail`。`fail` 打回开发，最多 3 次。截图可以是 URL，也可以是本机路径，房间只保存这段文字，不去打开。
+`claimTimeoutMs` 不写就是 120000（2 分钟），范围 1 秒到 30 分钟。开发步按这个列表往后叫：上一位没 enroll、明确 `decline`、或到点还没认领，才叫醒下一位。适配器收到事件后先认领，干活时按租约心跳，所以这一步不会在模型还在跑的时候被 2 分钟认领超时让给下一位。驱动报错时，有下一位就 `decline`，没有就 `release`。
+
+带 `steps` 的指令只按这些句柄走。正文里的 `@` 不会改派，也不会变成不带 steps 的直达派发。不带 `steps` 的 `@` 指令仍只交给被点名的人。
+
+复核步要每个已经接入的句柄交 `conclude`：`pass`，或 `changes` 加说明。有 `changes` 就退回研究，最多 2 次。没接入的句柄不参加，不等他们。已经接入但暂停、或超过 5 分钟没有动静的，到 `claimTimeoutMs` 还没交就跳过；人还在线就再等一轮。一个都没交时，这一步变成 `blocked`，留给人，不当作通过。QA 用 `deliver` 交 `pass` 或 `fail`。`fail` 打回开发，最多 3 次。截图可以是 URL，也可以是本机路径，房间只保存这段文字，不去打开。
 
 Antigravity 和 Cursor、Claude Code 一样走 MCP，不走 webhook。在 Mac 上、房间仓库里：
 
@@ -140,6 +144,22 @@ Grok Bot 用 webhook。适配器跟房间待在同一台机器上，把任务 PO
 ADAPTER=echo npm run adapt -- --handle grok
 ADAPTER=webhook WEBHOOK_URL=http://grok-host/hook WEBHOOK_SECRET=... npm run adapt -- --handle grok
 ```
+
+ppeng 是你自己的 agent 循环（[ppeng-agent-core](https://github.com/magele758/ppeng-agent-core)），不进 `npm start` 或 `npm run dev`。先在那个仓库里把长期 daemon 跑起来，工作目录就是开发步要改的 git 仓库。模型密钥放在 ppeng 自己的 `RAW_AGENT_*` 里，不要写进这个房间。无人值守请设 `RAW_AGENT_PERMISSION_MODE=auto`，否则批准会在 10 分钟后被拒绝。可选搜索地址是 ppeng 的 `RAW_AGENT_WEB_SEARCH_URL`。
+
+```bash
+# 在 ppeng-agent-core 仓库里
+RAW_AGENT_PERMISSION_MODE=auto RAW_AGENT_AUTH_TOKEN=... npm run dev:daemon
+```
+
+daemon 默认听 `http://127.0.0.1:37070`。然后在房间仓库里接入，并另开适配器：
+
+```bash
+npm run enroll -- --code join_xxx --handle ppeng --runtime ppeng
+ADAPTER=ppeng PPENG_TOKEN=... PPENG_REPO_ROOT=/你的/仓库 npm run adapt -- --handle ppeng
+```
+
+`PPENG_BASE_URL` 不写就是 `http://127.0.0.1:37070`。`PPENG_TOKEN` 对应 daemon 的 `RAW_AGENT_AUTH_TOKEN`，没开鉴权就省略。`PPENG_REPO_ROOT` 只给开发步用，要和 daemon 的工作目录是同一个 git 仓库。ppeng 会在自己的 worktree（分支 `wt/<名字>-<id>`）里改代码，适配器把这个分支名当作 `ref` 交回。`PPENG_TIMEOUT_MS` 不写是 15 分钟，到点就 `decline`，好让开发兜底继续。复核交 `pass` 或 `changes`，QA 交 `pass` 或 `fail`。
 
 ## 测试
 

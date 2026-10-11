@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openDatabase } from "./db.ts";
 import { echoAction } from "../adapter.ts";
+import { DEFAULT_PIPELINE, parsePipeline } from "./pipeline.ts";
 import { speakFor } from "./demo.ts";
 import { createApp } from "./http.ts";
 import { ApiError, openStore, type Principal, type Store, type TaskView } from "./logic.ts";
@@ -1273,4 +1274,118 @@ test("an @ instruction without steps still dispatches directly and does not open
     return error instanceof ApiError && error.code === "not_addressed";
   });
   assert.equal(store.claim(cursor, task.id, "implementer").status, "claimed");
+});
+
+test("default pipeline keeps every handle and adds ppeng beside them", () => {
+  const parsed = parsePipeline(DEFAULT_PIPELINE);
+  assert.deepEqual(
+    parsed.steps.map((step) => step.role),
+    ["research", "review", "product", "ui", "tech", "build", "qa"],
+  );
+  assert.deepEqual(parsed.steps.find((step) => step.role === "review")?.handles, ["chatgpt", "grok", "ppeng"]);
+  assert.deepEqual(parsed.steps.find((step) => step.role === "build")?.handles, ["cursor", "ppeng", "chatgpt", "claude"]);
+});
+
+test("any of three reviewers can send research back, and a missing reviewer does not wait forever", () => {
+  const { store, user, roomId } = studio();
+  const researcher = enroll(store, user, roomId, "antigravity");
+  const designer = enroll(store, user, roomId, "chatgpt");
+  const grok = enroll(store, user, roomId, "grok");
+  pipeline(store, user, roomId, {
+    steps: [
+      { role: "research", handle: "antigravity" },
+      { role: "review", handles: ["chatgpt", "grok", "ppeng"], claimTimeoutMs: 1000 },
+      { role: "product", handle: "chatgpt" },
+    ],
+  });
+  const deliverResearch = () => {
+    const research = step(store, researcher, roomId, "research");
+    store.claim(researcher, research.id, "implementer");
+    store.deliver(researcher, research.id, "note:1", "研究短说明", { body: "研究发现：失败集中在超时重试。" });
+  };
+  deliverResearch();
+  const review = step(store, designer, roomId, "review");
+  store.conclude(designer, review.id, "changes", "补上来源");
+  assert.equal(step(store, designer, roomId, "review").status, "open");
+  store.conclude(grok, review.id, "pass", "范围可以");
+  assert.equal(step(store, researcher, roomId, "research").status, "open");
+  assert.match(step(store, researcher, roomId, "research").body, /补上来源/);
+  assert.equal(step(store, designer, roomId, "product").status, "blocked");
+
+  store.claim(researcher, step(store, researcher, roomId, "research").id, "implementer");
+  store.deliver(researcher, step(store, researcher, roomId, "research").id, "note:2", "补了来源", {
+    body: "研究发现：失败集中在超时重试。",
+  });
+  const again = step(store, designer, roomId, "review");
+  store.conclude(designer, again.id, "pass", "来源够了");
+  store.conclude(grok, again.id, "pass", "可以写 PRD");
+  assert.equal(step(store, designer, roomId, "product").status, "open");
+});
+
+test("an enrolled reviewer who is still online holds the review, and an offline one is dropped", () => {
+  const live = studio();
+  const researcher = enroll(live.store, live.user, live.roomId, "antigravity");
+  const designer = enroll(live.store, live.user, live.roomId, "chatgpt");
+  const grok = enroll(live.store, live.user, live.roomId, "grok");
+  const ppeng = enroll(live.store, live.user, live.roomId, "ppeng");
+  pipeline(live.store, live.user, live.roomId, {
+    steps: [
+      { role: "research", handle: "antigravity" },
+      { role: "review", handles: ["chatgpt", "grok", "ppeng"], claimTimeoutMs: 1000 },
+      { role: "product", handle: "chatgpt" },
+    ],
+  });
+  const research = step(live.store, researcher, live.roomId, "research");
+  live.store.claim(researcher, research.id, "implementer");
+  live.store.deliver(researcher, research.id, "note:1", "研究", { body: "研究发现。" });
+  const review = step(live.store, designer, live.roomId, "review");
+  live.store.touchSeen(ppeng.id);
+  live.store.conclude(designer, review.id, "pass", "可以");
+  live.store.conclude(grok, review.id, "pass", "可以");
+  assert.equal(step(live.store, designer, live.roomId, "review").status, "open");
+  live.store.reap(new Date(Date.now() + 5_000));
+  assert.equal(step(live.store, designer, live.roomId, "review").status, "open");
+  assert.equal(step(live.store, designer, live.roomId, "product").status, "blocked");
+
+  const quiet = studio();
+  const researcher2 = enroll(quiet.store, quiet.user, quiet.roomId, "antigravity");
+  const designer2 = enroll(quiet.store, quiet.user, quiet.roomId, "chatgpt");
+  const grok2 = enroll(quiet.store, quiet.user, quiet.roomId, "grok");
+  enroll(quiet.store, quiet.user, quiet.roomId, "ppeng");
+  pipeline(quiet.store, quiet.user, quiet.roomId, {
+    steps: [
+      { role: "research", handle: "antigravity" },
+      { role: "review", handles: ["chatgpt", "grok", "ppeng"], claimTimeoutMs: 1000 },
+      { role: "product", handle: "chatgpt" },
+    ],
+  });
+  const research2 = step(quiet.store, researcher2, quiet.roomId, "research");
+  quiet.store.claim(researcher2, research2.id, "implementer");
+  quiet.store.deliver(researcher2, research2.id, "note:1", "研究", { body: "研究发现。" });
+  const waiting = step(quiet.store, designer2, quiet.roomId, "review");
+  quiet.store.conclude(designer2, waiting.id, "pass", "可以");
+  quiet.store.conclude(grok2, waiting.id, "pass", "可以");
+  assert.equal(step(quiet.store, designer2, quiet.roomId, "review").status, "open");
+  quiet.store.reap(new Date(Date.now() + 5_000));
+  assert.equal(step(quiet.store, designer2, quiet.roomId, "review").status, "done");
+  assert.equal(step(quiet.store, designer2, quiet.roomId, "product").status, "open");
+});
+
+test("a review with nobody present blocks instead of passing itself", () => {
+  const { store, user, roomId } = studio();
+  const researcher = enroll(store, user, roomId, "antigravity");
+  pipeline(store, user, roomId, {
+    steps: [
+      { role: "research", handle: "antigravity" },
+      { role: "review", handles: ["ppeng"], claimTimeoutMs: 1000 },
+      { role: "product", handle: "chatgpt" },
+    ],
+  });
+  const research = step(store, researcher, roomId, "research");
+  store.claim(researcher, research.id, "implementer");
+  store.deliver(researcher, research.id, "note:1", "研究", { body: "研究发现。" });
+  assert.equal(step(store, researcher, roomId, "review").status, "open");
+  store.reap(new Date(Date.now() + 5_000));
+  assert.equal(step(store, researcher, roomId, "review").status, "blocked");
+  assert.equal(step(store, researcher, roomId, "product").status, "blocked");
 });

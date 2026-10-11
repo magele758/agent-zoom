@@ -8,6 +8,20 @@ export const QA_RETURN_LIMIT = 3;
 export const CROSS_RETURN_LIMIT = 2;
 export const OFFER_HOLD = "9999-12-31T00:00:00.000Z";
 
+/** 文档和测试用的默认流水线。不带 steps 的指令不会套用它。 */
+export const DEFAULT_PIPELINE = {
+  gate: false,
+  steps: [
+    { role: "research", handle: "antigravity" },
+    { role: "review", handles: ["chatgpt", "grok", "ppeng"] },
+    { role: "product", handle: "chatgpt" },
+    { role: "ui", handle: "chatgpt" },
+    { role: "tech", handle: "cursor" },
+    { role: "build", handles: ["cursor", "ppeng", "chatgpt", "claude"], claimTimeoutMs: 120_000 },
+    { role: "qa", handle: "grok" },
+  ],
+};
+
 export const PIPELINE_ROLES = ["research", "review", "product", "ui", "tech", "build", "qa"] as const;
 export type PipelineRole = (typeof PIPELINE_ROLES)[number];
 
