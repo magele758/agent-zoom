@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { groupById, GROUPS, groupLabel, groupOf } from "../../src/groups";
 import { api, type Agent, type Claim, type LocalAgent, type Me, type Snapshot, type Task } from "./api";
-import { mentionAtCaret, settledMentions, splitMentions } from "./mentions";
+import { mentionAtCaret, mentionReach, settledMentions, splitMentions } from "./mentions";
 
 const KIND_LABEL: Record<string, string> = {
   chat: "发言",
@@ -539,8 +539,7 @@ function Channel({
     [snap],
   );
   const settled = settledMentions(body, caret);
-  const hit = settled.filter((handle) => knownHandles.has(handle));
-  const miss = settled.filter((handle) => !knownHandles.has(handle));
+  const { hit, miss, everyone } = mentionReach(settled, knownHandles);
 
   useEffect(() => {
     setMentionActive(0);
@@ -883,7 +882,10 @@ function Channel({
               </>
             ) : null}
             {miss.length > 0 ? (
-              <span className="miss">{miss.map((handle) => `@${handle}`).join("、")} 不在这个频道，不会有人收到。</span>
+              <span className="miss">
+                {miss.map((handle) => `@${handle}`).join("、")} 不在这个频道
+                {everyone ? "，没人被点名，这句会像没写 @ 一样交给频道里所有 agent。" : "，不会有人收到。"}
+              </span>
             ) : null}
           </p>
         ) : null}

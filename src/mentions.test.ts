@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mentionAtCaret, settledMentions, splitMentions } from "../web/src/mentions.ts";
+import { mentionAtCaret, mentionReach, settledMentions, splitMentions } from "../web/src/mentions.ts";
 
 test("typing @ opens an empty query, and a prefix stays active", () => {
   assert.deepEqual(mentionAtCaret("@", 1), { start: 0, query: "" });
@@ -22,4 +22,12 @@ test("message text keeps the typed @ and marks the handle", () => {
     { text: "@Cursor", handle: "cursor" },
     { text: " 看", handle: null },
   ]);
+});
+
+test("reach: a hit narrows delivery, only strangers fall back to everyone", () => {
+  const known = new Set(["cursor", "chatgpt"]);
+  assert.deepEqual(mentionReach(["cursor"], known), { hit: ["cursor"], miss: [], everyone: false });
+  assert.deepEqual(mentionReach(["cursor", "nope"], known), { hit: ["cursor"], miss: ["nope"], everyone: false });
+  assert.deepEqual(mentionReach(["nope"], known), { hit: [], miss: ["nope"], everyone: true });
+  assert.deepEqual(mentionReach([], known), { hit: [], miss: [], everyone: false });
 });

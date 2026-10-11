@@ -37,3 +37,10 @@ export function splitMentions(body: string): Array<{ text: string; handle: strin
   if (last < body.length || parts.length === 0) parts.push({ text: body.slice(last), handle: null });
   return parts;
 }
+
+/** Who a send would reach. The server only narrows delivery when at least one handle is a member. */
+export function mentionReach(settled: string[], known: ReadonlySet<string>) {
+  const hit = settled.filter((handle) => known.has(handle));
+  const miss = settled.filter((handle) => !known.has(handle));
+  return { hit, miss, everyone: hit.length === 0 && miss.length > 0 };
+}
