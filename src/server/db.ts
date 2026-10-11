@@ -186,6 +186,7 @@ function migrate(db: DatabaseSync) {
   add("rooms", "direct", "direct INTEGER NOT NULL DEFAULT 0");
   add("agents", "machine", "machine TEXT NOT NULL DEFAULT ''");
   add("agents", "cwd", "cwd TEXT NOT NULL DEFAULT ''");
+  add("tasks", "design_pending", "design_pending TEXT NOT NULL DEFAULT ''");
   add("tasks", "pipeline_id", "pipeline_id TEXT");
   add("tasks", "step_index", "step_index INTEGER");
   add("tasks", "step_role", "step_role TEXT");

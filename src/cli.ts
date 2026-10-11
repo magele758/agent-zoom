@@ -2,9 +2,12 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { groupOf } from "./groups.ts";
 import type { ChatApi } from "./mcp.ts";
 import { createMcpServer } from "./mcp.ts";
+import { mergeCredentials, savedCredential } from "./server/local-agents.ts";
 
+const PING_MS = 60_000;
 const credPath = process.env.AGENT_CHATROOM_CREDENTIALS ?? "data/credentials.json";
 
 type Creds = { url: string; agents: Record<string, { token: string; roomId: string; runtime: string }> };
@@ -12,11 +15,6 @@ type Creds = { url: string; agents: Record<string, { token: string; roomId: stri
 function readCreds(): Creds {
   if (!existsSync(credPath)) return { url: "http://127.0.0.1:8791", agents: {} };
   return JSON.parse(readFileSync(credPath, "utf8")) as Creds;
-}
-
-function writeCreds(creds: Creds) {
-  mkdirSync(dirname(credPath), { recursive: true });
-  writeFileSync(credPath, JSON.stringify(creds, null, 2));
 }
 
 function arg(name: string) {
@@ -39,6 +37,21 @@ async function enroll() {
     );
     process.exit(1);
   }
+  const key = handle.toLowerCase();
+  const replace = process.argv.includes("--replace");
+  const current = existsSync(credPath) ? readFileSync(credPath, "utf8") : null;
+  const old = savedCredential(current, key);
+  if (old && !replace) {
+    const alive = await fetch(`${url}/api/agent/me`, { headers: { authorization: `Bearer ${old.token}` } })
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (alive) {
+      console.error(
+        `${credPath} 里已经有一个还能用的 ${key} 凭证。再接入会顶掉它（可能属于另一个身份）。确定要换就加 --replace，旧凭证会留在文件的 previous 里。`,
+      );
+      process.exit(1);
+    }
+  }
   const response = await fetch(`${url}/api/enroll`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -49,12 +62,15 @@ async function enroll() {
     console.error(body.message ?? "接入失败");
     process.exit(1);
   }
-  const creds = readCreds();
-  creds.url = url;
-  creds.agents[handle.toLowerCase()] = { token: body.token, roomId: body.roomId, runtime };
-  writeCreds(creds);
+  mkdirSync(dirname(credPath), { recursive: true });
+  writeFileSync(
+    credPath,
+    mergeCredentials(current, { url, handle: key, token: body.token, roomId: body.roomId, runtime }),
+    { mode: 0o600 },
+  );
+  const identity = groupOf(tags);
   console.log(
-    `已接入 ${handle}，等级 ${body.agent?.level ?? 1}${cwd ? `，目录 ${cwd}` : ""}${machine ? `，机器 ${machine}` : ""}。凭证写在 ${credPath}`,
+    `已接入 ${handle}，身份 ${identity?.label ?? (tags || "未分组")}，等级 ${body.agent?.level ?? 1}${cwd ? `，目录 ${cwd}` : ""}${machine ? `，机器 ${machine}` : ""}。凭证写在 ${credPath}`,
   );
   console.log(`下一步: npm run mcp -- --handle ${handle.toLowerCase()}`);
 }
@@ -87,6 +103,8 @@ function httpApi(url: string, token: string): ChatApi {
     wait: async (after, timeoutMs) => (await call(`/api/wait?after=${after}&timeoutMs=${timeoutMs}`)).events,
     listTasks: (roomId) => call(`/api/agent/rooms/${roomId}/tasks`),
     getTask: (taskId) => call(`/api/agent/tasks/${taskId}`),
+    submitDesign: (taskId, body) =>
+      call(`/api/agent/tasks/${taskId}/design`, { method: "POST", body: JSON.stringify({ body }) }),
     claim: (taskId, role) => call(`/api/agent/tasks/${taskId}/claim`, { method: "POST", body: JSON.stringify({ role }) }),
     bid: (taskId, approach) =>
       call(`/api/agent/tasks/${taskId}/bid`, { method: "POST", body: JSON.stringify({ approach }) }),
@@ -131,6 +149,14 @@ async function mcp() {
   }).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : "没能报上工作目录");
   });
+  const ping = () =>
+    fetch(`${url}/api/agent/ping`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: "{}",
+    }).catch(() => undefined);
+  const beat = setInterval(ping, PING_MS);
+  beat.unref();
   const server = createMcpServer(httpApi(url, token));
   const transport = new StdioServerTransport();
   await server.connect(transport);

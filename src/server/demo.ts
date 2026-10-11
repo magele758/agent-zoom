@@ -18,7 +18,56 @@ export function startDemo(store: Store) {
   timer.unref?.();
 }
 
+const VOICES = ["builder", "maker", "reviewer", "qa"];
+
+export function speakFor(
+  store: Store,
+  agent: Principal & { type: "agent" },
+  event: { event_type: string; room_id: string; ref_id: string },
+) {
+  if (event.event_type !== "room") return false;
+  if (voiceFor(store, event.room_id) !== agent.id) return false;
+  const message = store.db.prepare("SELECT kind, author_type FROM messages WHERE id = ?").get(event.ref_id) as
+    | { kind: string; author_type: string }
+    | undefined;
+  if (!message || message.author_type !== "user" || (message.kind !== "chat" && message.kind !== "question")) return false;
+  const line = presence(agent.handle);
+  const already = store.db
+    .prepare(
+      `SELECT id FROM messages
+       WHERE room_id = ? AND author_type = 'agent' AND author_id = ? AND kind = 'chat' AND body = ?
+         AND seq > (SELECT seq FROM messages WHERE id = ?)`,
+    )
+    .get(event.room_id, agent.id, line, event.ref_id);
+  if (already) return false;
+  store.postMessage(agent, event.room_id, { kind: "chat", body: line });
+  return true;
+}
+
+function voiceFor(store: Store, roomId: string) {
+  const rows = store.db
+    .prepare(
+      `SELECT a.id, a.handle FROM agents a
+       JOIN room_members m ON m.principal_id = a.id AND m.principal_type = 'agent'
+       WHERE m.room_id = ? AND a.demo = 1 AND a.paused = 0
+       ORDER BY a.handle`,
+    )
+    .all(roomId) as Array<{ id: string; handle: string }>;
+  for (const handle of VOICES) {
+    const found = rows.find((row) => row.handle === handle);
+    if (found) return found.id;
+  }
+  return null;
+}
+
+function presence(handle: string) {
+  if (handle === "reviewer") return "在。我负责评审，现在不改代码。";
+  if (handle === "qa") return "在。我负责测试，现在不改代码。";
+  return "在。我空闲，可以接指令。";
+}
+
 async function run(store: Store, agentId: string) {
+  const startedAt = new Date().toISOString();
   let after = 0;
   const busy = new Set<string>();
   for (;;) {
@@ -31,6 +80,14 @@ async function run(store: Store, agentId: string) {
     try {
       const events = await waitInbox(store, agentId, after, 8000);
       if (events.length > 0) after = events[events.length - 1].id;
+      for (const event of events) {
+        if (event.created_at < startedAt) continue;
+        try {
+          speakFor(store, agent, event);
+        } catch (error) {
+          if (!quiet(error)) console.error(error);
+        }
+      }
       await act(store, agent, busy);
     } catch (error) {
       console.error(`demo ${agent.handle}`, error);
@@ -120,6 +177,7 @@ function approach(handle: string, title: string) {
 
 async function deliverWork(store: Store, agent: Principal & { type: "agent" }, task: TaskView) {
   await sleep(500);
+  if (halted(store, agent.id)) return;
   const room = roomOf(store, task.id);
   if (task.status === "claimed") {
     store.postMessage(agent, room, {
@@ -129,7 +187,9 @@ async function deliverWork(store: Store, agent: Principal & { type: "agent" }, t
     });
     await sleep(300);
   }
+  if (halted(store, agent.id)) return;
   store.heartbeat(agent, task.id);
+  if (halted(store, agent.id)) return;
   store.deliver(
     agent,
     task.id,
@@ -140,20 +200,31 @@ async function deliverWork(store: Store, agent: Principal & { type: "agent" }, t
 
 async function review(store: Store, agent: Principal & { type: "agent" }, task: TaskView) {
   await sleep(500);
+  if (halted(store, agent.id)) return;
   const current = store.getTask(agent, task.id);
   const held = current.claims.some((claim) => claim.role === "reviewer" && claim.agentId === agent.id);
   if (!held) store.claim(agent, task.id, "reviewer");
   await sleep(400);
+  if (halted(store, agent.id)) return;
   store.review(agent, task.id, "approve", `评审「${task.title}」：对照验收看过，没有缺项。通过。`);
 }
 
 async function test(store: Store, agent: Principal & { type: "agent" }, task: TaskView) {
   await sleep(500);
+  if (halted(store, agent.id)) return;
   const current = store.getTask(agent, task.id);
   const held = current.claims.some((claim) => claim.role === "tester" && claim.agentId === agent.id);
   if (!held) store.claim(agent, task.id, "tester");
   await sleep(400);
+  if (halted(store, agent.id)) return;
   store.reportTest(agent, task.id, "pass", `测试「${task.title}」：按验收走了主路径。通过。`);
+}
+
+function halted(store: Store, agentId: string) {
+  const row = store.db.prepare("SELECT paused FROM agents WHERE id = ?").get(agentId) as
+    | { paused: number }
+    | undefined;
+  return !row || row.paused === 1;
 }
 
 function roomOf(store: Store, taskId: string) {

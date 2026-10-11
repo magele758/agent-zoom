@@ -11,6 +11,7 @@ export interface ChatApi {
   wait(after: number, timeoutMs: number): Promise<unknown>;
   listTasks(roomId: string): Promise<unknown>;
   getTask(taskId: string): Promise<unknown>;
+  submitDesign(taskId: string, body: string): Promise<unknown>;
   claim(taskId: string, role: string): Promise<unknown>;
   bid(taskId: string, approach: string): Promise<unknown>;
   deliver(
@@ -71,7 +72,7 @@ export function createMcpServer(api: ChatApi) {
   server.registerTool(
     "read_messages",
     {
-      description: "读取频道历史。成员能读到房间里的全部消息。这不是唤醒：无关闲聊不要当成你的新任务。",
+      description: "读取频道历史。成员能读到房间里的全部消息。wait 里的 room 是其中一句的短通知，要用这里补全。room 不是新任务。",
       inputSchema: {
         roomId: z.string(),
         afterSeq: z.number().optional(),
@@ -84,7 +85,7 @@ export function createMcpServer(api: ChatApi) {
     "say",
     {
       description:
-        "在频道或私聊里发言。kind 可以是 chat、question、progress、direction、blocked、decision。后四种最多 280 字，必须带 taskId，且你是实现者。direction 是一句方向，blocked 是一句卡住，decision 是给其他方案的短决定。频道里用 @句柄 才会唤醒对方。私聊里的发言会唤醒其他参与者。不要贴 diff 或子 agent 过程。私聊里不能下指令。",
+        "在频道或私聊里发言。kind 可以是 chat、question、progress、direction、blocked、decision。后四种最多 280 字，必须带 taskId，且你是实现者。direction 是一句方向，blocked 是一句卡住，decision 是给其他方案的短决定。人发的话没有 @ 时，频道里每个 agent 都会收到。你自己的发言仍要用 @句柄 才会唤醒对方。私聊里的发言会唤醒其他参与者。不要贴 diff 或子 agent 过程。私聊里不能下指令。",
       inputSchema: {
         roomId: z.string(),
         body: z.string(),
@@ -98,7 +99,7 @@ export function createMcpServer(api: ChatApi) {
     "wait",
     {
       description:
-        "阻塞到出现与你相关的事件：有人 @ 你、请你投标、你中标或没中、轮到评审或测试、你占着的任务有新消息。返回的是短通知，接着用 get_task 看任务卡。无关闲聊不会返回。超时就再调一次。",
+        "阻塞到有新事件：频道里有人说话（room）、有人 @ 你、请你出方案、请你投标、你中标或没中、轮到评审或测试、你占着的任务有新消息，或主人让你停止。event_type 为 room 时，用 say 回一句，不要认领，不要改代码。event_type 为 design_needed 时用 submit_design 交出方案，不要改代码。event_type 为 stop 时立刻结束这一轮，不要再调用工具，不要再改代码。返回的是短通知，不是整段历史。超时就再调一次。",
       inputSchema: {
         after: z.number().optional(),
         timeoutMs: z.number().optional(),
@@ -115,10 +116,19 @@ export function createMcpServer(api: ChatApi) {
     "get_task",
     {
       description:
-        "读取一张任务卡：目标、验收、方案编号、交付引用、是否复杂，以及频道的项目、工作目录和分支。收到 awarded、bid_open 或工作范围更新后用事件里的任务 id 调用。",
+        "读取一张任务卡：目标、验收、方案编号、交付引用、是否复杂，以及频道的项目、工作目录和分支。designPending 是还没交方案的身份。收到 awarded、bid_open、design_needed 或工作范围更新后用事件里的任务 id 调用。",
       inputSchema: { taskId: z.string() },
     },
     async ({ taskId }) => text(await api.getTask(taskId)),
+  );
+  server.registerTool(
+    "submit_design",
+    {
+      description:
+        "交出你这个身份的方案。只在收到 design_needed，且你是课题研究、产品设计师、设计师或技术架构师时调用。body 写结论，不要贴 diff，不要改代码。同一个身份交一次。方案齐了，实现才会开始。",
+      inputSchema: { taskId: z.string(), body: z.string() },
+    },
+    async ({ taskId, body }) => text(await api.submitDesign(taskId, body)),
   );
   server.registerTool(
     "claim",

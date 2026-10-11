@@ -10,6 +10,16 @@ export type Room = {
   direct: boolean;
   created_at: string;
 } & RoomScope;
+export type LocalAgent = {
+  id: string;
+  label: string;
+  handle: string;
+  runtime: string;
+  detail: string;
+  writable: boolean;
+  connected: boolean;
+};
+
 export type Agent = {
   id: string;
   handle: string;
@@ -46,7 +56,7 @@ export type Message = {
   createdAt: string;
 };
 
-export type Claim = { role: string; handle: string; agentId: string; ownerName: string };
+export type Claim = { role: string; handle: string; agentId: string; ownerName: string; state?: string };
 export type Task = {
   id: string;
   title: string;
@@ -57,6 +67,8 @@ export type Task = {
   maxLanes?: number;
   tags?: string;
   complex?: boolean;
+  designPending?: string[];
+  designs?: Array<{ handle: string; group: string; body: string }>;
   parentId?: string | null;
   lane?: number | null;
   direction?: string;
@@ -99,7 +111,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || "请求失败");
+  if (!response.ok) throw Object.assign(new Error(data.message || "请求失败"), { code: data.error as string | undefined });
   return data as T;
 }
 
@@ -137,9 +149,19 @@ export const api = {
   ) => request(`/api/rooms/${roomId}/messages`, { method: "POST", body: JSON.stringify(input) }),
   invite: (roomId: string, name: string) => request(`/api/rooms/${roomId}/members`, { method: "POST", body: JSON.stringify({ name }) }),
   joinCode: (roomId: string) => request<{ code: string; expiresAt: string }>(`/api/rooms/${roomId}/join-codes`, { method: "POST", body: "{}" }),
+  localAgents: (roomId: string) => request<{ agents: LocalAgent[] }>(`/api/rooms/${roomId}/local-agents`),
+  connectLocalAgent: (roomId: string, id: string, level = 1, group = "build", replace = false) =>
+    request<{ handle: string; already: boolean; path: string; note: string }>(`/api/rooms/${roomId}/local-agents/${id}`, {
+      method: "POST",
+      body: JSON.stringify({ level, group, replace }),
+    }),
   pause: (agentId: string, paused: boolean) => request(`/api/agents/${agentId}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
+  stop: (agentId: string) => request<{ id: string; handle: string; paused: boolean; released: number }>(`/api/agents/${agentId}/stop`, { method: "POST", body: "{}" }),
   setLevel: (agentId: string, level: number) =>
     request(`/api/agents/${agentId}/level`, { method: "PATCH", body: JSON.stringify({ level }) }),
+  setGroup: (agentId: string, group: string) =>
+    request(`/api/agents/${agentId}/group`, { method: "PATCH", body: JSON.stringify({ group }) }),
+  handoff: (taskId: string) => request(`/api/tasks/${taskId}/handoff`, { method: "POST", body: "{}" }),
   cancel: (taskId: string) => request(`/api/tasks/${taskId}/cancel`, { method: "POST", body: "{}" }),
   done: (taskId: string) => request(`/api/tasks/${taskId}/done`, { method: "POST", body: "{}" }),
 };

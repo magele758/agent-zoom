@@ -1,10 +1,13 @@
+import { homedir } from "node:os";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { ChatApi } from "../mcp.ts";
 import { createMcpServer } from "../mcp.ts";
-import { ApiError, type Principal, type Store } from "./logic.ts";
+import { groupById } from "../groups.ts";
+import { connectInstalled, listLocalAgents, LocalAgentError, machineName, serverUrl } from "./local-agents.ts";
+import { ApiError, PRESENCE_MS, type Principal, type Store } from "./logic.ts";
 import { waitInbox } from "./wait.ts";
 
 const COOKIE = "ac_session";
@@ -36,6 +39,7 @@ export function createApp(store: Store) {
     const token = header?.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
     const principal = store.agentByToken(token);
     if (!principal || principal.type !== "agent") throw new ApiError(401, "auth", "agent token 无效");
+    store.touchSeen(principal.id);
     return principal;
   };
 
@@ -132,6 +136,75 @@ export function createApp(store: Store) {
     return c.json(store.createJoinCode(user, c.req.param("id")));
   });
 
+  app.get("/api/rooms/:id/local-agents", (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const snap = store.snapshot(user, c.req.param("id"), online());
+    const connected = new Set(snap.members.agents.map((agent) => agent.handle));
+    return c.json({ agents: listLocalAgents(connected) });
+  });
+
+  app.post("/api/rooms/:id/local-agents/:agentId", async (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const roomId = c.req.param("id");
+    let level: unknown = 1;
+    let group = "build";
+    let replace = false;
+    try {
+      const body = await c.req.json();
+      if (body && typeof body === "object") {
+        replace = (body as { replace?: unknown }).replace === true;
+        if ("level" in body) level = (body as { level?: unknown }).level;
+        if ("group" in body && (body as { group?: unknown }).group != null && String((body as { group?: unknown }).group).trim() !== "") {
+          const id = String((body as { group?: unknown }).group).trim().toLowerCase();
+          if (!groupById(id)) throw new ApiError(400, "bad_group", "没有这个身份");
+          group = id;
+        }
+      }
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      level = 1;
+      group = "build";
+    }
+    const snap = store.snapshot(user, roomId, online());
+    const connected = new Set(snap.members.agents.map((agent) => agent.handle));
+    try {
+      const result = connectInstalled({
+        id: c.req.param("agentId"),
+        home: homedir(),
+        repo: process.cwd(),
+        node: process.execPath,
+        url: serverUrl(),
+        credPath: process.env.AGENT_CHATROOM_CREDENTIALS ?? "data/credentials.json",
+        connected,
+        level,
+        group,
+        ownerId: user.id,
+        replace,
+        inspectToken: (token) => store.credentialOwner(token),
+        enroll: (spec) => {
+          const issued = store.createJoinCode(user, roomId);
+          const enrolled = store.enroll(
+            issued.code,
+            spec.handle,
+            spec.runtime,
+            spec.group,
+            spec.level,
+            machineName(),
+            process.cwd(),
+          );
+          return { token: enrolled.token, roomId: enrolled.roomId };
+        },
+        placeExisting: (handle) => {
+          store.placeExisting(user, roomId, handle);
+        },
+      });
+      return c.json({ handle: result.handle, already: result.already, path: result.path, note: result.note });
+    } catch (error) {
+      if (error instanceof LocalAgentError) throw new ApiError(error.status, error.code, error.message);
+      throw error;
+    }
+  });
+
   app.post("/api/enroll", async (c) => {
     const body = await c.req.json();
     return c.json(
@@ -147,12 +220,18 @@ export function createApp(store: Store) {
     );
   });
 
+  app.post("/api/agents/:id/stop", (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    return c.json(store.stopAgent(user, c.req.param("id")));
+  });
+
   app.patch("/api/agents/:id", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
     const id = c.req.param("id");
-    let result: { id: string; paused?: boolean; level?: number } = { id };
+    let result: { id: string; paused?: boolean; level?: number; group?: string; label?: string } = { id };
     if (body.level !== undefined) result = { ...result, ...store.setLevel(user, id, body.level as number | string) };
+    if (body.group !== undefined) result = { ...result, ...store.setGroup(user, id, body.group) };
     if (body.paused !== undefined) result = { ...result, ...store.setPaused(user, id, Boolean(body.paused)) };
     return c.json(result);
   });
@@ -163,6 +242,12 @@ export function createApp(store: Store) {
     return c.json(store.setLevel(user, c.req.param("id"), body.level));
   });
 
+  app.patch("/api/agents/:id/group", async (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const body = await c.req.json();
+    return c.json(store.setGroup(user, c.req.param("id"), body.group));
+  });
+
   app.post("/api/tasks/:id/cancel", (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     return c.json(store.cancel(user, c.req.param("id")));
@@ -171,6 +256,11 @@ export function createApp(store: Store) {
   app.post("/api/tasks/:id/done", (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     return c.json(store.forceDone(user, c.req.param("id")));
+  });
+
+  app.post("/api/tasks/:id/handoff", (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    return c.json(store.handOffDesign(user, c.req.param("id")));
   });
 
   app.get("/api/wait", async (c) => {
@@ -184,6 +274,11 @@ export function createApp(store: Store) {
   app.get("/api/inbox/pending", (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     return c.json({ events: store.takePending(agent.id) });
+  });
+
+  app.post("/api/agent/ping", (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    return c.json({ ok: true, presenceMs: PRESENCE_MS, id: agent.id });
   });
 
   app.get("/api/agent/me", (c) => c.json(store.whoami(requireAgent(c.req.header("authorization")))));
@@ -244,6 +339,12 @@ export function createApp(store: Store) {
   app.get("/api/agent/tasks/:id", (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     return c.json(store.getTask(agent, c.req.param("id")));
+  });
+
+  app.post("/api/agent/tasks/:id/design", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.submitDesign(agent, c.req.param("id"), String(body.body ?? "")));
   });
 
   app.post("/api/agent/tasks/:id/bid", async (c) => {
@@ -373,6 +474,7 @@ function apiFor(store: Store, agent: Principal & { type: "agent" }): ChatApi {
     wait: async (after, timeoutMs) => waitInbox(store, agent.id, after, timeoutMs),
     listTasks: async (roomId) => store.listTasks(agent, roomId),
     getTask: async (taskId) => store.getTask(agent, taskId),
+    submitDesign: async (taskId, body) => store.submitDesign(agent, taskId, body),
     claim: async (taskId, role) => store.claim(agent, taskId, role as "implementer"),
     bid: async (taskId, approach) => store.bid(agent, taskId, approach),
     deliver: async (taskId, ref, summary, extra) => store.deliver(agent, taskId, ref, summary, extra),
