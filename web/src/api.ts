@@ -111,7 +111,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || "请求失败");
+  if (!response.ok) throw Object.assign(new Error(data.message || "请求失败"), { code: data.error as string | undefined });
   return data as T;
 }
 
@@ -150,10 +150,10 @@ export const api = {
   invite: (roomId: string, name: string) => request(`/api/rooms/${roomId}/members`, { method: "POST", body: JSON.stringify({ name }) }),
   joinCode: (roomId: string) => request<{ code: string; expiresAt: string }>(`/api/rooms/${roomId}/join-codes`, { method: "POST", body: "{}" }),
   localAgents: (roomId: string) => request<{ agents: LocalAgent[] }>(`/api/rooms/${roomId}/local-agents`),
-  connectLocalAgent: (roomId: string, id: string, level = 1, group = "build") =>
+  connectLocalAgent: (roomId: string, id: string, level = 1, group = "build", replace = false) =>
     request<{ handle: string; already: boolean; path: string; note: string }>(`/api/rooms/${roomId}/local-agents/${id}`, {
       method: "POST",
-      body: JSON.stringify({ level, group }),
+      body: JSON.stringify({ level, group, replace }),
     }),
   pause: (agentId: string, paused: boolean) => request(`/api/agents/${agentId}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
   stop: (agentId: string) => request<{ id: string; handle: string; paused: boolean; released: number }>(`/api/agents/${agentId}/stop`, { method: "POST", body: "{}" }),

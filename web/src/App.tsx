@@ -1162,7 +1162,15 @@ function LocalAgents({
                               onClick={async () => {
                                 setBusy(agent.id);
                                 try {
-                                  const result = await api.connectLocalAgent(roomId, agent.id, levels[agent.id] ?? 1, groups[agent.id] ?? "build");
+                                  const level = levels[agent.id] ?? 1;
+                                  const group = groups[agent.id] ?? "build";
+                                  const result = await api.connectLocalAgent(roomId, agent.id, level, group).catch((reason: unknown) => {
+                                    const code = (reason as { code?: string }).code;
+                                    if (code !== "credential_other_owner") throw reason;
+                                    const message = reason instanceof Error ? reason.message : "";
+                                    if (!window.confirm(`${message}\n\n确定换成当前身份？`)) throw new Error("已取消，没有改动凭证");
+                                    return api.connectLocalAgent(roomId, agent.id, level, group, true);
+                                  });
                                   setNote(result.note);
                                   onChanged();
                                 } catch (reason) {

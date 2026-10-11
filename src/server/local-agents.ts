@@ -218,20 +218,40 @@ export function configTarget(home: string, id: string, launch: ReturnType<typeof
   return null;
 }
 
+type CredEntry = { token: string; roomId: string; runtime: string };
+type CredFile = {
+  url?: string;
+  agents?: Record<string, CredEntry>;
+  previous?: Array<CredEntry & { handle: string; replacedAt: string }>;
+};
+
+function parseCreds(text: string | null): CredFile {
+  return text?.trim() ? (JSON.parse(text) as CredFile) : {};
+}
+
+export function savedCredential(text: string | null, handle: string): CredEntry | null {
+  const entry = parseCreds(text).agents?.[handle];
+  return entry?.token ? entry : null;
+}
+
 export function mergeCredentials(
   text: string | null,
   input: { url: string; handle: string; token: string; roomId: string; runtime: string },
+  replacedAt = new Date().toISOString(),
 ) {
-  const data = text?.trim() ? (JSON.parse(text) as { url?: string; agents?: Record<string, unknown> }) : {};
+  const data = parseCreds(text);
   const agents = data.agents && typeof data.agents === "object" ? data.agents : {};
+  const old = agents[input.handle];
+  const previous = Array.isArray(data.previous) ? data.previous : [];
+  if (old?.token && old.token !== input.token) previous.push({ handle: input.handle, ...old, replacedAt });
   agents[input.handle] = { token: input.token, roomId: input.roomId, runtime: input.runtime };
-  return `${JSON.stringify({ url: input.url, agents }, null, 2)}\n`;
+  const next: CredFile = { url: input.url, agents };
+  if (previous.length > 0) next.previous = previous;
+  return `${JSON.stringify(next, null, 2)}\n`;
 }
 
 export function credentialHas(text: string | null, handle: string) {
-  if (!text?.trim()) return false;
-  const data = JSON.parse(text) as { agents?: Record<string, { token?: string }> };
-  return Boolean(data.agents?.[handle]?.token);
+  return savedCredential(text, handle) !== null;
 }
 
 export function listLocalAgents(connected: Set<string>, home = homedir()) {
@@ -255,6 +275,9 @@ export class LocalAgentError extends Error {
     this.name = "LocalAgentError";
   }
 }
+
+const NO_OWN_CREDENTIAL =
+  "这个句柄已经在工作室里，但这台电脑上没有属于当前身份的有效凭证。不会改动现有凭证；要修正归属见 README 的「凭证归属修复」。";
 
 function taken(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "handle_taken";
@@ -283,6 +306,9 @@ export function connectInstalled(input: {
   apps?: (name: string) => boolean;
   level?: unknown;
   group?: unknown;
+  ownerId?: string;
+  replace?: boolean;
+  inspectToken?: (token: string) => { ownerId: string; ownerName: string } | null;
   enroll: (spec: { handle: string; runtime: string; level: unknown; group: string }) => { token: string; roomId: string };
   placeExisting: (handle: string) => void;
 }) {
@@ -298,7 +324,14 @@ export function connectInstalled(input: {
   if (!group) throw new LocalAgentError(400, "bad_group", "没有这个身份");
   const launch = mcpLaunch(input.repo, input.node, spec.handle);
   const credText = existsSync(input.credPath) ? readFileSync(input.credPath, "utf8") : null;
+  const saved = savedCredential(credText, spec.handle);
+  const savedOwner = saved && input.inspectToken ? input.inspectToken(saved.token) : null;
+  const foreign = Boolean(savedOwner && input.ownerId && savedOwner.ownerId !== input.ownerId);
+  const ours = Boolean(savedOwner) && !foreign;
   if (input.connected.has(spec.handle)) {
+    if (input.inspectToken && !ours) {
+      throw new LocalAgentError(409, "no_credential", NO_OWN_CREDENTIAL);
+    }
     const path = writeLaunch(input.home, spec.id, launch);
     return {
       handle: spec.handle,
@@ -306,6 +339,13 @@ export function connectInstalled(input: {
       path,
       note: `${spec.label} 已经在这个频道里。配置已写好，完全退出再打开它。`,
     };
+  }
+  if (foreign && !input.replace) {
+    throw new LocalAgentError(
+      409,
+      "credential_other_owner",
+      `这台电脑上 ${spec.handle} 的凭证属于「${savedOwner?.ownerName}」，不是当前身份。继续会换成当前身份的新凭证，旧的会留在凭证文件的 previous 里。`,
+    );
   }
   try {
     const enrolled = input.enroll({ handle: spec.handle, runtime: spec.runtime, level: input.level ?? 1, group });
@@ -317,11 +357,11 @@ export function connectInstalled(input: {
       runtime: spec.runtime,
     });
     mkdirSync(dirname(input.credPath), { recursive: true });
-    writeFileSync(input.credPath, next);
+    writeFileSync(input.credPath, next, { mode: 0o600 });
   } catch (error) {
     if (!taken(error)) throw error;
-    if (!credentialHas(credText, spec.handle)) {
-      throw new LocalAgentError(409, "no_credential", "这个句柄已经在频道里，但这台电脑没有它的凭证");
+    if (!saved || (input.inspectToken && !ours)) {
+      throw new LocalAgentError(409, "no_credential", NO_OWN_CREDENTIAL);
     }
     input.placeExisting(spec.handle);
     const path = writeLaunch(input.home, spec.id, launch);
