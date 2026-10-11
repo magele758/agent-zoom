@@ -5,6 +5,13 @@ if (!token) process.exit(0);
 
 let events = [];
 try {
+  const me = await fetch(`${url}/api/agent/me`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (me.ok) {
+    const body = await me.json();
+    if (body.paused) process.exit(0);
+  }
   const response = await fetch(`${url}/api/inbox/pending`, {
     headers: { authorization: `Bearer ${token}` },
   });
@@ -16,12 +23,15 @@ try {
   process.exit(0);
 }
 
-if (events.length === 0) process.exit(0);
+if (events.length === 0 || events.some((event) => event.event_type === "stop")) process.exit(0);
 
 const lines = events.map((event) => `- ${event.event_type}: ${event.summary}`).join("\n");
+const onlyRoom = events.every((event) => event.event_type === "room");
 process.stdout.write(
   JSON.stringify({
     decision: "block",
-    reason: `频道里还有要你处理的消息，先看完再停。\n${lines}\n用 wait 取事件，处理完再结束。`,
+    reason: onlyRoom
+      ? `频道里有新的消息。读一下即可，不要把它当成新任务，不要改代码。\n${lines}`
+      : `频道里还有要你处理的消息，先看完再停。\n${lines}\n其中 room 只是频道里的话，不要单独拿它开工。用 wait 取事件，处理完再结束。`,
   }),
 );

@@ -186,6 +186,7 @@ function migrate(db: DatabaseSync) {
   add("rooms", "direct", "direct INTEGER NOT NULL DEFAULT 0");
   add("agents", "machine", "machine TEXT NOT NULL DEFAULT ''");
   add("agents", "cwd", "cwd TEXT NOT NULL DEFAULT ''");
+  add("tasks", "design_pending", "design_pending TEXT NOT NULL DEFAULT ''");
   db.exec(`
     CREATE TABLE IF NOT EXISTS bids (
       id TEXT PRIMARY KEY,

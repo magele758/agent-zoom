@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openDatabase } from "./db.ts";
 import { createApp } from "./http.ts";
+import { speakFor } from "./demo.ts";
 import { ApiError, openStore, type Principal, type Store } from "./logic.ts";
 
 function studio(name = "磊") {
@@ -41,6 +42,43 @@ function levelOf(store: Store, agentId: string) {
   const row = store.db.prepare("SELECT level FROM agents WHERE id = ?").get(agentId) as { level: number };
   return row.level;
 }
+
+test("stopping an implementer frees the slot and blocks the next tool call", () => {
+  const { store, user, roomId } = studio();
+  const worker = enroll(store, user, roomId, "coder", "lab");
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "做一件很贵的事", tags: "lab" });
+  const task = posted.task;
+  assert.ok(task);
+  store.claim(worker, task.id, "implementer");
+  store.lockFile(worker, "src/app.ts", task.id);
+  const stopped = store.stopAgent(user, worker.id);
+  assert.equal(stopped.paused, true);
+  assert.equal(stopped.released, 1);
+  const after = store.getTask(user, task.id);
+  assert.equal(after.status, "open");
+  assert.equal(
+    after.claims.some((claim) => claim.role === "implementer" && claim.state === "active"),
+    false,
+  );
+  const locks = store.db.prepare("SELECT COUNT(*) AS n FROM file_locks WHERE agent_id = ?").get(worker.id) as {
+    n: number;
+  };
+  assert.equal(locks.n, 0);
+  assert.equal(events(store, worker.id, "stop").length, 1);
+  const note = store.db.prepare("SELECT body FROM messages WHERE body LIKE '%coder 被停下%'").get() as
+    | { body: string }
+    | undefined;
+  assert.match(note?.body ?? "", /coder 被停下/);
+  assert.throws(() => store.claim(worker, task.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "stopped";
+  });
+  assert.throws(() => store.postMessage(worker, roomId, { kind: "chat", body: "我还在做" }), (error: unknown) => {
+    return error instanceof ApiError && error.code === "stopped";
+  });
+  const spare = enroll(store, user, roomId, "spare", "lab");
+  const taken = store.claim(spare, task.id, "implementer");
+  assert.equal(taken.claims.some((claim) => claim.handle === "spare" && claim.role === "implementer"), true);
+});
 
 test("two matching agents bid, and only one implementer is awarded", () => {
   const { store, user, roomId } = studio();
@@ -85,16 +123,63 @@ test("room history is visible to members and hidden from outsiders", () => {
   });
 });
 
-test("plain chat does not wake agents, a mention does", () => {
+function demoAgent(store: Store, handle: string) {
+  const row = store.db
+    .prepare("SELECT id, handle, owner_user_id, org_id, paused FROM agents WHERE handle = ? AND demo = 1")
+    .get(handle) as { id: string; handle: string; owner_user_id: string; org_id: string; paused: number };
+  return {
+    type: "agent" as const,
+    id: row.id,
+    handle: row.handle,
+    ownerUserId: row.owner_user_id,
+    orgId: row.org_id,
+    paused: row.paused === 1,
+  };
+}
+
+test("one idle demo answers a chat, and a mention does not get that answer", () => {
+  const { store, user, roomId } = studio();
+  const builder = demoAgent(store, "builder");
+  const maker = demoAgent(store, "maker");
+  const posted = store.postMessage(user, roomId, { kind: "chat", body: "谁有空？" });
+  const heard = events(store, builder.id, "room").find((event) => event.ref_id === posted.message.id);
+  assert.ok(heard);
+  assert.equal(speakFor(store, maker, heard), false);
+  assert.equal(speakFor(store, builder, heard), true);
+  assert.equal(speakFor(store, builder, heard), false);
+  const replies = store.readMessages(user, roomId, 0).filter((message) => message.kind === "chat" && message.handle === "builder");
+  assert.equal(replies.length, 1);
+  assert.match(String(replies[0]?.body ?? ""), /在/);
+
+  store.setPaused(user, builder.id, true);
+  const again = store.postMessage(user, roomId, { kind: "chat", body: "还有人吗" });
+  const next = events(store, maker.id, "room").find((event) => event.ref_id === again.message.id);
+  assert.ok(next);
+  assert.equal(speakFor(store, maker, next), true);
+
+  const named = store.postMessage(user, roomId, { kind: "chat", body: "@maker 只叫你" });
+  assert.equal(events(store, maker.id, "room").some((event) => event.ref_id === named.message.id), false);
+});
+
+test("a message with no mention reaches every agent, a mention reaches only the named one", () => {
   const { store, user, roomId } = studio();
   const coder = enroll(store, user, roomId, "coder");
   const reader = enroll(store, user, roomId, "reader");
   store.postMessage(user, roomId, { kind: "chat", body: "今天先不动代码" });
-  assert.equal(events(store, coder.id, "mention").length, 0);
-  assert.equal(events(store, reader.id, "mention").length, 0);
+  for (const agent of [coder, reader]) {
+    const heard = events(store, agent.id, "room");
+    assert.equal(heard.length, 1);
+    assert.match(heard[0]?.summary ?? "", /今天先不动代码/);
+    assert.equal(events(store, agent.id, "mention").length, 0);
+  }
+  store.postMessage(user, roomId, { kind: "question", body: "这个按钮现在是什么颜色" });
+  assert.equal(events(store, reader.id, "room").length, 2);
+  store.postMessage(coder, roomId, { kind: "chat", body: "我先看一眼" });
+  assert.equal(events(store, reader.id, "room").length, 2);
   store.postMessage(user, roomId, { kind: "chat", body: "@coder 看一下这个报错" });
   assert.equal(events(store, coder.id, "mention").length, 1);
   assert.equal(events(store, reader.id, "mention").length, 0);
+  assert.equal(events(store, reader.id, "room").length, 2);
 });
 
 test("one matching agent claims directly and finishes only after review and test", () => {
@@ -859,5 +944,103 @@ test("peers see different context in a channel and a direct conversation", () =>
   });
   assert.throws(() => store.ask(coder, { handle: "stranger", body: "你在吗" }), (error: unknown) => {
     return error instanceof ApiError && error.code === "no_peer";
+  });
+});
+
+function pauseDemos(store: Store, user: Principal & { type: "user" }) {
+  const demos = store.db.prepare("SELECT id FROM agents WHERE demo = 1").all() as Array<{ id: string }>;
+  for (const demo of demos) store.setPaused(user, demo.id, true);
+}
+
+test("design identities write the plan before an implementer can claim", () => {
+  const { store, user, roomId } = studio();
+  pauseDemos(store, user);
+  const scholar = enroll(store, user, roomId, "scholar", "research");
+  const coder = enroll(store, user, roomId, "coder", "build");
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "做一个导出" });
+  const task = posted.task;
+  assert.ok(task);
+  assert.equal(task.status, "open");
+  assert.deepEqual(task.designPending, ["research"]);
+  assert.equal(events(store, scholar.id, "design_needed").length, 1);
+  assert.match(events(store, scholar.id, "design_needed")[0]?.summary ?? "", /不改代码/);
+  assert.equal(events(store, coder.id, "task_open").length, 0);
+  assert.equal(events(store, coder.id, "bid_open").length, 0);
+  assert.throws(() => store.claim(coder, task.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "design_first";
+  });
+  assert.throws(() => store.submitDesign(coder, task.id, "我直接做"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "not_designer";
+  });
+  const next = store.submitDesign(scholar, task.id, "先确认导出的是当前房间的消息。");
+  assert.equal(next.designPending.length, 0);
+  assert.equal(next.tags, "build");
+  assert.equal(next.designs[0]?.handle, "scholar");
+  assert.equal(events(store, coder.id, "task_open").length, 1);
+  assert.equal(store.whoami(scholar).groupLabel, "课题研究");
+  assert.throws(() => store.submitDesign(scholar, task.id, "再写一版"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "design_done";
+  });
+});
+
+test("every present design identity submits before implementation opens", () => {
+  const { store, user, roomId } = studio();
+  pauseDemos(store, user);
+  const product = enroll(store, user, roomId, "planner", "product");
+  const architect = enroll(store, user, roomId, "framer", "architect");
+  const coder = enroll(store, user, roomId, "coder", "build");
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "重做入口" });
+  const task = posted.task;
+  assert.ok(task);
+  assert.deepEqual(task.designPending, ["product", "architect"]);
+  const mid = store.submitDesign(architect, task.id, "入口独立成一页，数据仍走现有接口。");
+  assert.deepEqual(mid.designPending, ["product"]);
+  assert.equal(events(store, coder.id, "task_open").length, 0);
+  const done = store.submitDesign(product, task.id, "用户先看到名字，再进入大厅。");
+  assert.equal(done.designPending.length, 0);
+  assert.equal(events(store, coder.id, "task_open").length, 1);
+});
+
+test("a tagged instruction skips the design gate", () => {
+  const { store, user, roomId } = studio();
+  pauseDemos(store, user);
+  const scholar = enroll(store, user, roomId, "scholar", "research");
+  const coder = enroll(store, user, roomId, "coder", "build");
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "只改实现", tags: "build" });
+  const task = posted.task;
+  assert.ok(task);
+  assert.deepEqual(task.designPending, []);
+  assert.equal(events(store, scholar.id, "design_needed").length, 0);
+  assert.equal(events(store, coder.id, "task_open").length, 1);
+});
+
+test("a person can hand the task to implementers before every design is in", () => {
+  const { store, user, roomId } = studio();
+  pauseDemos(store, user);
+  enroll(store, user, roomId, "scholar", "research");
+  const coder = enroll(store, user, roomId, "coder", "build");
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "先做起来" });
+  const task = posted.task;
+  assert.ok(task);
+  const next = store.handOffDesign(user, task.id);
+  assert.equal(next.designPending.length, 0);
+  assert.equal(next.tags, "build");
+  assert.equal(events(store, coder.id, "task_open").length, 1);
+});
+
+test("changing an agent group is what later instructions match", () => {
+  const { store, user, roomId } = studio();
+  pauseDemos(store, user);
+  const coder = enroll(store, user, roomId, "coder", "build");
+  const changed = store.setGroup(user, coder.id, "design");
+  assert.equal(changed.label, "设计师");
+  assert.equal(store.whoami(coder).group, "design");
+  const posted = store.postMessage(user, roomId, { kind: "instruction", body: "出一版界面" });
+  const task = posted.task;
+  assert.ok(task);
+  assert.deepEqual(task.designPending, ["design"]);
+  assert.equal(events(store, coder.id, "design_needed").length, 1);
+  assert.throws(() => store.setGroup(user, coder.id, "poet"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "bad_group";
   });
 });
