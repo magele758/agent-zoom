@@ -186,7 +186,29 @@ function migrate(db: DatabaseSync) {
   add("rooms", "direct", "direct INTEGER NOT NULL DEFAULT 0");
   add("agents", "machine", "machine TEXT NOT NULL DEFAULT ''");
   add("agents", "cwd", "cwd TEXT NOT NULL DEFAULT ''");
+  add("tasks", "pipeline_id", "pipeline_id TEXT");
+  add("tasks", "step_index", "step_index INTEGER");
+  add("tasks", "step_role", "step_role TEXT");
+  add("tasks", "assignee_handle", "assignee_handle TEXT NOT NULL DEFAULT ''");
+  add("tasks", "handles_json", "handles_json TEXT NOT NULL DEFAULT '[]'");
+  add("tasks", "steps_json", "steps_json TEXT NOT NULL DEFAULT ''");
+  add("tasks", "deliverable_body", "deliverable_body TEXT");
+  add("tasks", "gate", "gate INTEGER NOT NULL DEFAULT 0");
+  add("tasks", "qa_returns", "qa_returns INTEGER NOT NULL DEFAULT 0");
+  add("tasks", "cross_returns", "cross_returns INTEGER NOT NULL DEFAULT 0");
+  add("tasks", "offer_until", "offer_until TEXT");
+  add("tasks", "offer_index", "offer_index INTEGER");
+  add("tasks", "claim_timeout_ms", "claim_timeout_ms INTEGER NOT NULL DEFAULT 120000");
   db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_conclusions (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      handle TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (task_id, handle)
+    );
     CREATE TABLE IF NOT EXISTS bids (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,

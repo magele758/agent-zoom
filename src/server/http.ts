@@ -116,6 +116,7 @@ export function createApp(store: Store) {
         parallel: Boolean(body.parallel),
         tags: body.tags ? String(body.tags) : undefined,
         complex: Boolean(body.complex),
+        steps: body.steps,
       }),
     );
   });
@@ -254,7 +255,25 @@ export function createApp(store: Store) {
   app.post("/api/agent/tasks/:id/deliver", async (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     const body = await c.req.json();
-    return c.json(store.deliver(agent, c.req.param("id"), String(body.ref ?? ""), String(body.summary ?? "")));
+    return c.json(
+      store.deliver(agent, c.req.param("id"), String(body.ref ?? ""), String(body.summary ?? ""), {
+        body: body.body ? String(body.body) : undefined,
+        verdict: body.verdict ? String(body.verdict) : undefined,
+        screenshots: body.screenshots,
+      }),
+    );
+  });
+
+  app.post("/api/agent/tasks/:id/conclude", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.conclude(agent, c.req.param("id"), String(body.verdict ?? ""), String(body.body ?? "")));
+  });
+
+  app.post("/api/agent/tasks/:id/decline", async (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    const body = await c.req.json();
+    return c.json(store.decline(agent, c.req.param("id"), body.note ? String(body.note) : ""));
   });
 
   app.post("/api/agent/tasks/:id/review", async (c) => {
@@ -356,7 +375,9 @@ function apiFor(store: Store, agent: Principal & { type: "agent" }): ChatApi {
     getTask: async (taskId) => store.getTask(agent, taskId),
     claim: async (taskId, role) => store.claim(agent, taskId, role as "implementer"),
     bid: async (taskId, approach) => store.bid(agent, taskId, approach),
-    deliver: async (taskId, ref, summary) => store.deliver(agent, taskId, ref, summary),
+    deliver: async (taskId, ref, summary, extra) => store.deliver(agent, taskId, ref, summary, extra),
+    conclude: async (taskId, verdict, body) => store.conclude(agent, taskId, verdict, body),
+    decline: async (taskId, note) => store.decline(agent, taskId, note),
     heartbeat: async (taskId) => store.heartbeat(agent, taskId),
     ready: async (taskId) => store.markReady(agent, taskId),
     review: async (taskId, verdict, body) => store.review(agent, taskId, verdict, body),
