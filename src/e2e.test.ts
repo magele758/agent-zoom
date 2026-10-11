@@ -215,6 +215,9 @@ test("the local-client list for 这台电脑 answers with a catalog and marks wh
   for (const agent of listed.data.agents) {
     assert.equal(typeof agent.id, "string");
     assert.equal(typeof agent.connected, "boolean");
+    assert.equal(typeof agent.inRoom, "boolean");
+    assert.equal(typeof agent.configured, "boolean");
+    assert.equal(agent.connected, agent.inRoom && agent.configured);
   }
   cookie = "";
   assert.equal((await call(`/api/rooms/${roomId}/local-agents`)).status, 401);

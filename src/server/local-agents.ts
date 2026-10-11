@@ -15,6 +15,11 @@ export type LocalAgent = {
   runtime: string;
   detail: string;
   writable: boolean;
+  /** 房间里有这个句柄。 */
+  inRoom: boolean;
+  /** 本机该客户端的配置里真的有 agent-chatroom 条目。 */
+  configured: boolean;
+  /** 两者都成立才算已接入。 */
   connected: boolean;
 };
 
@@ -56,6 +61,14 @@ const SPECS: Spec[] = [
   },
   { id: "gemini", label: "Gemini", handle: "gemini", runtime: "gemini", detail: "写入 ~/.gemini/settings.json", writable: true },
   {
+    id: "antigravity",
+    label: "Antigravity",
+    handle: "antigravity",
+    runtime: "antigravity",
+    detail: "写入 ~/.gemini/antigravity/mcp_config.json",
+    writable: true,
+  },
+  {
     id: "opencode",
     label: "OpenCode",
     handle: "opencode",
@@ -88,6 +101,9 @@ export function isInstalled(id: string, home: string, probe: Probe, apps: (name:
   if (id === "chatgpt") return apps("ChatGPT.app");
   if (id === "codex") return probe.bins.has("codex");
   if (id === "gemini") return probe.bins.has("gemini") || apps("Gemini.app") || probe.exists(join(home, ".gemini/settings.json"));
+  if (id === "antigravity") {
+    return apps("Antigravity.app") || probe.bins.has("antigravity") || probe.exists(join(home, ".gemini/antigravity"));
+  }
   if (id === "opencode") {
     return probe.bins.has("opencode") || apps("OpenCode.app") || probe.exists(join(home, ".config/opencode/opencode.json"));
   }
@@ -105,12 +121,50 @@ export function listFromProbe(
   home: string,
   probe: Probe,
   apps: (name: string) => boolean,
-  connected = new Set<string>(),
+  inRoom = new Set<string>(),
+  configured: (id: string) => boolean = (id) => isConfigured(home, id),
 ): LocalAgent[] {
-  return SPECS.filter((spec) => isInstalled(spec.id, home, probe, apps)).map((spec) => ({
-    ...spec,
-    connected: connected.has(spec.handle),
-  }));
+  return SPECS.filter((spec) => isInstalled(spec.id, home, probe, apps)).map((spec) => {
+    const here = inRoom.has(spec.handle);
+    const local = spec.writable && configured(spec.id);
+    return { ...spec, inRoom: here, configured: local, connected: here && local };
+  });
+}
+
+function readText(path: string) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function hasJsonServer(text: string, group: string, name: string) {
+  try {
+    const data = JSON.parse(text) as unknown;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+    const servers = (data as Record<string, unknown>)[group];
+    return Boolean(servers && typeof servers === "object" && name in (servers as Record<string, unknown>));
+  } catch {
+    return text.includes(`"${name}"`);
+  }
+}
+
+function hasTomlServer(text: string, name: string) {
+  const quoted = name.replaceAll('"', '\\"');
+  return text.split("\n").some((line) => {
+    const trimmed = line.trim();
+    return trimmed === `[mcp_servers."${quoted}"]` || trimmed === `[mcp_servers.${name}]`;
+  });
+}
+
+/** 只读：看本机这个客户端的配置里有没有 agent-chatroom 条目，不写任何文件。 */
+export function isConfigured(home: string, id: string, read: (path: string) => string | null = readText) {
+  const target = configTarget(home, id, mcpLaunch("", "", ""));
+  if (!target) return false;
+  const text = read(target.path);
+  if (!text?.trim()) return false;
+  return target.kind === "toml" ? hasTomlServer(text, target.serverName) : hasJsonServer(text, target.group, target.name);
 }
 
 export function mcpLaunch(repo: string, node: string, handle: string) {
@@ -175,6 +229,15 @@ export function configTarget(home: string, id: string, launch: ReturnType<typeof
     };
   }
   if (id === "gemini") return { kind: "json" as const, path: join(home, ".gemini/settings.json"), group: "mcpServers", name: "agent-chatroom", entry: jsonEntry };
+  if (id === "antigravity") {
+    return {
+      kind: "json" as const,
+      path: join(home, ".gemini/antigravity/mcp_config.json"),
+      group: "mcpServers",
+      name: "agent-chatroom",
+      entry: jsonEntry,
+    };
+  }
   if (id === "windsurf") {
     return {
       kind: "json" as const,
@@ -254,15 +317,15 @@ export function credentialHas(text: string | null, handle: string) {
   return savedCredential(text, handle) !== null;
 }
 
-export function listLocalAgents(connected: Set<string>, home = homedir()) {
+export function listLocalAgents(inRoom: Set<string>, home = homedir()) {
   const bins = new Set<string>();
   const dirs = [...(process.env.PATH ?? "").split(":"), join(home, ".local/bin"), join(home, ".opencode/bin")].filter(Boolean);
-  for (const name of ["claude", "codex", "gemini", "opencode", "copilot", "amp", "cursor"]) {
+  for (const name of ["claude", "codex", "gemini", "antigravity", "opencode", "copilot", "amp", "cursor"]) {
     if (dirs.some((dir) => existsSync(join(dir, name)))) bins.add(name);
   }
   const probe: Probe = { exists: existsSync, bins };
   const apps = (name: string) => existsSync(`/Applications/${name}`) || existsSync(join(home, "Applications", name));
-  return listFromProbe(home, probe, apps, connected);
+  return listFromProbe(home, probe, apps, inRoom);
 }
 
 export class LocalAgentError extends Error {
