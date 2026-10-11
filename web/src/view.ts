@@ -53,20 +53,27 @@ function reviewers(task: ViewTask) {
   const notes = task.conclusions ?? [];
   const handles = [...(task.handles ?? [])];
   for (const note of notes) if (!handles.includes(note.handle)) handles.push(note.handle);
+  const closed = task.status === "done" || task.status === "canceled" || task.status === "failed";
   return handles.map((handle) => {
     const note = notes.find((item) => item.handle === handle);
-    return `${handle} ${note ? (VERDICT_TEXT[note.verdict] ?? note.verdict) : "待交"}`;
+    if (note) return `${handle} ${VERDICT_TEXT[note.verdict] ?? note.verdict}`;
+    return `${handle} ${closed ? "未接入" : "待交"}`;
   });
 }
 
-export function stepOwner(task: ViewTask) {
+export function stepStatus(task: ViewTask) {
+  if (task.stepRole === "review" && task.status === "open") return "复核中";
+  return PIPELINE_STATUS[task.status] ?? task.status;
+}
+
+export function stepOwner(task: ViewTask, withWait = true) {
   if (task.stepRole === "review") return reviewers(task).join("、") || "空";
   const active = holders(task);
   if (active.length > 0) return active.join("、");
   if (task.status === "done") return finisher(task).join("、");
   const wanted = task.assigneeHandle ? [task.assigneeHandle] : (task.handles ?? []);
   if (wanted.length === 0) return "空";
-  if (task.status === "blocked") return `${wanted.join("、")}（等上一步）`;
+  if (task.status === "blocked") return withWait ? `${wanted.join("、")}（等上一步）` : wanted.join("、");
   if (task.status === "open") return `${wanted.join("、")}（待认领）`;
   return wanted.join("、");
 }
@@ -96,8 +103,8 @@ export function pipelineOverview(parent: ViewTask, steps: readonly ViewTask[]) {
     id: step.id,
     role: step.stepRole ?? "",
     label: roleLabel(step.stepRole ?? ""),
-    owner: stepOwner(step),
-    status: PIPELINE_STATUS[step.status] ?? step.status,
+    owner: stepOwner(step, false),
+    status: stepStatus(step),
     state: step.status === "done" ? "done" : step.id === current?.id ? "now" : "",
   }));
   const where = parent.status === "done" ? "已做完" : current ? `当前：${roleLabel(current.stepRole ?? "")}` : "等待开始";

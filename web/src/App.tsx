@@ -13,6 +13,7 @@ import {
   pipelineOverview,
   shouldFold,
   stepSlots,
+  stepStatus,
   stepsOf,
   type ComposerKind,
 } from "./view";
@@ -1470,7 +1471,7 @@ function TaskCard({
   const siblings = step ? stepsOf(task.pipelineId!, all) : [];
   const overview = parent ? pipelineOverview(task, stepsOf(task.id, all)) : null;
   const showFlow = lanes.length === 0 && !parent && !step;
-  const label = step || parent ? (PIPELINE_STATUS[task.status] ?? task.status) : (STATUS_LABEL[task.status] ?? task.status);
+  const label = step ? stepStatus(task) : parent ? (PIPELINE_STATUS[task.status] ?? task.status) : (STATUS_LABEL[task.status] ?? task.status);
   return (
     <article className={`task status-${task.status}${nested ? " lane" : ""}${winning ? " winner" : ""}${parent ? " pipeline" : ""}${step ? " pipeline-step" : ""}`}>
       <header>

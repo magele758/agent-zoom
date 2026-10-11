@@ -52,9 +52,13 @@ test("the pipeline summary card names the current step and each owner", () => {
   assert.equal(view.where, "当前：复核");
   assert.deepEqual(view.rows.map((row) => `${row.label}:${row.state}`), ["研究:done", "复核:now", "产品:", "QA:"]);
   assert.equal(view.rows[1].owner, "chatgpt 通过、grok 待交");
+  assert.equal(view.rows[1].status, "复核中");
+  assert.equal(view.rows[2].owner, "chatgpt");
+  assert.equal(view.rows[2].status, "等待");
   const done = pipelineOverview({ ...parent, status: "done" }, steps().map((step) => ({ ...step, status: "done" })));
   assert.equal(done.where, "已做完");
   assert.equal(done.rows.every((row) => row.state === "done"), true);
+  assert.equal(done.rows[1].owner, "chatgpt 通过、grok 未接入");
 });
 
 test("long agent output folds to a short head, human and instruction text does not", () => {
