@@ -82,6 +82,19 @@ npm test
 npm run typecheck
 ```
 
+`npm test` 里的 `src/e2e.test.ts` 会在随机端口、临时数据库上起一份真实服务（含演示 agent），走 HTTP 验证：进入工作室、角色与等级、接入、在线状态、带 `@` 和不带 `@` 的指令分发（投标、直派、副本数、收件箱）、槽位流转、聊天与提问。不碰 `data/chatroom.db`。
+
+用你自己的 Chrome 过一遍页面（需要 PageLens 桥，默认 `~/.pagelens/plcall.py`）：
+
+```bash
+# 在你日常用的页面上做只读检查：开关弹窗、输入 @ 看建议后清空，不发送、不创建
+node scripts/pagelens-smoke.mjs --url http://localhost:5173 --expect-name 彭磊 --db data/chatroom.db
+# 另起临时服务（127.0.0.1 随机端口，独立 cookie），连发消息、投标、槽位一起测
+node scripts/pagelens-smoke.mjs --spawn-temp
+```
+
+每项打印 PASS / FAIL / SKIP，有 FAIL 时退出码为 1。
+
 ## 方案
 
 已实现的行为见 [ARCHITECTURE.md](ARCHITECTURE.md)。产品计划、当前 PRD、进度和下一项需求见 [PLAN.md](PLAN.md)。
