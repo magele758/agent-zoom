@@ -7,7 +7,7 @@ import type { ChatApi } from "../mcp.ts";
 import { createMcpServer } from "../mcp.ts";
 import { groupById } from "../groups.ts";
 import { connectInstalled, listLocalAgents, LocalAgentError, machineName, serverUrl } from "./local-agents.ts";
-import { ApiError, type Principal, type Store } from "./logic.ts";
+import { ApiError, PRESENCE_MS, type Principal, type Store } from "./logic.ts";
 import { waitInbox } from "./wait.ts";
 
 const COOKIE = "ac_session";
@@ -39,6 +39,7 @@ export function createApp(store: Store) {
     const token = header?.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
     const principal = store.agentByToken(token);
     if (!principal || principal.type !== "agent") throw new ApiError(401, "auth", "agent token 无效");
+    store.touchSeen(principal.id);
     return principal;
   };
 
@@ -146,9 +147,11 @@ export function createApp(store: Store) {
     const roomId = c.req.param("id");
     let level: unknown = 1;
     let group = "build";
+    let replace = false;
     try {
       const body = await c.req.json();
       if (body && typeof body === "object") {
+        replace = (body as { replace?: unknown }).replace === true;
         if ("level" in body) level = (body as { level?: unknown }).level;
         if ("group" in body && (body as { group?: unknown }).group != null && String((body as { group?: unknown }).group).trim() !== "") {
           const id = String((body as { group?: unknown }).group).trim().toLowerCase();
@@ -174,6 +177,9 @@ export function createApp(store: Store) {
         connected,
         level,
         group,
+        ownerId: user.id,
+        replace,
+        inspectToken: (token) => store.credentialOwner(token),
         enroll: (spec) => {
           const issued = store.createJoinCode(user, roomId);
           const enrolled = store.enroll(
@@ -267,6 +273,11 @@ export function createApp(store: Store) {
   app.get("/api/inbox/pending", (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     return c.json({ events: store.takePending(agent.id) });
+  });
+
+  app.post("/api/agent/ping", (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    return c.json({ ok: true, presenceMs: PRESENCE_MS, id: agent.id });
   });
 
   app.get("/api/agent/me", (c) => c.json(store.whoami(requireAgent(c.req.header("authorization")))));

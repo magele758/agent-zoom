@@ -6,6 +6,7 @@ import { openDatabase } from "./db.ts";
 export const LEASE_MS = 10 * 60 * 1000;
 export const LOCK_MS = 120_000;
 const JOIN_MS = 30 * 60 * 1000;
+export const PRESENCE_MS = 5 * 60 * 1000;
 const BID_MS = 8_000;
 const REVIEWER_LIMIT = 3;
 export const MIN_LEVEL = 1;
@@ -279,6 +280,10 @@ export class Store {
     this.db.prepare("UPDATE agents SET last_seen_at = ? WHERE id = ?").run(nowIso(), agentId);
   }
 
+  private isOnline(paused: number, lastSeenAt: string | null) {
+    return paused !== 1 && !!lastSeenAt && Date.parse(lastSeenAt) > Date.now() - PRESENCE_MS;
+  }
+
   session(name: string) {
     const clean = name.trim().replace(/\s+/g, " ");
     if (!clean || clean.length > 40) throw new ApiError(400, "bad_name", "名字需要 1 到 40 个字");
@@ -409,6 +414,105 @@ export class Store {
       orgId: row.org_id,
       paused: row.paused === 1,
     };
+  }
+
+  reassignAgents(input: { from: string; to: string; handles?: string[]; displace?: boolean; apply?: boolean }) {
+    const userOf = (name: string) =>
+      this.db.prepare("SELECT id, name FROM users WHERE name_key = ?").get(nameKey(name)) as
+        | { id: string; name: string }
+        | undefined;
+    const from = userOf(input.from);
+    const to = userOf(input.to);
+    if (!from) throw new ApiError(404, "no_user", `没有叫「${input.from}」的人`);
+    if (!to) throw new ApiError(404, "no_user", `没有叫「${input.to}」的人`);
+    if (from.id === to.id) throw new ApiError(400, "same_user", "来源和目标是同一个人");
+    const orgOf = (userId: string) =>
+      (this.db.prepare("SELECT org_id FROM org_members WHERE user_id = ? LIMIT 1").get(userId) as
+        | { org_id: string }
+        | undefined)?.org_id;
+    const toOrg = orgOf(to.id);
+    const lobby = toOrg
+      ? (this.db.prepare("SELECT id FROM rooms WHERE org_id = ? AND general = 1 LIMIT 1").get(toOrg) as
+          | { id: string }
+          | undefined)
+      : undefined;
+    if (!toOrg || !lobby) throw new ApiError(404, "no_org", `「${to.name}」还没有工作室`);
+    const wanted = input.handles?.map((handle) => handle.trim().toLowerCase());
+    const agents = (
+      this.db
+        .prepare("SELECT id, handle, level FROM agents WHERE owner_user_id = ? AND demo = 0 ORDER BY handle")
+        .all(from.id) as Array<{ id: string; handle: string; level: number }>
+    ).filter((agent) => !wanted || wanted.includes(agent.handle));
+    const steps: Array<{ handle: string; action: "move" | "move_displacing" | "skip"; note: string }> = [];
+    const run = () => {
+      for (const agent of agents) {
+        const busy = this.db
+          .prepare("SELECT 1 AS ok FROM task_claims WHERE agent_id = ? AND state = 'active' LIMIT 1")
+          .get(agent.id);
+        if (busy) {
+          steps.push({ handle: agent.handle, action: "skip", note: "还占着任务槽位，先放开再迁移" });
+          continue;
+        }
+        const clash = this.db
+          .prepare("SELECT id, level FROM agents WHERE org_id = ? AND handle = ?")
+          .get(toOrg, agent.handle) as { id: string; level: number } | undefined;
+        if (clash && !input.displace) {
+          steps.push({
+            handle: agent.handle,
+            action: "skip",
+            note: `「${to.name}」那边已经有同名的 ${agent.handle}。确认它是废弃的旧记录就加 displace，它会被暂停并改名 ${agent.handle}-old`,
+          });
+          continue;
+        }
+        if (clash) {
+          const renamed = `${agent.handle}-old`.slice(0, 32);
+          const free = this.db
+            .prepare("SELECT 1 AS ok FROM agents WHERE org_id = ? AND handle = ?")
+            .get(toOrg, renamed);
+          if (free) {
+            steps.push({ handle: agent.handle, action: "skip", note: `${renamed} 也被占了，先手动处理` });
+            continue;
+          }
+          if (input.apply) {
+            this.db.prepare("UPDATE agents SET handle = ?, paused = 1 WHERE id = ?").run(renamed, clash.id);
+          }
+        }
+        steps.push({
+          handle: agent.handle,
+          action: clash ? "move_displacing" : "move",
+          note: `${from.name} → ${to.name}，保留等级 ${agent.level}`,
+        });
+        if (!input.apply) continue;
+        this.db.prepare("UPDATE agents SET owner_user_id = ?, org_id = ? WHERE id = ?").run(to.id, toOrg, agent.id);
+        this.db.prepare("DELETE FROM room_members WHERE principal_type = 'agent' AND principal_id = ?").run(agent.id);
+        this.db.prepare("DELETE FROM file_locks WHERE agent_id = ?").run(agent.id);
+        this.db.prepare("DELETE FROM bids WHERE agent_id = ?").run(agent.id);
+        this.db.prepare("DELETE FROM inbox WHERE recipient_type = 'agent' AND recipient_id = ?").run(agent.id);
+        this.addRoomMember(lobby.id, "agent", agent.id);
+        this.insertMessage({
+          roomId: lobby.id,
+          authorType: "system",
+          authorId: "system",
+          taskId: null,
+          kind: "system",
+          body: `${agent.handle} 的归属已从 ${from.name} 改到 ${to.name}`,
+          addressed: [],
+        });
+      }
+    };
+    if (input.apply) this.transaction(run);
+    else run();
+    if (input.apply) this.flush();
+    return { from: from.name, to: to.name, lobbyId: lobby.id, applied: Boolean(input.apply), steps };
+  }
+
+  credentialOwner(token: string) {
+    const row = this.db
+      .prepare(
+        `SELECT u.id AS owner_id, u.name AS owner_name FROM agents a JOIN users u ON u.id = a.owner_user_id WHERE a.token_hash = ?`,
+      )
+      .get(hashToken(token)) as { owner_id: string; owner_name: string } | undefined;
+    return row ? { ownerId: row.owner_id, ownerName: row.owner_name } : null;
   }
 
   logout(token: string | undefined) {
@@ -955,7 +1059,8 @@ export class Store {
     const addressed = this.resolveMentions(roomId, body);
     const acceptance = (input.acceptance?.trim() || body).slice(0, 2000);
     const tags = parseTags(input.tags).join(",");
-    const designPending = kind === "instruction" && !tags ? this.designGroupIds(roomId).join(",") : "";
+    const designPending =
+      kind === "instruction" && !tags && addressed.length === 0 ? this.designGroupIds(roomId).join(",") : "";
     const parallel = Boolean(input.parallel);
     const complex = Boolean(input.complex);
     const result = this.transaction(() => {
@@ -1018,7 +1123,7 @@ export class Store {
         roomId,
         author: principal,
         message,
-        addressed,
+        addressed: createdTaskId ? [] : addressed,
         taskId: message.task_id,
         share:
           principal.type === "user" &&
@@ -1056,6 +1161,9 @@ export class Store {
       }
       if (role === "implementer" && !tagsMatch(parseTags(task.tags), this.agentTags(agent.id))) {
         throw new ApiError(403, "not_eligible", "标签不匹配，这条任务不交给你");
+      }
+      if (role === "implementer" && !this.addressedTo(task, agent.id)) {
+        throw new ApiError(403, "not_addressed", "这条指令点名了别的 agent，不交给你");
       }
       if (role === "implementer" && task.status === "open" && this.levelBlocked(task, agent.id)) {
         throw new ApiError(403, "level_low", "复杂任务先交给等级 3 以上的 agent");
@@ -1554,7 +1662,6 @@ export class Store {
        WHERE c.agent_id = ? AND c.state = 'active' AND t.status NOT IN ('done', 'canceled', 'failed')
        ORDER BY t.updated_at DESC`,
     );
-    const fresh = Date.now() - 20_000;
     return peers.map((peer) => ({
       id: peer.id,
       handle: peer.handle,
@@ -1563,7 +1670,7 @@ export class Store {
       machine: peer.machine ?? "",
       cwd: peer.cwd ?? "",
       paused: peer.paused === 1,
-      online: peer.paused !== 1 && !!peer.last_seen_at && Date.parse(peer.last_seen_at) > fresh,
+      online: this.isOnline(peer.paused, peer.last_seen_at),
       rooms: sharedRooms.all(agent.id, peer.id) as Array<{ id: string; name: string }>,
       working: (working.all(peer.id) as Array<{
         task_id: string;
@@ -1756,6 +1863,7 @@ export class Store {
       | { paused: number }
       | undefined;
     if (!row || row.paused === 1) throw new ApiError(409, "stopped", STOP_TEXT);
+    this.touchSeen(agent.id);
   }
 
   private assertMember(principal: Principal, roomId: string) {
@@ -2198,10 +2306,65 @@ export class Store {
     }));
   }
 
+  private addressedAgents(task: TaskRow) {
+    if (task.parent_id) return [];
+    const kind = this.db.prepare("SELECT kind FROM messages WHERE id = ?").get(task.message_id) as
+      | { kind: string }
+      | undefined;
+    if (kind?.kind !== "instruction") return [];
+    return this.resolveMentions(task.room_id, task.body);
+  }
+
+  private addressedTo(task: TaskRow, agentId: string) {
+    const named = this.addressedAgents(task);
+    return named.length === 0 || named.some((item) => item.id === agentId);
+  }
+
+  private dispatchAddressed(task: TaskRow, named: Addressed[]) {
+    const awake = this.db
+      .prepare(`SELECT id FROM agents WHERE paused = 0 AND id IN (${named.map(() => "?").join(",")})`)
+      .all(...named.map((item) => item.id)) as Array<{ id: string }>;
+    const handles = named.map((item) => `@${item.handle}`).join(" ");
+    const noted = (body: string) => {
+      const seen = this.db
+        .prepare("SELECT 1 AS ok FROM messages WHERE task_id = ? AND kind = 'system' AND body = ?")
+        .get(task.id, body);
+      if (seen) return;
+      this.insertMessage({
+        roomId: task.room_id,
+        authorType: "system",
+        authorId: "system",
+        taskId: task.id,
+        kind: "system",
+        body,
+        addressed: [],
+      });
+    };
+    if (awake.length === 0) {
+      noted(`${handles} 已暂停，这条指令没有分发。取消后改点别人，或先恢复它。`);
+      return;
+    }
+    noted(`指令直接交给 ${handles}，不开放投标。`);
+    for (const agent of awake) {
+      const sent = this.db
+        .prepare(
+          "SELECT 1 AS ok FROM inbox WHERE recipient_type = 'agent' AND recipient_id = ? AND event_type = 'task_open' AND ref_id = ?",
+        )
+        .get(agent.id, task.id);
+      if (sent) continue;
+      this.pushInbox(agent.id, task.room_id, "task_open", task.id, this.cardSummary(task, "指令点名你，直接认领"));
+    }
+  }
+
   private announce(taskId: string) {
     const task = this.taskRow(taskId);
     if (parseTags(task.design_pending).length > 0) return;
     if (task.status !== "open") return;
+    const named = this.addressedAgents(task);
+    if (named.length > 0) {
+      this.dispatchAddressed(task, named);
+      return;
+    }
     const eligible = this.eligibleAgents(task);
     if (eligible.length >= 2) {
       const until = new Date(Date.now() + BID_MS).toISOString();
@@ -2769,7 +2932,6 @@ export class Store {
       last_seen_at: string | null;
       owner: string;
     }>;
-    const fresh = Date.now() - 20_000;
     return {
       users: users.map((user) => ({
         id: user.id,
@@ -2787,7 +2949,7 @@ export class Store {
         machine: agent.machine ?? "",
         cwd: agent.cwd ?? "",
         ownerName: agent.owner,
-        online: agent.paused !== 1 && !!agent.last_seen_at && Date.parse(agent.last_seen_at) > fresh,
+        online: this.isOnline(agent.paused, agent.last_seen_at),
       })),
     };
   }

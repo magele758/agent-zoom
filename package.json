@@ -8,9 +8,10 @@
     "dev": "concurrently -n server,web -c blue,green \"tsx watch src/server/index.ts\" \"vite\"",
     "start": "tsx src/server/index.ts",
     "build": "vite build",
-    "test": "tsx --test src/server/logic.test.ts src/mentions.test.ts src/local-agents.test.ts",
+    "test": "tsx --test src/server/logic.test.ts src/mentions.test.ts src/local-agents.test.ts src/presence-dispatch.test.ts",
     "mcp": "tsx src/cli.ts mcp",
     "enroll": "tsx src/cli.ts enroll",
+    "fix-owner": "tsx src/fix-owner.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {

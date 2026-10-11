@@ -415,27 +415,36 @@ test("a complex task falls back to everyone when nobody is level 3", () => {
   assert.equal(awarded.claims.find((claim) => claim.role === "implementer")?.agentId, two.id);
 });
 
-test("a complex task with one strong agent stays open, mentions ignore level, and review does too", () => {
+test("a complex task with one strong agent stays open for others, a named agent ignores level, and review does too", () => {
   const { store, user, roomId } = studio();
   const junior = enroll(store, user, roomId, "junior", "lab", 1);
   const senior = enroll(store, user, roomId, "senior", "lab", 4);
+  const open = store.postMessage(user, roomId, { kind: "instruction", body: "改一下权限模型", tags: "lab", complex: true });
+  assert.equal(open.task?.status, "open");
+  assert.equal(events(store, senior.id, "task_open").length, 1);
+  assert.equal(events(store, junior.id, "task_open").length, 0);
+  assert.throws(() => store.claim(junior, open.task!.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "level_low";
+  });
   const posted = store.postMessage(user, roomId, {
     kind: "instruction",
-    body: "@junior 你先看一下方案，实现交给更合适的人",
+    body: "@junior 你来做这个",
     tags: "lab",
     complex: true,
   });
   assert.equal(posted.task?.status, "open");
-  assert.equal(events(store, senior.id, "task_open").length, 1);
-  assert.equal(events(store, junior.id, "task_open").length, 0);
-  assert.equal(events(store, junior.id, "mention").length, 1);
+  assert.equal(events(store, junior.id, "task_open").filter((row) => row.ref_id === posted.task!.id).length, 1);
+  assert.equal(events(store, senior.id, "task_open").filter((row) => row.ref_id === posted.task!.id).length, 0);
   assert.equal(store.readMessages(junior, roomId, 0).some((message) => String(message.body).includes("@junior")), true);
-  store.claim(senior, posted.task!.id, "implementer");
-  store.deliver(senior, posted.task!.id, "workspace:auth", "权限模型交了一版。");
-  store.claim(junior, posted.task!.id, "reviewer");
-  const reviewed = store.review(junior, posted.task!.id, "approve", "范围够了。");
+  assert.throws(() => store.claim(senior, posted.task!.id, "implementer"), (error: unknown) => {
+    return error instanceof ApiError && error.code === "not_addressed";
+  });
+  store.claim(junior, posted.task!.id, "implementer");
+  store.deliver(junior, posted.task!.id, "workspace:auth", "权限模型交了一版。");
+  store.claim(senior, posted.task!.id, "reviewer");
+  const reviewed = store.review(senior, posted.task!.id, "approve", "范围够了。");
   assert.equal(reviewed.status, "in_test");
-  assert.equal(levelOf(store, senior.id), 5);
+  assert.equal(levelOf(store, junior.id), 2);
 });
 
 test("a claimed task is not taken by a stronger agent", () => {
