@@ -60,10 +60,23 @@ export function groupOf(tags: string | null | undefined) {
 }
 
 export function groupLabel(tags: string | null | undefined) {
-  return groupOf(tags)?.label ?? "";
+  return groupsOf(tags).map((group) => group.label).join("、");
 }
 
 export function normalizeGroup(value: unknown, fallback = "build") {
   if (value == null || String(value).trim() === "") return fallback;
   return groupById(String(value))?.id ?? null;
+}
+
+/** 一个客户端可承担多个身份；单身份入口仍兼容。 */
+export function groupsOf(tags: string | null | undefined) {
+  const have = splitTags(tags);
+  return GROUPS.filter((group) => have.includes(group.id));
+}
+
+export function normalizeGroups(value: unknown, fallback = "build"): string | null {
+  if (value == null || value === "") return fallback;
+  const items = Array.isArray(value) ? value : splitTags(String(value));
+  if (!items.length || items.some((id) => typeof id !== "string" || !groupById(id))) return null;
+  return [...new Set(items.map((id) => String(id).trim().toLowerCase()))].join(",");
 }

@@ -1,3 +1,5 @@
+import type { CoordinationRun } from "../../src/coordinator-types";
+export type { CoordinationRun } from "../../src/coordinator-types";
 export type RoomScope = { project: string; directories: string[]; branch: string };
 export type Room = {
   id: string;
@@ -9,6 +11,7 @@ export type Room = {
   archived: boolean;
   direct: boolean;
   created_at: string;
+  unread?: number;
 } & RoomScope;
 export type LocalAgent = {
   id: string;
@@ -20,6 +23,9 @@ export type LocalAgent = {
   inRoom: boolean;
   configured: boolean;
   connected: boolean;
+  credentialValid?: boolean;
+  online?: boolean;
+  stateNote?: string;
 };
 
 export type Agent = {
@@ -50,6 +56,10 @@ export type Message = {
   seq: number;
   authorType: string;
   authorName: string;
+  demo?: boolean;
+  runtime?: string | null;
+  replyGroup?: string | null;
+  replyGroupLabel?: string | null;
   handle: string | null;
   taskId: string | null;
   taskTitle: string | null;
@@ -76,6 +86,8 @@ export type Task = {
   direction?: string;
   deliverableRef?: string | null;
   deliverableSummary?: string | null;
+  deliverableBody?: string | null;
+  evidence?: Array<{ id: string; handle: string; kind: string; body: string; createdAt: string }>;
   winnerTaskId?: string | null;
   bidUntil?: string | null;
   pipelineId?: string | null;
@@ -119,11 +131,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(data.message || "请求失败"), { code: data.error as string | undefined });
+  if (!response.ok) throw Object.assign(new Error(data.message || "请求失败"), { code: data.error as string | undefined, status: response.status });
   return data as T;
 }
 
 export const api = {
+  coordinatorInfo: () => request<{configured:boolean;sdk:string;model:string;source:string;error:string}>("/api/coordinator"),
+  coordination: (roomId:string) => request<{runs:CoordinationRun[]}>(`/api/rooms/${roomId}/coordination`),
+  coordinate: (roomId:string,prompt:string) => request<CoordinationRun>(`/api/rooms/${roomId}/coordination`,{method:"POST",body:JSON.stringify({prompt})}),
+  coordinationRun: (id:string) => request<CoordinationRun>(`/api/coordination/${id}`),
+  stopCoordination: (id:string) => request<CoordinationRun>(`/api/coordination/${id}/stop`,{method:"POST",body:"{}"}),
+  applyCoordination: (id:string) => request<{run:CoordinationRun;task:Task}>(`/api/coordination/${id}/apply`,{method:"POST",body:"{}"}),
   me: () => request<Me>("/api/me"),
   enter: (name: string) => request<{ user: { id: string; name: string }; roomId: string | null }>("/api/session", { method: "POST", body: JSON.stringify({ name }) }),
   logout: () => request("/api/logout", { method: "POST", body: "{}" }),
@@ -143,6 +161,10 @@ export const api = {
   setArchived: (roomId: string, archived: boolean) =>
     request<{ archived: boolean }>(`/api/rooms/${roomId}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
   snapshot: (roomId: string) => request<Snapshot>(`/api/rooms/${roomId}`),
+  markRead: (roomId: string, through: number) => request(`/api/rooms/${roomId}/read`, { method: "POST", body: JSON.stringify({ through }) }),
+  searchMessages: (roomId: string, query: string) => request<{ messages: Message[] }>(`/api/rooms/${roomId}/messages/search?q=${encodeURIComponent(query)}`),
+  conversation: (roomId: string, handle: string) => request<{ roomId: string }>(`/api/rooms/${roomId}/conversations`, { method: "POST", body: JSON.stringify({ handle }) }),
+  closeConversation: (roomId: string) => request(`/api/rooms/${roomId}/close`, { method: "POST" }),
   post: (
     roomId: string,
     input: {
@@ -167,7 +189,7 @@ export const api = {
   stop: (agentId: string) => request<{ id: string; handle: string; paused: boolean; released: number }>(`/api/agents/${agentId}/stop`, { method: "POST", body: "{}" }),
   setLevel: (agentId: string, level: number) =>
     request(`/api/agents/${agentId}/level`, { method: "PATCH", body: JSON.stringify({ level }) }),
-  setGroup: (agentId: string, group: string) =>
+  setGroup: (agentId: string, group: string | string[]) =>
     request(`/api/agents/${agentId}/group`, { method: "PATCH", body: JSON.stringify({ group }) }),
   handoff: (taskId: string) => request(`/api/tasks/${taskId}/handoff`, { method: "POST", body: "{}" }),
   cancel: (taskId: string) => request(`/api/tasks/${taskId}/cancel`, { method: "POST", body: "{}" }),

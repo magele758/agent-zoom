@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { GROUPS, groupById, groupOf } from "../groups.ts";
+import { GROUPS, groupById, groupOf, groupsOf, normalizeGroups } from "../groups.ts";
 import { openDatabase } from "./db.ts";
 import {
   ARTIFACT_LIMIT,
@@ -154,6 +154,7 @@ export type TaskView = {
   assigneeHandle: string;
   handles: string[];
   deliverableBody: string | null;
+  evidence?: Array<{ id: string; handle: string; kind: string; body: string; createdAt: string }>;
   conclusions: Array<{ handle: string; verdict: string }>;
   gate: boolean;
   offerUntil: string | null;
@@ -271,8 +272,8 @@ function tagsMatch(wanted: string[], have: string[]) {
   return wanted.some((tag) => have.includes(tag));
 }
 
-export function openStore(path: string) {
-  return new Store(openDatabase(path));
+export function openStore(path: string, options: { demo?: boolean } = {}) {
+  return new Store(openDatabase(path), options.demo === true);
 }
 
 export class Store {
@@ -280,7 +281,7 @@ export class Store {
   private pendingInbox: string[] = [];
   private dirtyRooms = new Set<string>();
 
-  constructor(readonly db: DatabaseSync) {}
+  constructor(readonly db: DatabaseSync, readonly demoEnabled = false) {}
 
   private transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
@@ -363,7 +364,7 @@ export class Store {
             created,
           );
         this.addRoomMember(roomId, "user", user.id);
-        this.seedDemo(orgId, user.id, roomId);
+        if (this.demoEnabled) this.seedDemo(orgId, user.id, roomId);
       }
       const token = `ses_${randomBytes(24).toString("base64url")}`;
       this.db
@@ -397,6 +398,7 @@ export class Store {
   }
 
   ensureDemoCast() {
+    if (!this.demoEnabled) return;
     const builders = this.db
       .prepare("SELECT id, org_id, owner_user_id FROM agents WHERE demo = 1 AND handle = 'builder'")
       .all() as Array<{ id: string; org_id: string; owner_user_id: string }>;
@@ -504,14 +506,15 @@ export class Store {
           continue;
         }
         if (clash) {
-          const renamed = `${agent.handle}-old`.slice(0, 32);
-          const free = this.db
-            .prepare("SELECT 1 AS ok FROM agents WHERE org_id = ? AND handle = ?")
-            .get(toOrg, renamed);
-          if (free) {
-            steps.push({ handle: agent.handle, action: "skip", note: `${renamed} 也被占了，先手动处理` });
-            continue;
+          const clashBusy = this.db.prepare("SELECT 1 FROM task_claims WHERE agent_id = ? AND state = 'active' LIMIT 1").get(clash.id);
+          if (clashBusy) { steps.push({ handle: agent.handle, action: "skip", note: "目标同名 agent 还占着任务槽位，先放开再迁移" }); continue; }
+          let renamed = "";
+          for (let index = 1; index <= 1000; index++) {
+            const suffix = index === 1 ? "-old" : `-old-${index}`;
+            const candidate = agent.handle.slice(0, 32 - suffix.length) + suffix;
+            if (!this.db.prepare("SELECT 1 FROM agents WHERE org_id = ? AND handle = ?").get(toOrg, candidate)) { renamed = candidate; break; }
           }
+          if (!renamed) throw new ApiError(409, "rename_conflict", "旧记录太多，无法保留同名身份");
           if (input.apply) {
             this.db.prepare("UPDATE agents SET handle = ?, paused = 1 WHERE id = ?").run(renamed, clash.id);
           }
@@ -578,10 +581,11 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT r.id, r.org_id, r.name, r.topic, r.current_topic, r.general, r.archived, r.direct,
-                r.project, r.directories, r.branch, r.created_at
+                r.project, r.directories, r.branch, r.created_at,
+                (SELECT COUNT(*) FROM messages msg WHERE msg.room_id = r.id AND msg.seq > m.last_read_seq AND NOT (msg.author_type = 'user' AND msg.author_id = m.principal_id)) AS unread
          FROM rooms r
          JOIN room_members m ON m.room_id = r.id
-         WHERE m.principal_type = 'user' AND m.principal_id = ?
+         WHERE m.principal_type = 'user' AND m.principal_id = ? AND m.hidden = 0
          ORDER BY r.created_at`,
       )
       .all(userId) as RoomRecord[];
@@ -590,6 +594,7 @@ export class Store {
       org_id: row.org_id,
       name: row.name,
       created_at: row.created_at,
+      unread: Number((row as RoomRecord & { unread?: number }).unread ?? 0),
       ...this.channelView(row),
     }));
   }
@@ -909,12 +914,18 @@ export class Store {
 
   setPaused(user: Principal & { type: "user" }, agentId: string, paused: boolean) {
     const row = this.db
-      .prepare("SELECT owner_user_id, org_id FROM agents WHERE id = ?")
-      .get(agentId) as { owner_user_id: string } | undefined;
+      .prepare("SELECT owner_user_id, org_id, demo FROM agents WHERE id = ?")
+      .get(agentId) as { owner_user_id: string; demo: number } | undefined;
     if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
     if (row.owner_user_id !== user.id) throw new ApiError(403, "not_owner", "只能暂停自己接入的 agent");
+    if (row.demo && !this.demoEnabled && !paused) throw new ApiError(400, "demo_disabled", "演示模式已关闭，请接入真实客户端");
     this.db.prepare("UPDATE agents SET paused = ? WHERE id = ?").run(paused ? 1 : 0, agentId);
     return { id: agentId, paused };
+  }
+
+  stopDemoAgents() {
+    const rows = this.db.prepare("SELECT a.id, a.owner_user_id, u.name FROM agents a JOIN users u ON u.id = a.owner_user_id WHERE a.demo = 1 AND a.paused = 0").all() as Array<{ id: string; owner_user_id: string; name: string }>;
+    for (const row of rows) this.stopAgent({ type: "user", id: row.owner_user_id, name: row.name }, row.id);
   }
 
   stopAgent(user: Principal & { type: "user" }, agentId: string) {
@@ -997,7 +1008,8 @@ export class Store {
   }
 
   setGroup(user: Principal & { type: "user" }, agentId: string, groupId: unknown) {
-    const next = groupById(String(groupId ?? ""));
+    const ids = normalizeGroups(groupId, "");
+    const next = ids ? { id: ids, label: groupsOf(ids).map((group) => group.label).join("、") } : null;
     if (!next) throw new ApiError(400, "bad_group", "没有这个身份");
     const result = this.transaction(() => {
       const row = this.db
@@ -1008,9 +1020,11 @@ export class Store {
         )
         .get(user.id, agentId) as { handle: string; tags: string } | undefined;
       if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
-      const same = groupOf(row.tags)?.id === next.id && parseTags(row.tags).join(",") === next.id;
+      const custom = parseTags(row.tags).filter((tag) => !groupById(tag));
+      const nextTags = [...parseTags(next.id), ...custom].join(",");
+      const same = parseTags(row.tags).join(",") === nextTags;
       if (same) return { id: agentId, group: next.id, label: next.label };
-      this.db.prepare("UPDATE agents SET tags = ? WHERE id = ?").run(next.id, agentId);
+      this.db.prepare("UPDATE agents SET tags = ? WHERE id = ?").run(nextTags, agentId);
       const rooms = this.db
         .prepare("SELECT room_id FROM room_members WHERE principal_type = 'agent' AND principal_id = ?")
         .all(agentId) as Array<{ room_id: string }>;
@@ -1038,7 +1052,8 @@ export class Store {
     if (principal.type === "agent") this.touchSeen(principal.id);
     const room = this.roomRow(roomId);
     const members = this.membersOf(roomId, onlineUserIds);
-    const messages = this.decorateMessages(roomId, 0, 300);
+    const latest = this.db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE room_id = ?").get(roomId) as { seq: number };
+    const messages = this.decorateMessages(roomId, Math.max(0, latest.seq - 300), 300);
     const tasks = this.tasksInRoom(roomId);
     const locks = this.locksForOrg(room.org_id);
     return {
@@ -1055,6 +1070,61 @@ export class Store {
     return this.decorateMessages(roomId, afterSeq, Math.min(limit, 200));
   }
 
+  markRead(user: Principal & { type: "user" }, roomId: string, through: number) {
+    this.assertMember(user, roomId);
+    if (!Number.isSafeInteger(through) || through < 0) throw new ApiError(400, "bad_seq", "已读位置无效");
+    const max = this.db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE room_id = ?").get(roomId) as { seq: number };
+    this.db.prepare("UPDATE room_members SET last_read_seq = MAX(last_read_seq, ?) WHERE room_id = ? AND principal_type = 'user' AND principal_id = ?").run(Math.min(through, max.seq), roomId, user.id);
+    return { ok: true };
+  }
+
+  readMessage(principal: Principal, roomId: string, id: string) {
+    this.assertMember(principal, roomId);
+    const row = this.db.prepare("SELECT * FROM messages WHERE room_id = ? AND id = ?").get(roomId, id) as Record<string, unknown> | undefined;
+    if (!row) throw new ApiError(404, "no_message", "没有这条消息");
+    return this.presentMessage(row);
+  }
+
+  searchMessages(principal: Principal, roomId: string, query: string) {
+    this.assertMember(principal, roomId);
+    const text = query.trim().slice(0, 200);
+    if (!text) return [];
+    const rows = this.db.prepare("SELECT * FROM messages WHERE room_id = ? AND instr(lower(body), lower(?)) > 0 ORDER BY seq DESC LIMIT 100").all(roomId, text) as Array<Record<string, unknown>>;
+    return rows.reverse().map((row) => this.presentMessage(row));
+  }
+
+  userConversation(user: Principal & { type: "user" }, roomId: string, handle: string) {
+    this.assertMember(user, roomId);
+    const target = this.db.prepare("SELECT a.id, a.handle FROM agents a JOIN room_members m ON m.principal_type = 'agent' AND m.principal_id = a.id WHERE m.room_id = ? AND a.handle = ?").get(roomId, handle) as { id: string; handle: string } | undefined;
+    if (!target) throw new ApiError(404, "no_peer", "这个 agent 不在频道里");
+    const existing = this.db.prepare(`SELECT r.id FROM rooms r WHERE r.direct = 1
+      AND EXISTS (SELECT 1 FROM room_members m WHERE m.room_id = r.id AND m.principal_type = 'user' AND m.principal_id = ?)
+      AND EXISTS (SELECT 1 FROM room_members m WHERE m.room_id = r.id AND m.principal_type = 'agent' AND m.principal_id = ?)
+      AND (SELECT COUNT(*) FROM room_members m WHERE m.room_id = r.id) = 2`).get(user.id, target.id) as { id: string } | undefined;
+    if (existing) {
+      this.db.prepare("UPDATE room_members SET hidden = 0 WHERE room_id = ? AND principal_type = 'user' AND principal_id = ?").run(existing.id, user.id);
+      return { roomId: existing.id };
+    }
+    const result = this.transaction(() => {
+      const id = uuid();
+      const room = this.roomRow(roomId);
+      this.db.prepare("INSERT INTO rooms (id, org_id, name, topic, direct, created_by, created_at) VALUES (?, ?, ?, ?, 1, ?, ?)").run(id, room.org_id, `${user.name}、${target.handle}`.slice(0, 40), "你与 agent 的私聊。", user.id, nowIso());
+      this.addRoomMember(id, "user", user.id);
+      this.addRoomMember(id, "agent", target.id);
+      this.dirtyRooms.add(id);
+      return { roomId: id };
+    });
+    this.flush();
+    return result;
+  }
+
+  closeConversation(user: Principal & { type: "user" }, roomId: string) {
+    this.assertMember(user, roomId);
+    if (this.roomRow(roomId).direct !== 1) throw new ApiError(400, "not_direct", "只有私聊可以从列表关闭");
+    this.db.prepare("UPDATE room_members SET hidden = 1 WHERE room_id = ? AND principal_type = 'user' AND principal_id = ?").run(roomId, user.id);
+    return { roomId, hidden: true };
+  }
+
   postMessage(
     principal: Principal,
     roomId: string,
@@ -1067,6 +1137,8 @@ export class Store {
       tags?: string;
       complex?: boolean;
       steps?: unknown;
+      group?: string;
+      coordinatorRunId?: string;
     },
   ) {
     if (principal.type === "agent") this.assertAwake(principal);
@@ -1075,6 +1147,13 @@ export class Store {
       throw new ApiError(409, "archived", "这个频道已归档，先取消归档再发言");
     }
     const kind = input.kind ?? "chat";
+    let replyGroup: string | undefined;
+    if (principal.type === "agent" && input.group != null) {
+      const role = groupById(input.group);
+      const row = this.db.prepare("SELECT tags FROM agents WHERE id = ?").get(principal.id) as { tags: string };
+      if (!role || !groupsOf(row.tags).some(group => group.id === role.id)) throw new ApiError(400, "bad_reply_group", "发言身份必须是该客户端已配置的身份之一");
+      replyGroup = role.id;
+    }
     const body = input.body?.trim() ?? "";
     if (!body) throw new ApiError(400, "empty", "内容是空的");
     if (body.length > 8000) throw new ApiError(400, "too_long", "一条消息最多 8000 字");
@@ -1104,6 +1183,15 @@ export class Store {
     const parallel = Boolean(input.parallel);
     const complex = Boolean(input.complex);
     const result = this.transaction(() => {
+      if (input.coordinatorRunId) {
+        if (principal.type !== "user" || kind !== "instruction") throw new ApiError(403,"coordinator_dispatch","只有用户可以确认协调派发");
+        const run = this.db.prepare("SELECT status,task_id FROM coordinator_runs WHERE id=? AND user_id=? AND room_id=?").get(input.coordinatorRunId,principal.id,roomId) as {status:string;task_id:string|null}|undefined;
+        if (run?.status === "applied" && run.task_id) {
+          const existing = this.taskRow(run.task_id);
+          return {message:this.decorateOne(existing.message_id),task:this.publicTask(existing.id)};
+        }
+        if (run?.status !== "ready") throw new ApiError(409,"coordination_not_ready","协调方案不能派发");
+      }
       let taskId = input.taskId ?? null;
       if (kind === "instruction") taskId = null;
       let current: TaskRow | null = null;
@@ -1127,6 +1215,7 @@ export class Store {
         kind,
         body,
         addressed,
+        replyGroup,
       });
       let task = null;
       if (createdTaskId) {
@@ -1172,6 +1261,7 @@ export class Store {
         this.wakeSiblings(current, body);
       }
       if (!createdTaskId && taskId) task = this.publicTask(taskId);
+      if (input.coordinatorRunId && createdTaskId) this.db.prepare("UPDATE coordinator_runs SET status='applied',task_id=? WHERE id=?").run(createdTaskId,input.coordinatorRunId);
       this.fanout({
         roomId,
         author: principal,
@@ -1341,8 +1431,8 @@ export class Store {
         throw new ApiError(409, "bad_state", "现在不能交付");
       }
       this.db
-        .prepare("UPDATE tasks SET deliverable_ref = ?, deliverable_summary = ?, updated_at = ? WHERE id = ?")
-        .run(cleanRef, text, nowIso(), taskId);
+        .prepare("UPDATE tasks SET deliverable_ref = ?, deliverable_summary = ?, deliverable_body = ?, updated_at = ? WHERE id = ?")
+        .run(cleanRef, text, extra?.body ? String(extra.body).slice(0, ARTIFACT_LIMIT) : null, nowIso(), taskId);
       this.setStatus(taskId, "in_review");
       const message = this.insertMessage({
         roomId: task.room_id,
@@ -1733,8 +1823,9 @@ export class Store {
       level: this.agentLevel(agent.id),
       tags,
       group: identity?.id ?? "",
-      groupLabel: identity?.label ?? "",
-      capability: identity?.capability ?? "按标签匹配任务。",
+      groupLabel: groupsOf(tags).map((group) => group.label).join("、"),
+      groups: groupsOf(tags).map((group) => group.id),
+      capability: groupsOf(tags).map((group) => group.capability).join(" ") || "按标签匹配任务。",
       machine: place?.machine ?? "",
       cwd: place?.cwd ?? "",
       rooms: rooms.map((room) => ({ id: room.id, name: room.name, ...this.channelView(room) })),
@@ -2249,7 +2340,7 @@ export class Store {
     this.queue("agent", agentId);
   }
 
-  submitDesign(agent: Principal & { type: "agent" }, taskId: string, body: string) {
+  submitDesign(agent: Principal & { type: "agent" }, taskId: string, body: string, groupId?: string) {
     this.assertAwake(agent);
     const text = body.trim();
     if (!text) throw new ApiError(400, "empty", "写上这个身份的方案");
@@ -2261,7 +2352,9 @@ export class Store {
       if (task.status !== "open") throw new ApiError(409, "bad_state", "这条任务现在不收方案");
       const pending = parseTags(task.design_pending);
       const have = this.agentTags(agent.id);
-      const hit = pending.find((id) => have.includes(id));
+      const available = pending.filter((id) => have.includes(id));
+      if (!groupId && available.length > 1) throw new ApiError(400, "ambiguous_group", "你承担多个待交身份，请用 group 指定本次方案的身份");
+      const hit = groupId ? available.find((id) => id === groupId) : available[0];
       if (!hit) {
         if (this.designNotes(taskId).some((note) => note.handle === agent.handle)) {
           throw new ApiError(409, "design_done", "这个身份的方案已经交过了");
@@ -2283,6 +2376,7 @@ export class Store {
         body: text,
         addressed: [],
       });
+      this.db.prepare("UPDATE messages SET design_group = ? WHERE task_id = ? AND author_id = ? AND kind = 'design' AND seq = (SELECT MAX(seq) FROM messages WHERE task_id = ? AND author_id = ? AND kind = 'design')").run(hit, taskId, agent.id, taskId, agent.id);
       if (left.length > 0) {
         const labels = left.map((id) => groupById(id)?.label ?? id);
         this.insertMessage({
@@ -2364,7 +2458,7 @@ export class Store {
         task.room_id,
         "design_needed",
         taskId,
-        this.cardSummary(task, `请先出方案。${group.capability}`),
+        this.cardSummary(task, `请先出方案。待交身份：${pending.filter((id) => have.includes(id)).join(",")}。多身份请用 group 指定本次身份。${group.capability}`),
       );
     }
   }
@@ -2427,16 +2521,16 @@ export class Store {
   private designNotes(taskId: string) {
     const rows = this.db
       .prepare(
-        `SELECT m.body, a.handle, a.tags
+        `SELECT m.body, m.design_group, a.handle, a.tags
          FROM messages m
          JOIN agents a ON a.id = m.author_id
          WHERE m.task_id = ? AND m.kind = 'design' AND m.author_type = 'agent'
          ORDER BY m.seq`,
       )
-      .all(taskId) as Array<{ body: string; handle: string; tags: string }>;
+      .all(taskId) as Array<{ body: string; design_group: string; handle: string; tags: string }>;
     return rows.map((row) => ({
       handle: row.handle,
-      group: groupOf(row.tags)?.label ?? "",
+      group: groupById(row.design_group)?.label ?? groupOf(row.tags)?.label ?? "",
       body: row.body,
     }));
   }
@@ -2810,7 +2904,28 @@ export class Store {
     kind: string;
     body: string;
     addressed: Addressed[];
+    replyGroup?: string;
   }) {
+    let replyGroup = input.replyGroup ?? "";
+    if (input.authorType === "agent") {
+      const taskRoles: Record<string, string> = { bid: "build", review: "review", test_result: "test", progress: "build", direction: "build", blocked: "build", decision: "build" };
+      let taskGroup = taskRoles[input.kind] ?? "";
+      const claims = input.taskId ? this.db.prepare("SELECT DISTINCT role FROM task_claims WHERE task_id = ? AND agent_id = ? AND state = 'active'").all(input.taskId, input.authorId) as Array<{ role: string }> : [];
+      if (input.taskId) {
+        const task = this.db.prepare("SELECT step_role FROM tasks WHERE id = ?").get(input.taskId) as { step_role: string } | undefined;
+        if (task?.step_role && (input.kind === "deliverable" || claims.length === 1)) taskGroup = groupById(task.step_role)?.id ?? (task.step_role === "qa" ? "test" : "");
+      }
+      if (!taskGroup && input.taskId) {
+        if (claims.length === 1) taskGroup = ({ implementer: "build", reviewer: "review", tester: "test" } as Record<string, string>)[claims[0].role] ?? "";
+      }
+      if (taskGroup && replyGroup && replyGroup !== taskGroup) throw new ApiError(400, "reply_group_conflict", "发言身份与本次任务职责不一致");
+      replyGroup = taskGroup || replyGroup;
+      if (!replyGroup) {
+        const agent = this.db.prepare("SELECT tags FROM agents WHERE id = ?").get(input.authorId) as { tags: string } | undefined;
+        const roles = groupsOf(agent?.tags);
+        if (roles.length === 1) replyGroup = roles[0].id;
+      }
+    }
     const seqRow = this.db
       .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE room_id = ?")
       .get(input.roomId) as { seq: number };
@@ -2818,8 +2933,8 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO messages
-         (id, room_id, seq, author_type, author_id, task_id, kind, body, addressed_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, room_id, seq, author_type, author_id, task_id, kind, body, addressed_json, created_at, reply_group)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -2832,6 +2947,7 @@ export class Store {
         input.body,
         JSON.stringify(input.addressed),
         nowIso(),
+        replyGroup,
       );
     this.dirtyRooms.add(input.roomId);
     return {
@@ -2927,6 +3043,8 @@ export class Store {
     const authorId = String(row.author_id);
     let authorName = "系统";
     let handle: string | null = null;
+    let demo = false;
+    let runtime: string | null = null;
     if (authorType === "user") {
       const user = this.db.prepare("SELECT name FROM users WHERE id = ?").get(authorId) as
         | { name: string }
@@ -2935,9 +3053,11 @@ export class Store {
     } else if (authorType === "agent") {
       const agent = this.db
         .prepare(
-          `SELECT a.handle, u.name AS owner FROM agents a JOIN users u ON u.id = a.owner_user_id WHERE a.id = ?`,
+          `SELECT a.handle, a.demo, a.runtime, u.name AS owner FROM agents a JOIN users u ON u.id = a.owner_user_id WHERE a.id = ?`,
         )
-        .get(authorId) as { handle: string; owner: string } | undefined;
+        .get(authorId) as { handle: string; owner: string; demo: number; runtime: string } | undefined;
+      demo = agent?.demo === 1;
+      runtime = agent?.runtime ?? null;
       handle = agent?.handle ?? null;
       authorName = agent ? `${agent.owner} / ${agent.handle}` : "agent";
     }
@@ -2955,6 +3075,10 @@ export class Store {
       authorType,
       authorId,
       authorName,
+      demo,
+      runtime,
+      replyGroup: String(row.design_group || row.reply_group || "") || null,
+      replyGroupLabel: groupById(String(row.design_group || row.reply_group || ""))?.label ?? null,
       handle,
       taskId,
       taskTitle,
@@ -3033,6 +3157,7 @@ export class Store {
       assigneeHandle: task.assignee_handle ?? "",
       handles: parseHandlesJson(task.handles_json),
       deliverableBody: task.deliverable_body ?? null,
+      evidence: (this.db.prepare("SELECT m.id, a.handle, m.kind, m.body, m.created_at AS createdAt FROM messages m JOIN agents a ON a.id = m.author_id WHERE m.task_id = ? AND m.kind IN ('review', 'test_result') ORDER BY m.seq DESC LIMIT 50").all(task.id) as Array<{ id: string; handle: string; kind: string; body: string; createdAt: string }>).reverse(),
       conclusions:
         task.step_role === "review"
           ? this.conclusions(task.id).map((note) => ({ handle: note.handle, verdict: note.verdict }))

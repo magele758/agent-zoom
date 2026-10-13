@@ -1,4 +1,8 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { completeCli } from "./cli-driver.ts";
+import { groupsOf, groupById } from "./groups.ts";
 import { LEASE_MS } from "./server/logic.ts";
 import {
   ARTIFACT_LIMIT,
@@ -13,6 +17,7 @@ export const PPENG_DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 
 export type AdapterTask = {
   id: string;
+  scope?: { directories?: string[]; branch?: string; project?: string };
   title: string;
   body: string;
   acceptance?: string;
@@ -385,6 +390,7 @@ export async function runAdapterTask(input: {
     return "delivered" as const;
   } catch (error) {
     await stay.stop();
+    console.error(errorText(error));
     const note = errorText(error).slice(0, 280);
     const fallback = (task.handles?.length ?? 0) > 1;
     try {
@@ -433,12 +439,13 @@ async function call(url: string, token: string, path: string, init?: RequestInit
       ...(init?.headers ?? {}),
     },
   });
-  const body = (await response.json()) as { message?: string; status?: string; events?: Array<{ id: number; event_type: string; ref_id: string }> };
+  const body = (await response.json()) as { message?: string; status?: string; events?: Array<{ id: number; event_type: string; ref_id: string; room_id: string }> };
   if (!response.ok) throw new Error(body.message ?? response.statusText);
   return body;
 }
 
-async function act(kind: string, task: AdapterTask): Promise<AdapterAction> {
+async function act(kind: string, task: AdapterTask, signal?: AbortSignal): Promise<AdapterAction> {
+  if (kind === "codex" || kind === "claude") return completeCli(task, kind, { repoRoot: process.env.CLI_REPO_ROOT, timeoutMs: Number(process.env.CLI_TIMEOUT_MS) || undefined, signal });
   if (kind === "echo") return echoAction(task);
   if (kind === "openai") {
     return completeOpenAI(
@@ -476,11 +483,11 @@ async function act(kind: string, task: AdapterTask): Promise<AdapterAction> {
       throw error;
     }
   }
-  throw new Error("ADAPTER 要是 echo、openai、webhook 或 ppeng");
+  throw new Error("ADAPTER 要是 echo、openai、webhook、ppeng、codex 或 claude");
 }
 
 async function main() {
-  const kind = process.env.ADAPTER ?? "echo";
+  const kind = process.env.ADAPTER ?? "";
   const handle = (arg("--handle") ?? "").toLowerCase();
   const creds = readCreds();
   const saved = handle ? creds.agents[handle] : undefined;
@@ -498,24 +505,76 @@ async function main() {
     console.error("缺少 WEBHOOK_URL");
     process.exit(1);
   }
-  if (!["echo", "openai", "webhook", "ppeng"].includes(kind)) {
-    console.error("ADAPTER 要是 echo、openai、webhook 或 ppeng");
+  if (!["echo", "openai", "webhook", "ppeng", "codex", "claude"].includes(kind)) {
+    console.error("ADAPTER 要是 echo、openai、webhook、ppeng、codex 或 claude");
     process.exit(1);
   }
   const api = roomApi(url, token);
+  const stateDir = process.env.ADAPTER_STATE_DIR ?? "data/adapter-state";
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const identity = createHash("sha256").update(`${url}:${token}`).digest("hex").slice(0, 16);
+  const statePath = join(stateDir, `${identity}.json`);
   let after = 0;
-  for (;;) {
-    const waited = await call(url, token, `/api/wait?after=${after}&timeoutMs=20000`);
+  try { const cursor = JSON.parse(readFileSync(statePath, "utf8")).after; if (Number.isSafeInteger(cursor) && cursor >= 0) after = cursor; } catch {}
+  const remember = (id: number) => { writeFileSync(`${statePath}.tmp`, JSON.stringify({ after: id }), { mode: 0o600 }); renameSync(`${statePath}.tmp`, statePath); };
+  let stopping = false;
+  let offline = false;
+  const stop = () => { stopping = true; };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  while (!stopping) {
+    let waited: Awaited<ReturnType<typeof call>>;
+    try { waited = await call(url, token, `/api/wait?after=${after}&timeoutMs=20000`); offline = false; }
+    catch (error) {
+      if (!offline) console.error(`房间连接中断，正在重连：${errorText(error)}`);
+      offline = true;
+      await new Promise((done) => setTimeout(done, 2000));
+      continue;
+    }
+    if (stopping) break;
     const events = waited.events ?? [];
-    if (events.length > 0) after = events[events.length - 1].id;
     for (const event of events) {
+      if (stopping) break;
+      try {
+      if (event.event_type === "stop") { stopping = true; break; }
+      if ((kind === "codex" || kind === "claude") && ["mention", "room"].includes(event.event_type)) {
+        try {
+          const message = await call(url, token, `/api/agent/rooms/${event.room_id}/messages/${event.ref_id}`) as unknown as { authorType: string; kind: string; body: string; taskId?: string };
+          if (message.authorType !== "user" || !["chat", "question"].includes(message.kind)) continue;
+          const me = await call(url, token, "/api/agent/me") as unknown as { cwd?: string; tags?: string };
+          const roles = groupsOf(me.tags);
+          const group = process.env.CLI_REPLY_GROUP || (roles.some(role => role.id === "build") ? "build" : roles.length === 1 ? roles[0].id : undefined);
+          if (group && !roles.some(role => role.id === group)) throw new Error("CLI_REPLY_GROUP 必须是该客户端已配置的身份");
+          const reply = await completeCli({ id: event.ref_id, title: `回复聊天消息${group ? `（以${groupById(group)?.label}身份）` : "（未指定身份）"}`, body: message.body }, kind, { repoRoot: process.env.CLI_REPO_ROOT || me.cwd, timeoutMs: Number(process.env.CLI_TIMEOUT_MS) || undefined, replyOnly: true });
+          if (reply.type === "deliver") await call(url, token, `/api/agent/rooms/${event.room_id}/messages`, { method: "POST", body: JSON.stringify({ kind: "chat", body: reply.body.slice(0, 8000), taskId: message.taskId, group }) });
+        } catch (error) { console.error(errorText(error)); }
+        continue;
+      }
       if (!["task_open", "awarded"].includes(event.event_type)) continue;
       try {
         const task = await api.getTask(event.ref_id);
-        await runAdapterTask({ task, handle, act: (item) => act(kind, item), api });
+        if ((kind === "codex" || kind === "claude") && task.stepRole && task.stepRole !== "build") continue;
+        const result = await runAdapterTask({ task, handle, act: async (item) => {
+          const controller = new AbortController();
+          let checking = false;
+          const monitor = setInterval(async () => {
+            if (checking) return;
+            checking = true;
+            try {
+              const me = await call(url, token, "/api/agent/me") as { paused?: boolean };
+              const fresh = await api.getTask(item.id);
+              if (me.paused || (fresh.status && terminalStatus.has(fresh.status))) controller.abort();
+            } catch { controller.abort(); }
+            finally { checking = false; }
+          }, 2000);
+          try { return await act(kind, item, controller.signal); }
+          finally { clearInterval(monitor); }
+        }, api });
+        console.log(`${kind} ${event.ref_id} ${result}`);
       } catch (error) {
         console.error(errorText(error));
       }
+      } finally { after = event.id; remember(after); }
     }
   }
 }

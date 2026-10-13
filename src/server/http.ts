@@ -1,3 +1,4 @@
+import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -5,16 +6,17 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { ChatApi } from "../mcp.ts";
 import { createMcpServer } from "../mcp.ts";
-import { groupById } from "../groups.ts";
-import { connectInstalled, listLocalAgents, LocalAgentError, machineName, serverUrl } from "./local-agents.ts";
+import { normalizeGroups } from "../groups.ts";
+import { connectInstalled, listLocalAgents, LocalAgentError, machineName, serverUrl, savedCredential } from "./local-agents.ts";
 import { ApiError, PRESENCE_MS, type Principal, type Store } from "./logic.ts";
 import { waitInbox } from "./wait.ts";
+import { CoordinatorService, type CoordinatorModel } from "./coordinator.ts";
 
 const COOKIE = "ac_session";
 
 type Watcher = { userId: string; rooms: Set<string>; send: (data: string) => void };
 
-export function createApp(store: Store) {
+export function createApp(store: Store, options: { coordinatorModel?: () => CoordinatorModel } = {}) {
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const watchers = new Set<Watcher>();
@@ -28,6 +30,7 @@ export function createApp(store: Store) {
   };
 
   const online = () => new Set(onlineUsers.keys());
+  const coordinator = new CoordinatorService(store, { model: options.coordinatorModel, onChanged: nudge });
 
   const requireUser = (cookie: string | undefined) => {
     const principal = store.userBySession(cookie);
@@ -66,6 +69,12 @@ export function createApp(store: Store) {
   });
 
   app.get("/api/me", (c) => c.json(store.me(requireUser(getCookie(c, COOKIE)))));
+  app.get("/api/coordinator", c => { requireUser(getCookie(c,COOKIE)); return c.json(coordinator.info()); });
+  app.get("/api/rooms/:id/coordination", c => { const user=requireUser(getCookie(c,COOKIE)); return c.json({runs:coordinator.list(user,c.req.param("id"))}); });
+  app.post("/api/rooms/:id/coordination", async c => { const user=requireUser(getCookie(c,COOKIE)); const body=await c.req.json(); return c.json(coordinator.start(user,c.req.param("id"),String(body.prompt??"")),202); });
+  app.get("/api/coordination/:id", c => c.json(coordinator.get(requireUser(getCookie(c,COOKIE)),c.req.param("id"))));
+  app.post("/api/coordination/:id/stop", async c => c.json(await coordinator.stop(requireUser(getCookie(c,COOKIE)),c.req.param("id"))));
+  app.post("/api/coordination/:id/apply", c => c.json(coordinator.apply(requireUser(getCookie(c,COOKIE)),c.req.param("id"))));
 
   app.get("/api/rooms", (c) => {
     const user = requireUser(getCookie(c, COOKIE));
@@ -108,6 +117,26 @@ export function createApp(store: Store) {
     return c.json(store.snapshot(user, c.req.param("id"), online()));
   });
 
+  app.post("/api/rooms/:id/read", async (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const body = await c.req.json();
+    return c.json(store.markRead(user, c.req.param("id"), Number(body.through)));
+  });
+
+  app.get("/api/rooms/:id/messages/search", (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    return c.json({ messages: store.searchMessages(user, c.req.param("id"), c.req.query("q") ?? "") });
+  });
+  app.post("/api/rooms/:id/conversations", async (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    const body = await c.req.json();
+    return c.json(store.userConversation(user, c.req.param("id"), String(body.handle ?? "")));
+  });
+  app.post("/api/rooms/:id/close", (c) => {
+    const user = requireUser(getCookie(c, COOKIE));
+    return c.json(store.closeConversation(user, c.req.param("id")));
+  });
+
   app.post("/api/rooms/:id/messages", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
@@ -116,6 +145,7 @@ export function createApp(store: Store) {
         body: String(body.body ?? ""),
         kind: body.kind ? String(body.kind) : "chat",
         taskId: body.taskId ? String(body.taskId) : null,
+        group: body.group == null ? undefined : String(body.group),
         acceptance: body.acceptance ? String(body.acceptance) : undefined,
         parallel: Boolean(body.parallel),
         tags: body.tags ? String(body.tags) : undefined,
@@ -140,7 +170,17 @@ export function createApp(store: Store) {
     const user = requireUser(getCookie(c, COOKIE));
     const snap = store.snapshot(user, c.req.param("id"), online());
     const connected = new Set(snap.members.agents.map((agent) => agent.handle));
-    return c.json({ agents: listLocalAgents(connected) });
+    const path = process.env.AGENT_CHATROOM_CREDENTIALS ?? "data/credentials.json";
+    const credentials = existsSync(path) ? readFileSync(path, "utf8") : null;
+    return c.json({ agents: listLocalAgents(connected).map((local) => {
+      const saved = savedCredential(credentials, local.handle);
+      const principal = saved ? store.agentByToken(saved.token) : null;
+      const valid = principal?.type === "agent" && principal.ownerUserId === user.id && principal.handle === local.handle;
+      const member = snap.members.agents.find((agent) => agent.handle === local.handle);
+      return { ...local, connected: local.connected && valid, credentialValid: valid,
+        online: Boolean(member?.online && valid),
+        stateNote: saved && !valid ? "本地凭证归属不匹配或已失效；同名登记不代表实际接入。" : !saved ? "本机没有这个句柄的凭证。" : member?.online ? "最近 5 分钟有实际 API 活动，执行能力仍需任务验收。" : "配置与凭证已登记；当前未观察到客户端活动。" };
+    }) });
   });
 
   app.post("/api/rooms/:id/local-agents/:agentId", async (c) => {
@@ -155,8 +195,8 @@ export function createApp(store: Store) {
         replace = (body as { replace?: unknown }).replace === true;
         if ("level" in body) level = (body as { level?: unknown }).level;
         if ("group" in body && (body as { group?: unknown }).group != null && String((body as { group?: unknown }).group).trim() !== "") {
-          const id = String((body as { group?: unknown }).group).trim().toLowerCase();
-          if (!groupById(id)) throw new ApiError(400, "bad_group", "没有这个身份");
+          const id = normalizeGroups((body as { group?: unknown }).group);
+          if (!id) throw new ApiError(400, "bad_group", "没有这个身份");
           group = id;
         }
       }
@@ -316,8 +356,14 @@ export function createApp(store: Store) {
         body: String(body.body ?? ""),
         kind: body.kind ? String(body.kind) : "chat",
         taskId: body.taskId ? String(body.taskId) : null,
+        group: body.group == null ? undefined : String(body.group),
       }),
     );
+  });
+
+  app.get("/api/agent/rooms/:id/messages/:messageId", (c) => {
+    const agent = requireAgent(c.req.header("authorization"));
+    return c.json(store.readMessage(agent, c.req.param("id"), c.req.param("messageId")));
   });
 
   app.post("/api/agent/tasks/:id/claim", async (c) => {
@@ -344,7 +390,7 @@ export function createApp(store: Store) {
   app.post("/api/agent/tasks/:id/design", async (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     const body = await c.req.json();
-    return c.json(store.submitDesign(agent, c.req.param("id"), String(body.body ?? "")));
+    return c.json(store.submitDesign(agent, c.req.param("id"), String(body.body ?? ""), body.group));
   });
 
   app.post("/api/agent/tasks/:id/bid", async (c) => {
@@ -474,7 +520,7 @@ function apiFor(store: Store, agent: Principal & { type: "agent" }): ChatApi {
     wait: async (after, timeoutMs) => waitInbox(store, agent.id, after, timeoutMs),
     listTasks: async (roomId) => store.listTasks(agent, roomId),
     getTask: async (taskId) => store.getTask(agent, taskId),
-    submitDesign: async (taskId, body) => store.submitDesign(agent, taskId, body),
+    submitDesign: async (taskId, body, group) => store.submitDesign(agent, taskId, body, group),
     claim: async (taskId, role) => store.claim(agent, taskId, role as "implementer"),
     bid: async (taskId, approach) => store.bid(agent, taskId, approach),
     deliver: async (taskId, ref, summary, extra) => store.deliver(agent, taskId, ref, summary, extra),

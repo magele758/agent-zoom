@@ -77,6 +77,34 @@ test("a same-named identity in the room is not a local config", () => {
   assert.deepEqual({ inRoom: local?.inRoom, configured: local?.configured, connected: local?.connected }, { inRoom: false, configured: true, connected: false });
 });
 
+test("Grok CLI is detected from its binary or config and keeps other TOML settings", () => {
+  const home = mkdtempSync(join(tmpdir(), "grok-catalog-"));
+  const launch = mcpLaunch("/repo", "/node", "grok-cli");
+  const found = listFromProbe(home, probe(["grok"]), apps([]), new Set(), () => false);
+  assert.deepEqual(found.map(a => a.id), ["grok-cli"]);
+  assert.equal(found[0].handle, "grok-cli");
+  assert.equal(found[0].writable, true);
+  const byConfig = listFromProbe(home, { bins: new Set(), exists: path => path === join(home, ".grok/config.toml") }, apps([]), new Set(), () => false);
+  assert.equal(byConfig[0].id, "grok-cli");
+  const target = configTarget(home, "grok-cli", launch);
+  assert.ok(target && target.kind === "toml");
+  assert.equal(target.path, join(home, ".grok/config.toml"));
+  const before = 'model = "existing-model"\n[mcp_servers.other]\ncommand = "existing"\n';
+  const next = upsertTomlServer(before, target.serverName, target.body);
+  assert.ok(next.includes(before.trim()));
+  assert.ok(next.includes('"grok-cli"'));
+  assert.ok(next.includes('"--credentials"'));
+  assert.equal(isConfigured(home, "grok-cli", () => next), true);
+});
+
+test("Claude CLI and Desktop have separate credentials and explicit Code sharing", () => {
+  const cli = listFromProbe("/h", probe(["claude"]), apps(["Claude.app"]), new Set(), () => false);
+  assert.match(cli.find(a => a.id === "claude")!.detail, /Code.*共用 @claude/);
+  assert.equal(cli.find(a => a.id === "claude-desk")!.handle, "claude-desk");
+  assert.match(cli.find(a => a.id === "claude-desk")!.detail, /Code.*CLI/);
+  assert.notEqual(configTarget("/h", "claude", mcpLaunch("/r", "/n", "claude"))!.path, configTarget("/h", "claude-desk", mcpLaunch("/r", "/n", "claude-desk"))!.path);
+});
+
 test("configured is read from the real config files and never writes", () => {
   const home = mkdtempSync(join(tmpdir(), "local-agents-"));
   writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { other: {} }, projects: {} }));
@@ -161,7 +189,7 @@ test("config targets keep each client's own shape", () => {
   const opencode = configTarget("/h", "opencode", mcpLaunch("/repo", "/node", "opencode"));
   assert.ok(opencode && opencode.kind === "json");
   assert.equal(opencode.group, "mcp");
-  assert.deepEqual(opencode.entry.command, ["/node", launch.args[0], launch.args[1], "mcp", "--handle", "opencode"]);
+  assert.deepEqual(opencode.entry.command, ["/node", launch.args[0], launch.args[1], "mcp", "--credentials", "/repo/data/credentials.json", "--handle", "opencode"]);
   const chat = configTarget("/h", "chatgpt", mcpLaunch("/repo", "/node", "chatgpt"));
   const codex = configTarget("/h", "codex", mcpLaunch("/repo", "/node", "codex"));
   assert.ok(chat && chat.kind === "toml" && chat.serverName === "agent-chatroom");
@@ -488,4 +516,14 @@ test("mergeCredentials archives a replaced token and leaves unrelated entries al
   assert.equal(data.agents.cursor.token, "b");
   assert.equal(data.agents.chatgpt.token, "c");
   assert.deepEqual(data.previous.map((item) => [item.token, item.replacedAt]), [["a", "T"]]);
+});
+
+test("Claude Desktop uses the installed third-party profile config when present", () => {
+  const home = mkdtempSync(join(tmpdir(), "claude-profile-"));
+  const profile = join(home, "Library/Application Support/Claude-3p");
+  mkdirSync(profile, { recursive: true });
+  writeFileSync(join(profile, "claude_desktop_config.json"), JSON.stringify({ mcpServers: { existing: { command: "keep" } } }));
+  const target = configTarget(home, "claude-desk", mcpLaunch("/repo", "/node", "claude-desk"));
+  assert.equal(target?.path, join(profile, "claude_desktop_config.json"));
+  assert.equal(isConfigured(home, "claude-desk"), false);
 });

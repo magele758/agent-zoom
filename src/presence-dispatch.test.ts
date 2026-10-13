@@ -4,7 +4,7 @@ import { createApp } from "./server/http.ts";
 import { ApiError, PRESENCE_MS, openStore, type Principal, type Store } from "./server/logic.ts";
 
 function studio(name = "磊") {
-  const store = openStore(":memory:");
+  const store = openStore(":memory:", { demo: true });
   const session = store.session(name);
   const user = store.userBySession(session.token);
   assert.ok(user && user.type === "user");
@@ -195,4 +195,24 @@ test("reassigning agents moves a client to the right owner and keeps its token",
   assert.ok(inLobby.includes("cursor") && inLobby.includes("claude-desk"));
   const demoLeft = store.db.prepare("SELECT COUNT(*) AS n FROM agents WHERE owner_user_id = ? AND demo = 1").get(wrongUser.id) as { n: number };
   assert.equal(demoLeft.n, 4);
+});
+
+test("owner repair preserves multiple old identities and refuses to displace a busy target", () => {
+  const { store, user, roomId } = studio("正确主人");
+  const wrong = store.session("错误主人");
+  const wrongUser = store.userBySession(wrong.token)! as Principal & { type: "user" };
+  const wrongRoom = store.listRooms(wrongUser.id)[0].id;
+  const old = enroll(store, user, roomId, "cursor-old");
+  const current = enroll(store, user, roomId, "cursor");
+  const real = enroll(store, wrongUser, wrongRoom, "cursor");
+  const task = store.postMessage(user, roomId, { kind: "instruction", body: "@cursor 活跃任务" }).task!;
+  store.claim(current.agent, task.id, "implementer");
+  const blocked = store.reassignAgents({ from: "错误主人", to: "正确主人", displace: true, apply: true });
+  assert.equal(blocked.steps[0].action, "skip");
+  store.release(current.agent, task.id, "implementer");
+  const moved = store.reassignAgents({ from: "错误主人", to: "正确主人", displace: true, apply: true });
+  assert.equal(moved.steps[0].action, "move_displacing");
+  assert.equal(store.credentialOwner(real.token)?.ownerId, user.id);
+  assert.equal(store.db.prepare("SELECT handle FROM agents WHERE id = ?").get(current.agent.id)?.handle, "cursor-old-2");
+  assert.equal(store.db.prepare("SELECT handle FROM agents WHERE id = ?").get(old.agent.id)?.handle, "cursor-old");
 });

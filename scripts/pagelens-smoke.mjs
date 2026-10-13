@@ -63,9 +63,9 @@ async function bridge(tool, payload, retries = 1) {
 const HELPERS = `
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const $ = (s, root = document) => root.querySelector(s);
-const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+const $$ = (s, root = document) => [...(root || document).querySelectorAll(s)];
 const tid = (id) => $('[data-testid="' + id + '"]');
-const text = (el) => (el ? el.innerText.replace(/\\s+/g, ' ').trim() : '');
+const text = (el) => (el ? (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim() : '');
 const setValue = (el, value) => {
   const proto = Object.getPrototypeOf(el);
   Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
@@ -75,6 +75,7 @@ const setValue = (el, value) => {
 };
 const until = async (fn, ms = 8000) => { const end = Date.now() + ms; let v = fn(); while (!v && Date.now() < end) { await sleep(150); v = fn(); } return v; };
 const api = async (path) => { const r = await fetch(path); return r.ok ? r.json() : { __status: r.status }; };
+const expandTasks = async () => { const all = $$('button', $('.task-filters')).find((b) => text(b) === '全部'); if (all) { all.click(); await sleep(200); } for (const b of $$('.task-detail-toggle[aria-expanded="false"]')) b.click(); await sleep(200); };
 const roomSnap = async () => { const me = await api('/api/me'); const room = me.rooms.find((r) => r.general) || me.rooms[0]; return { me, room, snap: await api('/api/rooms/' + room.id) }; };
 `;
 
@@ -251,7 +252,7 @@ async function readOnlyChecks() {
       const rows = $$('.roster [data-testid^="level-"]').map((sel) => {
         const handle = sel.dataset.testid.slice(6);
         const grp = tid('group-' + handle);
-        return { handle, levels: [...sel.options].map((o) => text(o)), level: sel.value, groups: grp ? [...grp.options].map((o) => text(o)) : [], group: grp && grp.value };
+        return { handle, levels: [...sel.options].map((o) => text(o)), level: sel.value, groups: grp ? [...grp.querySelectorAll("label")].map((o) => text(o)) : [], group: grp && [...grp.querySelectorAll("input:checked")].map((o) => o.value).join(",") };
       });
       return { rows, api: Object.fromEntries(snap.members.agents.map((a) => [a.handle, { level: a.level, tags: a.tags }])) };`);
     const wantLevels = ["Lv1", "Lv2", "Lv3", "Lv4", "Lv5"];
@@ -262,7 +263,7 @@ async function readOnlyChecks() {
       if (JSON.stringify(row.groups) !== JSON.stringify(wantGroups)) problems.push(`${row.handle} groups ${row.groups}`);
       const known = r.api[row.handle];
       if (known && String(known.level ?? 1) !== String(row.level)) problems.push(`${row.handle} level select ${row.level} vs api ${known.level}`);
-      if (known && !String(known.tags).split(/[\s,，]+/).includes(row.group)) problems.push(`${row.handle} group select ${row.group} vs api ${known.tags}`);
+      if (known && !row.group.split(",").every((id) => String(known.tags).split(/[\s,，]+/).includes(id))) problems.push(`${row.handle} group select ${row.group} vs api ${known.tags}`);
     }
     if (!r.rows.length) return { skip: "no agents in this room" };
     return { ok: problems.length === 0, detail: problems.join("; ") || `${r.rows.length} agents: Lv1–5 and 7 roles, selects agree with the API` };
@@ -272,7 +273,7 @@ async function readOnlyChecks() {
     const opened = await js(`
       const btn = tid('open-local-agents');
       if (!btn) return { missing: true };
-      const label = text(btn);
+      const label = btn.textContent.replace(/\s+/g, " ").trim();
       btn.click();
       const dialog = await until(() => tid('local-agent-dialog'), 5000);
       if (!dialog) return { label, opened: false };
@@ -290,7 +291,7 @@ async function readOnlyChecks() {
       out.closed = !tid('local-agent-dialog');
       return out;`);
     if (opened.missing) return { ok: false, detail: "open-local-agents button missing" };
-    const countOk = /\d+\/\d+ 已接入|查找中|没读到/.test(opened.label);
+    const countOk = /\d+\/\d+ 已配置并加入|查找中|没读到/.test(opened.label);
     return {
       ok: opened.opened && opened.title === "这台电脑" && opened.closed && countOk && opened.expanded === "true",
       detail: `按钮「${opened.label}」 对话框=${opened.opened} 标题=${opened.title} 客户端=${opened.rows}${opened.names?.length ? ` [${opened.names.join(" ")}]` : ""} 已关闭=${opened.closed}`,
@@ -343,7 +344,7 @@ async function readOnlyChecks() {
     const labels = r.radios.map((x) => x.label).join("/");
     const s = r.seen;
     const problems = [];
-    if (labels !== "下指令/发言/提问") problems.push(`radios ${labels}`);
+    if (labels !== "发起任务/发言/提问") problems.push(`radios ${labels}`);
     if (!(s.instruction.extra && s.instruction.tags && s.instruction.parallel && s.instruction.complex)) problems.push("下指令 lacks 验收/标签/并行/复杂");
     if (s.chat.extra || s.question.extra) problems.push("发言/提问 should hide task fields");
     if (s.chatOn !== "true" || s.back !== "true") problems.push("aria-checked did not follow");
@@ -353,6 +354,7 @@ async function readOnlyChecks() {
 
   await check("task-panel-slots", async () => {
     const r = await js(`
+      await expandTasks();
       const { snap } = await roomSnap();
       const cards = $$('[data-testid="task-list"] > article.task');
       const info = cards.map((c) => ({
@@ -533,6 +535,7 @@ async function tempWriteChecks() {
       const own = ${transcript(needle)}.filter((m) => m.classList.contains('kind-instruction'));
       return { own: own.length, bids: bids.length, open: sys.filter((s) => s.includes('内用 bid')).length, direct: sys.filter((s) => s.includes('不开放投标') && s.length > 0).length };`);
     const pill = await js(`
+      await expandTasks();
       const card = await until(() => $$('[data-testid=task-list] > article.task').find((c) => text(c.querySelector('h3')) === ${JSON.stringify(needle)}), 5000);
       await until(() => !/投标中/.test(text(card.querySelector('.pill'))), 12000);
       return text(card.querySelector('.pill')) + ' | ' + $$('.slots > li', card).map(text).join(' | ');`);
@@ -574,12 +577,14 @@ async function tempWriteChecks() {
     await call(`/api/agent/tasks/${task.id}/deliver`, tokens["claude-desk"], { ref: "workspace:pagelens", summary: "好了" });
     await call(`/api/agent/tasks/${task.id}/claim`, tokens["rev-bot"], { role: "reviewer" });
     const mid = await js(`
+      await expandTasks();
       const card = await until(() => $$('[data-testid=task-list] > article.task').find((c) => text(c.querySelector('h3')) === ${JSON.stringify(needle)} && /评审中/.test(text(c.querySelector('.pill')))), 10000);
       return card ? $$('.slots > li', card).map(text) : null;`);
     await call(`/api/agent/tasks/${task.id}/review`, tokens["rev-bot"], { verdict: "approve", body: "过" });
     await call(`/api/agent/tasks/${task.id}/claim`, tokens["qa-bot"], { role: "tester" });
     await call(`/api/agent/tasks/${task.id}/test`, tokens["qa-bot"], { verdict: "pass", body: "过" });
     const end = await js(`
+      await expandTasks();
       const card = await until(() => $$('[data-testid=task-list] > article.task').find((c) => text(c.querySelector('h3')) === ${JSON.stringify(needle)} && /完成/.test(text(c.querySelector('.pill')))), 10000);
       return card ? $$('.slots > li', card).map(text) : null;`);
     const ok = mid && mid[0].includes("claude-desk") && mid[0].includes("Lv1") && mid[1].includes("rev-bot") && mid[2].endsWith("空") && end && end[2].includes("qa-bot");

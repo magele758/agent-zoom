@@ -8,21 +8,25 @@
     "dev": "concurrently -n server,web -c blue,green \"tsx watch src/server/index.ts\" \"vite\"",
     "start": "tsx src/server/index.ts",
     "build": "vite build",
-    "test": "tsx --test src/server/logic.test.ts src/mentions.test.ts src/local-agents.test.ts src/view.test.ts src/presence-dispatch.test.ts src/adapter.test.ts src/e2e.test.ts",
+    "test": "tsx --test src/server/logic.test.ts src/mentions.test.ts src/local-agents.test.ts src/view.test.ts src/presence-dispatch.test.ts src/adapter.test.ts src/e2e.test.ts src/coordinator.test.ts",
     "adapt": "tsx src/adapter.ts",
     "mcp": "tsx src/cli.ts mcp",
     "enroll": "tsx src/cli.ts enroll",
     "fix-owner": "tsx src/fix-owner.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json",
+    "test:browser": "npm run build && node scripts/browser-regression.mjs",
+    "test:real:cli": "node scripts/real-cli-acceptance.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
     "@hono/node-ws": "^1.3.1",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@ppeng/agent-loop": "file:../../self-test-grounding/ppeng-agent-core/packages/agent-loop",
     "hono": "^4.13.13",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

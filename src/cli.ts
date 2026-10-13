@@ -2,13 +2,13 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { groupOf } from "./groups.ts";
+import { groupLabel } from "./groups.ts";
 import type { ChatApi } from "./mcp.ts";
 import { createMcpServer } from "./mcp.ts";
 import { mergeCredentials, savedCredential } from "./server/local-agents.ts";
 
 const PING_MS = 60_000;
-const credPath = process.env.AGENT_CHATROOM_CREDENTIALS ?? "data/credentials.json";
+const credPath = arg("--credentials") ?? process.env.AGENT_CHATROOM_CREDENTIALS ?? "data/credentials.json";
 
 type Creds = { url: string; agents: Record<string, { token: string; roomId: string; runtime: string }> };
 
@@ -68,9 +68,9 @@ async function enroll() {
     mergeCredentials(current, { url, handle: key, token: body.token, roomId: body.roomId, runtime }),
     { mode: 0o600 },
   );
-  const identity = groupOf(tags);
+  const identity = groupLabel(tags);
   console.log(
-    `已接入 ${handle}，身份 ${identity?.label ?? (tags || "未分组")}，等级 ${body.agent?.level ?? 1}${cwd ? `，目录 ${cwd}` : ""}${machine ? `，机器 ${machine}` : ""}。凭证写在 ${credPath}`,
+    `已接入 ${handle}，身份 ${identity || tags || "未分组"}，等级 ${body.agent?.level ?? 1}${cwd ? `，目录 ${cwd}` : ""}${machine ? `，机器 ${machine}` : ""}。凭证写在 ${credPath}`,
   );
   console.log(`下一步: npm run mcp -- --handle ${handle.toLowerCase()}`);
 }
@@ -103,8 +103,8 @@ function httpApi(url: string, token: string): ChatApi {
     wait: async (after, timeoutMs) => (await call(`/api/wait?after=${after}&timeoutMs=${timeoutMs}`)).events,
     listTasks: (roomId) => call(`/api/agent/rooms/${roomId}/tasks`),
     getTask: (taskId) => call(`/api/agent/tasks/${taskId}`),
-    submitDesign: (taskId, body) =>
-      call(`/api/agent/tasks/${taskId}/design`, { method: "POST", body: JSON.stringify({ body }) }),
+    submitDesign: (taskId, body, group) =>
+      call(`/api/agent/tasks/${taskId}/design`, { method: "POST", body: JSON.stringify({ body, group }) }),
     claim: (taskId, role) => call(`/api/agent/tasks/${taskId}/claim`, { method: "POST", body: JSON.stringify({ role }) }),
     bid: (taskId, approach) =>
       call(`/api/agent/tasks/${taskId}/bid`, { method: "POST", body: JSON.stringify({ approach }) }),
