@@ -239,3 +239,7 @@ npm run test:browser
 2026-10-12 实测：DeepSeek `deepseek-v4-flash-0731` 经 SDK 调用 `read_current_channel`、`prepare_dispatch`，修正一次错误的字节估算后，确认方案创建任务 `ec16a702-9975-4a72-8f62-76073c61ef62`。真实 `codex-live` CLI 写入临时目录的 `sdk-coordination-proof.txt`；当前 Desktop 会话以 `sdk-validator` 身份独立读取、提交评审和测试，任务达到 done。精确内容为 `COORDINATOR_SDK_REAL_20261012`（29 字节、无换行），SHA-256 `a6ecc852980ebf12b27e10ce577c03fa81144c3c3878f221e0b123f88b7e5643`。重复确认返回同一任务，未重复派发。这是调度链路验收，不是对模型所有建议正确性的保证。
 
 完整真实 CLI 验收可显式运行 `npm run test:real:cli`。它创建隔离服务、临时仓库和临时 MCP 配置，使用本机已有 Codex / Claude 登录与模型设置，会消耗真实模型额度；不写现有客户端配置或正式频道。依次验证真实实现、独立文件 oracle、独立 Claude 评审与测试，日志及状态在 `data/validation/full-2026-10-12/`。
+
+### 当前本地桌面会话通信
+
+支持将指定频道绑定到当前桌面会话，并通过会话内定时唤醒轮询收件箱。回复由这段桌面会话生成，写回原频道并标明身份；持久化接收记录防止重复，暂停/恢复入口在「成员管理与客户端接入 → 本地桌面通信」。这是每分钟轮询，需要电脑、应用和服务运行，不是即时推送；聊天不会自动认领或执行任务。配置、限制和验收方法见 [本地桌面通信](docs/local-desktop-bridge.md)。

@@ -1,0 +1,86 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {openStore} from './server/logic.ts';
+import {createApp} from './server/http.ts';
+function setup(path=':memory:'){
+ const store=openStore(path); const session=store.session('bridge-owner'); const user=store.userBySession(session.token)!;
+ assert.ok(user.type==='user');
+ const roomId=store.createRoom(user,'Desktop 验收','').id;
+ const joined=store.enroll(store.createJoinCode(user,roomId).code,'chatgpt','chatgpt-desktop','build,review',5);
+ const agent=store.agentByToken(joined.token)!;assert.ok(agent.type==='agent');
+ return {store,user,roomId,agent,token:joined.token};
+}
+const threadId='01a12efe-ddc3-7033-8325-039720b47bc5';
+test('desktop bridge skips history, retains unread events, replies atomically once with identity',()=>{
+ const {store,user,roomId,agent}=setup();
+ store.postMessage(user,roomId,{body:'old'});
+ store.configureDesktop(agent,{roomId,threadId,enabled:true});
+ assert.equal(store.desktopInbox(agent).events.length,0);
+ store.postMessage(user,roomId,{body:'new'});
+ const event=store.desktopInbox(agent).events[0]; assert.equal(event.body,'new');
+ assert.equal(store.desktopInbox(agent).events[0].id,event.id);
+ const input={body:'actual model answer',group:'review',desktopThreadId:threadId,desktopEventId:event.id};
+ const first=store.postMessage(agent,roomId,input);const second=store.postMessage(agent,roomId,input);
+ assert.equal(first.message.id,second.message.id);assert.equal(first.message.replyGroup,'review');
+ assert.equal(store.desktopInbox(agent).events.length,0);
+ assert.equal(store.db.prepare('SELECT COUNT(*) n FROM desktop_receipts').get()!.n,1);
+});
+test('desktop bridge respects pause, archive, membership and refuses foreign or task events',()=>{
+ const {store,user,roomId,agent}=setup();
+ store.configureDesktop(agent,{roomId,threadId,enabled:true});
+ store.postMessage(user,roomId,{body:'@chatgpt a question'});
+ const event=store.desktopInbox(agent).events[0];
+ store.configureDesktop(agent,{roomId,threadId,enabled:false});
+ assert.equal(store.desktopInbox(agent).events.length,0);
+ assert.throws(()=>store.postMessage(agent,roomId,{body:'reply',group:'build',desktopThreadId:threadId,desktopEventId:event.id}));
+ store.configureDesktop(agent,{roomId,threadId,enabled:true});
+ assert.equal(store.desktopInbox(agent).events[0].id,event.id);
+ assert.throws(()=>store.postMessage(agent,roomId,{body:'reply',group:'test',desktopThreadId:threadId,desktopEventId:event.id}));
+ assert.throws(()=>store.postMessage(agent,roomId,{body:'reply',group:'build',desktopThreadId:threadId,desktopEventId:99999}));
+ store.postMessage(user,roomId,{body:'@chatgpt create work',kind:'instruction'});
+ assert.equal(store.desktopInbox(agent).events.length,1);
+ store.setPaused(user,agent.id,true); assert.equal(store.desktopInbox(agent).events.length,0);
+ store.setPaused(user,agent.id,false);store.setArchived(user,roomId,true);assert.equal(store.desktopInbox(agent).events.length,0);
+});
+test('desktop receipts survive restart and unauthorized HTTP never exposes inbox',async()=>{
+ const path=join(mkdtempSync(join(tmpdir(),'desktop-bridge-')),'chat.db');
+ const {store,user,roomId,agent,token}=setup(path);
+ store.configureDesktop(agent,{roomId,threadId,enabled:true});
+ store.postMessage(user,roomId,{body:'persistent'});const event=store.desktopInbox(agent).events[0];
+ store.db.close();const restored=openStore(path);
+ const actual=restored.agentByToken(token)!;assert.ok(actual.type==='agent');
+ assert.equal(restored.desktopInbox(actual).events[0].id,event.id);
+ const {app}=createApp(restored);
+ assert.equal((await app.request('/api/agent/desktop-inbox')).status,401);
+ const headers={authorization:`Bearer ${token}`,'content-type':'application/json'};
+ const input={threadId,eventId:event.id,roomId,group:'build',body:'desktop reply'};
+ const responses=await Promise.all([app.request('/api/agent/desktop-replies',{method:'POST',headers,body:JSON.stringify(input)}),app.request('/api/agent/desktop-replies',{method:'POST',headers,body:JSON.stringify(input)})]);
+ assert.deepEqual(responses.map(r=>r.status),[200,200]);
+ const replies=await Promise.all(responses.map(r=>r.json()));assert.equal(replies[0].message.id,replies[1].message.id);
+ assert.equal(restored.desktopInbox(actual).events.length,0);
+ const other=restored.session('other');const foreign=restored.userBySession(other.token)!;assert.ok(foreign.type==='user');
+ assert.throws(()=>restored.configureDesktop(actual,{roomId:restored.listRooms(foreign.id)[0].id,threadId,enabled:true}));
+});
+
+test('old thread cannot reply after rebind; owner controls and private room access are enforced',async()=>{
+ const {store,user,roomId,agent,token}=setup();
+ store.configureDesktop(agent,{roomId,threadId,enabled:true});
+ store.postMessage(user,roomId,{body:'@chatgpt old binding'});
+ const event=store.desktopInbox(agent).events[0];
+ assert.throws(()=>store.postMessage(agent,roomId,{body:'wrong thread',group:'build',desktopEventId:event.id,desktopThreadId:'other-thread-id-20261013'}));
+ store.configureDesktop(agent,{roomId,threadId:'other-thread-id-20261013',enabled:true});
+ assert.throws(()=>store.postMessage(agent,roomId,{body:'stale reply',group:'build',desktopEventId:event.id,desktopThreadId:threadId}));
+ store.postMessage(user,roomId,{body:'new binding'});
+ store.postMessage(agent,roomId,{body:'agent chatter',group:'build'});
+ assert.deepEqual(store.desktopInbox(agent).events.map(e=>e.body),['new binding']);
+ const other=store.session('other-owner');const foreign=store.userBySession(other.token)!;assert.ok(foreign.type==='user');
+ assert.throws(()=>store.pauseDesktop(foreign,roomId,agent.id,false));
+ const rows=store.desktopBridges(user,roomId);assert.equal(rows.length,1);assert.equal(rows[0].threadId,'other-thread-id-20261013');
+ store.pauseDesktop(user,roomId,agent.id,false);assert.equal(store.desktopInbox(agent).events.length,0);
+ store.pauseDesktop(user,roomId,agent.id,true);assert.equal(store.desktopInbox(agent).events.length,1);
+ const {app}=createApp(store);assert.equal((await app.request(`/api/rooms/${roomId}/desktop-bridges`)).status,401);
+ const response=await app.request('/api/agent/desktop-replies',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({roomId,eventId:'1',group:'build',body:'bad id'})});assert.equal(response.status,400);
+});
