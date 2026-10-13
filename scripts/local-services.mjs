@@ -25,6 +25,11 @@ for(const job of jobs){
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(dirname(process.execPath))}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>PORT</key><string>8791</string></dict>
 <key>StandardOutPath</key><string>${xml(join(logs,job.name+'.log'))}</string><key>StandardErrorPath</key><string>${xml(join(logs,job.name+'.error.log'))}</string></dict></plist>`;
  try{execFileSync('launchctl',['bootout',`${domain}/${label}`],{stdio:'pipe'});}catch{}
- writeFileSync(path,plist,{mode:0o600});execFileSync('launchctl',['enable',`${domain}/${label}`]);execFileSync('launchctl',['bootstrap',domain,path]);
+ writeFileSync(path,plist,{mode:0o600});execFileSync('launchctl',['enable',`${domain}/${label}`]);
+ // bootout may return before launchd has finished removing the old job.
+ for(let attempt=0;;attempt++){
+  try{execFileSync('launchctl',['bootstrap',domain,path],{stdio:'pipe'});break;}
+  catch(error){if(attempt>=19)throw error;await new Promise(resolve=>setTimeout(resolve,250));}
+ }
  console.log(`已启动 ${label}（登录启动、退出后重启），日志 data/service-logs/${job.name}.log`);
 }
