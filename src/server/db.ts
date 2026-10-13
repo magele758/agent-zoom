@@ -132,6 +132,23 @@ CREATE TABLE IF NOT EXISTS inbox (
 );
 CREATE INDEX IF NOT EXISTS inbox_recipient ON inbox(recipient_type, recipient_id, id);
 
+CREATE TABLE IF NOT EXISTS desktop_bridges (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id),
+  room_id TEXT NOT NULL REFERENCES rooms(id),
+  thread_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  after_id INTEGER NOT NULL,
+  last_poll_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS desktop_receipts (
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  event_id INTEGER NOT NULL REFERENCES inbox(id),
+  message_id TEXT NOT NULL REFERENCES messages(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(agent_id,event_id)
+);
+
 CREATE TABLE IF NOT EXISTS file_locks (
   org_id TEXT NOT NULL,
   path TEXT NOT NULL,

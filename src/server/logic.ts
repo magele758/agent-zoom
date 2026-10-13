@@ -1139,6 +1139,8 @@ export class Store {
       steps?: unknown;
       group?: string;
       coordinatorRunId?: string;
+      desktopEventId?: number;
+      desktopThreadId?: string;
     },
   ) {
     if (principal.type === "agent") this.assertAwake(principal);
@@ -1183,6 +1185,14 @@ export class Store {
     const parallel = Boolean(input.parallel);
     const complex = Boolean(input.complex);
     const result = this.transaction(() => {
+      if (input.desktopEventId !== undefined) {
+        if (principal.type !== "agent" || kind !== "chat" || !input.group || input.taskId) throw new ApiError(400,"bad_desktop_reply","桌面回复必须指定身份，且只能回复聊天");
+        const binding=this.db.prepare("SELECT thread_id,room_id,enabled FROM desktop_bridges WHERE agent_id=?").get(principal.id) as {thread_id:string;room_id:string;enabled:number}|undefined;
+        if (!binding || !binding.enabled || binding.thread_id!==input.desktopThreadId || binding.room_id!==roomId) throw new ApiError(409,"desktop_binding_changed","桌面会话绑定已变化或暂停，不能写回旧回复");
+        const previous = this.db.prepare("SELECT message_id FROM desktop_receipts WHERE agent_id=? AND event_id=?").get(principal.id,input.desktopEventId) as {message_id:string}|undefined;
+        if (previous) return {message:this.decorateOne(previous.message_id),task:null};
+        if (!this.desktopInbox(principal,false).events.some(event => event.id === input.desktopEventId && event.room_id === roomId)) throw new ApiError(409,"desktop_event_unavailable","事件不属于当前桌面订阅或已暂停");
+      }
       if (input.coordinatorRunId) {
         if (principal.type !== "user" || kind !== "instruction") throw new ApiError(403,"coordinator_dispatch","只有用户可以确认协调派发");
         const run = this.db.prepare("SELECT status,task_id FROM coordinator_runs WHERE id=? AND user_id=? AND room_id=?").get(input.coordinatorRunId,principal.id,roomId) as {status:string;task_id:string|null}|undefined;
@@ -1273,6 +1283,7 @@ export class Store {
           addressed.length === 0 &&
           (kind === "chat" || kind === "question" || kind === "instruction"),
       });
+      if (input.desktopEventId !== undefined) this.db.prepare("INSERT INTO desktop_receipts(agent_id,event_id,message_id,created_at) VALUES(?,?,?,?)").run(principal.id,input.desktopEventId,message.id,nowIso());
       return { message: this.decorateOne(message.id), task };
     });
     this.flush();
@@ -1771,6 +1782,45 @@ export class Store {
       }
       return events;
     });
+  }
+
+  configureDesktop(agent: Principal & {type:"agent"}, input: {roomId:string;threadId:string;enabled:boolean}) {
+    this.assertMember(agent,input.roomId);
+    if (!/^[a-zA-Z0-9-]{16,80}$/.test(input.threadId)) throw new ApiError(400,"bad_thread","桌面会话 ID 无效");
+    const previous = this.db.prepare("SELECT room_id,thread_id FROM desktop_bridges WHERE agent_id=?").get(agent.id) as {room_id:string;thread_id:string}|undefined;
+    const same = previous?.room_id===input.roomId && previous.thread_id===input.threadId;
+    const baseline = (this.db.prepare("SELECT COALESCE(MAX(id),0) AS id FROM inbox WHERE recipient_id=?").get(agent.id) as {id:number}).id;
+    this.db.prepare(`INSERT INTO desktop_bridges(agent_id,room_id,thread_id,enabled,after_id,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET room_id=excluded.room_id,thread_id=excluded.thread_id,enabled=excluded.enabled,after_id=CASE WHEN ? THEN desktop_bridges.after_id ELSE excluded.after_id END`).run(agent.id,input.roomId,input.threadId,input.enabled?1:0,baseline,nowIso(),same?1:0);
+    return this.desktopInbox(agent,false);
+  }
+
+  desktopBridges(user: Principal & {type:"user"}, roomId:string) {
+    this.assertMember(user,roomId);
+    const rows = this.db.prepare(`SELECT a.id AS agentId,a.handle,a.paused,b.thread_id AS threadId,b.enabled,b.last_poll_at AS lastPollAt,
+      (SELECT MAX(r.created_at) FROM desktop_receipts r JOIN inbox i ON i.id=r.event_id WHERE r.agent_id=a.id AND i.room_id=b.room_id) AS lastReplyAt,
+      (SELECT COUNT(*) FROM desktop_receipts r JOIN inbox i ON i.id=r.event_id WHERE r.agent_id=a.id AND i.room_id=b.room_id) AS replies
+      FROM desktop_bridges b JOIN agents a ON a.id=b.agent_id WHERE b.room_id=? AND a.owner_user_id=?`).all(roomId,user.id) as Array<{agentId:string;handle:string;paused:number;threadId:string;enabled:number;lastPollAt:string|null;lastReplyAt:string|null;replies:number}>;
+    return rows.map(row=>({...row,enabled:row.enabled===1,paused:row.paused===1}));
+  }
+
+  pauseDesktop(user: Principal & {type:"user"},roomId:string,agentId:string,enabled:boolean) {
+    this.assertMember(user,roomId);
+    const own=this.db.prepare("SELECT a.id FROM agents a JOIN desktop_bridges b ON b.agent_id=a.id WHERE a.id=? AND a.owner_user_id=? AND b.room_id=?").get(agentId,user.id,roomId);
+    if (!own) throw new ApiError(403,"not_owner","只能修改自己的桌面桥接");
+    this.db.prepare("UPDATE desktop_bridges SET enabled=? WHERE agent_id=?").run(enabled?1:0,agentId);
+    return {enabled};
+  }
+
+  desktopInbox(agent: Principal & {type:"agent"},markPoll=true) {
+    const bridge = this.db.prepare("SELECT room_id,thread_id,enabled,after_id,last_poll_at FROM desktop_bridges WHERE agent_id=?").get(agent.id) as {room_id:string;thread_id:string;enabled:number;after_id:number;last_poll_at:string|null}|undefined;
+    if (!bridge) return {bridge:null,events:[]};
+    this.assertMember(agent,bridge.room_id);
+    const row = this.db.prepare("SELECT paused,tags FROM agents WHERE id=?").get(agent.id) as {paused:number;tags:string};
+    const archived = this.roomRow(bridge.room_id).archived===1;
+    const enabled = bridge.enabled===1 && !row.paused && !archived;
+    const events = enabled ? this.db.prepare(`SELECT i.id,i.room_id,i.event_type,i.ref_id,m.body,m.kind,m.author_type,m.author_id,m.created_at FROM inbox i JOIN messages m ON m.id=i.ref_id WHERE i.recipient_type='agent' AND i.recipient_id=? AND i.room_id=? AND i.id>? AND i.event_type IN ('room','mention') AND m.author_type='user' AND m.kind IN ('chat','question') AND NOT EXISTS(SELECT 1 FROM desktop_receipts r WHERE r.agent_id=? AND r.event_id=i.id) ORDER BY i.id LIMIT 10`).all(agent.id,bridge.room_id,bridge.after_id,agent.id) as Array<{id:number;room_id:string;ref_id:string;body:string;kind:string;author_type:string;author_id:string;created_at:string}> : [];
+    if(markPoll) this.db.prepare("UPDATE desktop_bridges SET last_poll_at=? WHERE agent_id=?").run(nowIso(),agent.id);
+    return {bridge:{...bridge,enabled,paused:!!row.paused,archived,groups:groupsOf(row.tags).map(group=>group.id)},events};
   }
 
   inboxAfter(agentId: string, after: number) {

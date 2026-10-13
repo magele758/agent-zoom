@@ -117,6 +117,13 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
     return c.json(store.snapshot(user, c.req.param("id"), online()));
   });
 
+  app.get("/api/rooms/:id/desktop-bridges",c=>c.json({bridges:store.desktopBridges(requireUser(getCookie(c,COOKIE)),c.req.param("id"))}));
+  app.patch("/api/rooms/:id/desktop-bridges/:agentId",async c=>{
+    const user=requireUser(getCookie(c,COOKIE));const body=await c.req.json();
+    if (typeof body.enabled!=="boolean") throw new ApiError(400,"bad_enabled","enabled 必须是布尔值");
+    return c.json(store.pauseDesktop(user,c.req.param("id"),c.req.param("agentId"),body.enabled));
+  });
+
   app.post("/api/rooms/:id/read", async (c) => {
     const user = requireUser(getCookie(c, COOKIE));
     const body = await c.req.json();
@@ -314,6 +321,19 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
   app.get("/api/inbox/pending", (c) => {
     const agent = requireAgent(c.req.header("authorization"));
     return c.json({ events: store.takePending(agent.id) });
+  });
+
+  app.get("/api/agent/desktop-inbox", c => c.json(store.desktopInbox(requireAgent(c.req.header("authorization")))));
+  app.post("/api/agent/desktop-bridge", async c => {
+    const agent=requireAgent(c.req.header("authorization"));
+    const body=await c.req.json();
+    return c.json(store.configureDesktop(agent,{roomId:String(body.roomId??""),threadId:String(body.threadId??""),enabled:body.enabled===true}));
+  });
+  app.post("/api/agent/desktop-replies", async c => {
+    const agent=requireAgent(c.req.header("authorization"));
+    const body=await c.req.json();
+    if (!Number.isSafeInteger(body.eventId) || body.eventId<1) throw new ApiError(400,"bad_event","事件 ID 无效");
+    return c.json(store.postMessage(agent,String(body.roomId??""),{body:String(body.body??""),group:String(body.group??""),kind:"chat",desktopEventId:body.eventId,desktopThreadId:String(body.threadId??"")}));
   });
 
   app.post("/api/agent/ping", (c) => {

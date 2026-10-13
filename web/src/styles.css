@@ -1035,3 +1035,7 @@ html:has(.shell), body:has(.shell) { overflow: hidden; overscroll-behavior: none
 .coordinator-result ul, .coordinator-result ol { padding-left: 20px; }
 .coordinator-body { white-space: pre-wrap; }
 .coordinator-warnings { color: var(--brass-2); }
+
+.desktop-bridge-panel { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.desktop-bridge-panel h3 { margin: 0 0 8px; font-size: 1rem; }
+.desktop-bridge-panel button { margin: 8px 0; }

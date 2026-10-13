@@ -1,3 +1,4 @@
+import { DesktopBridgePanel } from "./DesktopBridgePanel";
 import { CoordinatorPanel } from "./CoordinatorPanel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -254,7 +255,7 @@ export function App() {
     void refresh();
     const timer = setInterval(() => {
       void refresh();
-      void loadMe();
+      void loadMe().catch(reason => setError(reason instanceof Error ? reason.message : "连接失败"));
     }, 5000);
     const visible = () => { if (document.visibilityState === "visible") void refresh(); };
     document.addEventListener("visibilitychange", visible);
@@ -340,7 +341,7 @@ export function App() {
             snap={snap}
             onChanged={() => {
               void refresh();
-              void loadMe();
+              void loadMe().catch(reason => setError(reason instanceof Error ? reason.message : "连接失败"));
             }}
             onError={setError}
             onDirect={async (handle) => {
@@ -1368,6 +1369,7 @@ function SidePanel({
       </section>
       <details className="setup-panel">
         <summary>成员管理与客户端接入</summary>
+      <DesktopBridgePanel key={snap.room.id} roomId={snap.room.id} />
       <LocalAgents
         roomId={snap.room.id}
         joined={snap.members.agents.map((agent) => agent.handle).join("\n")}
