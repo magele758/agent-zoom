@@ -100,7 +100,7 @@ before(async () => {
   base = `http://127.0.0.1:${port}`;
   child = spawn(join(ROOT, "node_modules/.bin/tsx"), ["src/server/index.ts"], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), DATA_PATH: dbPath, AGENT_CHATROOM_CREDENTIALS: join(dir, "credentials.json") },
+    env: { ...process.env, DEMO_MODE: "1", PORT: String(port), DATA_PATH: dbPath, AGENT_CHATROOM_CREDENTIALS: join(dir, "credentials.json") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout?.on("data", (chunk) => (log += chunk));
@@ -217,7 +217,9 @@ test("the local-client list for 这台电脑 answers with a catalog and marks wh
     assert.equal(typeof agent.connected, "boolean");
     assert.equal(typeof agent.inRoom, "boolean");
     assert.equal(typeof agent.configured, "boolean");
-    assert.equal(agent.connected, agent.inRoom && agent.configured);
+    assert.equal(typeof agent.credentialValid, "boolean");
+    assert.equal(agent.connected, agent.inRoom && agent.configured && agent.credentialValid);
+    assert.equal(typeof agent.online, "boolean");
   }
   cookie = "";
   assert.equal((await call(`/api/rooms/${roomId}/local-agents`)).status, 401);

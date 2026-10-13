@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { normalizeGroup } from "../groups.ts";
+import { normalizeGroups } from "../groups.ts";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -34,13 +34,13 @@ type Spec = {
 
 const SPECS: Spec[] = [
   { id: "cursor", label: "Cursor", handle: "cursor", runtime: "cursor", detail: "写入 ~/.cursor/mcp.json", writable: true },
-  { id: "claude", label: "Claude Code", handle: "claude", runtime: "claude", detail: "写入 ~/.claude.json", writable: true },
+  { id: "claude", label: "Claude Code CLI", handle: "claude", runtime: "claude", detail: "写入 ~/.claude.json；Claude Desktop 的 Code 页面也读取此配置，共用 @claude 身份", writable: true },
   {
     id: "claude-desk",
-    label: "Claude 桌面版",
+    label: "Claude Desktop（Chat / Cowork）",
     handle: "claude-desk",
     runtime: "claude-desk",
-    detail: "写入 Claude 桌面版的配置",
+    detail: "写入 Claude / Claude-3p 的 claude_desktop_config.json，使用独立 @claude-desk 身份；Code 页面走上一项 CLI 配置",
     writable: true,
   },
   {
@@ -60,6 +60,7 @@ const SPECS: Spec[] = [
     writable: true,
   },
   { id: "gemini", label: "Gemini", handle: "gemini", runtime: "gemini", detail: "写入 ~/.gemini/settings.json", writable: true },
+  { id: "grok-cli", label: "Grok CLI", handle: "grok-cli", runtime: "grok-cli", detail: "写入 ~/.grok/config.toml，通过 MCP 接入", writable: true },
   {
     id: "antigravity",
     label: "Antigravity",
@@ -101,6 +102,7 @@ export function isInstalled(id: string, home: string, probe: Probe, apps: (name:
   if (id === "chatgpt") return apps("ChatGPT.app");
   if (id === "codex") return probe.bins.has("codex");
   if (id === "gemini") return probe.bins.has("gemini") || apps("Gemini.app") || probe.exists(join(home, ".gemini/settings.json"));
+  if (id === "grok-cli") return probe.bins.has("grok") || probe.exists(join(home, ".grok/config.toml"));
   if (id === "antigravity") {
     return apps("Antigravity.app") || probe.bins.has("antigravity") || probe.exists(join(home, ".gemini/antigravity"));
   }
@@ -170,7 +172,7 @@ export function isConfigured(home: string, id: string, read: (path: string) => s
 export function mcpLaunch(repo: string, node: string, handle: string) {
   return {
     command: node,
-    args: [join(repo, "node_modules/tsx/dist/cli.mjs"), join(repo, "src/cli.ts"), "mcp", "--handle", handle],
+    args: [join(repo, "node_modules/tsx/dist/cli.mjs"), join(repo, "src/cli.ts"), "mcp", "--credentials", join(repo, "data/credentials.json"), "--handle", handle],
     cwd: repo,
   };
 }
@@ -222,7 +224,7 @@ export function configTarget(home: string, id: string, launch: ReturnType<typeof
   if (id === "claude-desk") {
     return {
       kind: "json" as const,
-      path: join(home, "Library/Application Support/Claude/claude_desktop_config.json"),
+      path: join(home, existsSync(join(home, "Library/Application Support/Claude-3p/claude_desktop_config.json")) ? "Library/Application Support/Claude-3p/claude_desktop_config.json" : "Library/Application Support/Claude/claude_desktop_config.json"),
       group: "mcpServers",
       name: "agent-chatroom",
       entry: jsonEntry,
@@ -265,7 +267,7 @@ export function configTarget(home: string, id: string, launch: ReturnType<typeof
       entry: { type: "local", command: [launch.command, ...launch.args], cwd: launch.cwd, enabled: true },
     };
   }
-  if (id === "chatgpt" || id === "codex") {
+  if (id === "chatgpt" || id === "codex" || id === "grok-cli") {
     const serverName = id === "codex" ? "agent-chatroom-codex" : "agent-chatroom";
     const body = [
       `command = ${tomlString(launch.command)}`,
@@ -276,7 +278,7 @@ export function configTarget(home: string, id: string, launch: ReturnType<typeof
       "enabled = true",
       "startup_timeout_sec = 30",
     ].join("\n");
-    return { kind: "toml" as const, path: join(home, ".codex/config.toml"), serverName, body };
+    return { kind: "toml" as const, path: join(home, id === "grok-cli" ? ".grok/config.toml" : ".codex/config.toml"), serverName, body };
   }
   return null;
 }
@@ -320,7 +322,7 @@ export function credentialHas(text: string | null, handle: string) {
 export function listLocalAgents(inRoom: Set<string>, home = homedir()) {
   const bins = new Set<string>();
   const dirs = [...(process.env.PATH ?? "").split(":"), join(home, ".local/bin"), join(home, ".opencode/bin")].filter(Boolean);
-  for (const name of ["claude", "codex", "gemini", "antigravity", "opencode", "copilot", "amp", "cursor"]) {
+  for (const name of ["claude", "codex", "gemini", "grok", "antigravity", "opencode", "copilot", "amp", "cursor"]) {
     if (dirs.some((dir) => existsSync(join(dir, name)))) bins.add(name);
   }
   const probe: Probe = { exists: existsSync, bins };
@@ -383,7 +385,7 @@ export function connectInstalled(input: {
       ? isInstalled(spec.id, input.home, input.probe, input.apps)
       : listLocalAgents(new Set(), input.home).some((agent) => agent.id === spec.id);
   if (!installed) throw new LocalAgentError(404, "not_installed", "这台电脑上没有这个客户端");
-  const group = normalizeGroup(input.group);
+  const group = normalizeGroups(input.group);
   if (!group) throw new LocalAgentError(400, "bad_group", "没有这个身份");
   const launch = mcpLaunch(input.repo, input.node, spec.handle);
   const credText = existsSync(input.credPath) ? readFileSync(input.credPath, "utf8") : null;

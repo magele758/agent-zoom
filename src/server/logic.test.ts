@@ -9,16 +9,39 @@ import { echoAction } from "../adapter.ts";
 import { DEFAULT_PIPELINE, parsePipeline } from "./pipeline.ts";
 import { speakFor } from "./demo.ts";
 import { createApp } from "./http.ts";
-import { ApiError, openStore, type Principal, type Store, type TaskView } from "./logic.ts";
+import { ApiError, openStore, type Principal, Store, type TaskView } from "./logic.ts";
 
 function studio(name = "磊") {
-  const store = openStore(":memory:");
+  const store = openStore(":memory:", { demo: true });
   const session = store.session(name);
   const user = store.userBySession(session.token);
   assert.ok(user && user.type === "user");
   const roomId = store.listRooms(user.id)[0].id;
   return { store, user, roomId };
 }
+
+test("default workspaces have no demo clients and historical demo messages are explicit", () => {
+  const store = openStore(":memory:");
+  const session = store.session("真实模式");
+  const user = store.userBySession(session.token);
+  assert.ok(user && user.type === "user");
+  const roomId = store.listRooms(user.id)[0].id;
+  assert.equal(store.snapshot(user, roomId, new Set()).members.agents.length, 0);
+  store.ensureDemoCast();
+  assert.equal(store.snapshot(user, roomId, new Set()).members.agents.length, 0);
+  const demoStore = new Store(store.db, true);
+  const old = demoStore.session("历史演示");
+  const demoUser = demoStore.userBySession(old.token);
+  assert.ok(demoUser && demoUser.type === "user");
+  const oldRoom = demoStore.listRooms(demoUser.id)[0].id;
+  const agent = demoAgent(demoStore, "builder");
+  demoStore.postMessage(agent, oldRoom, { kind: "chat", body: "旧演示回复" });
+  store.stopDemoAgents();
+  const snapshot = store.snapshot(demoUser, oldRoom, new Set());
+  assert.ok(snapshot.members.agents.every(agent => agent.paused));
+  assert.equal(snapshot.messages.find(message => message.body === "旧演示回复")?.demo, true);
+  assert.throws(() => store.setPaused(demoUser, agent.id, false), /演示模式已关闭/);
+});
 
 function enroll(
   store: Store,
@@ -35,10 +58,48 @@ function enroll(
   return agent;
 }
 
+test("reply identity is validated and saved independently of later client role changes", () => {
+  const { store, user, roomId } = studio();
+  const client = enroll(store, user, roomId, "multi-reply", "build,review,test");
+  const marked = store.postMessage(client, roomId, { kind: "chat", body: "以评审身份回复", group: "review" });
+  const plain = store.postMessage(client, roomId, { kind: "chat", body: "没有指定身份" });
+  assert.throws(() => store.postMessage(client, roomId, { body: "冒用身份", group: "research" }), /已配置的身份/);
+  const task = store.postMessage(user, roomId, { kind: "instruction", body: "@multi-reply 做身份测试" }).task!;
+  store.claim(client, task.id, "implementer");
+  const progress = store.postMessage(client, roomId, { kind: "progress", taskId: task.id, body: "正在实现" });
+  assert.equal(store.readMessage(user, roomId, String(progress.message.id)).replyGroup, "build");
+  assert.throws(() => store.postMessage(client, roomId, { kind: "chat", taskId: task.id, group: "review", body: "伪装评审" }), /任务职责不一致/);
+  store.setGroup(user, client.id, "test");
+  const view = store.readMessage(user, roomId, String(marked.message.id));
+  assert.equal(view.replyGroup, "review");
+  assert.equal(view.replyGroupLabel, "评审");
+  assert.equal(store.readMessage(user, roomId, String(plain.message.id)).replyGroup, null);
+  const single = store.postMessage(client, roomId, { body: "单身份回复" });
+  assert.equal(store.readMessage(user, roomId, String(single.message.id)).replyGroup, "test");
+});
+
 function events(store: Store, agentId: string, type?: string) {
   const rows = store.inboxAfter(agentId, 0);
   return type ? rows.filter((row) => row.event_type === type) : rows;
 }
+
+test("closing a private conversation hides only the user's list and reopening retains history", () => {
+  const { store, user, roomId } = studio();
+  enroll(store, user, roomId, "close-test", "build");
+  const direct = store.userConversation(user, roomId, "close-test");
+  store.postMessage(user, direct.roomId, { body: "保留这条历史" });
+  assert.throws(() => store.closeConversation(user, roomId), /只有私聊/);
+  const outsiderSession = store.session("关闭权限外部用户");
+  const outsider = store.userBySession(outsiderSession.token)!;
+  assert.ok(outsider.type === "user");
+  assert.throws(() => store.closeConversation(outsider, direct.roomId));
+  store.closeConversation(user, direct.roomId);
+  assert.ok(!store.listRooms(user.id).some(room => room.id === direct.roomId));
+  const reopened = store.userConversation(user, roomId, "close-test");
+  assert.equal(reopened.roomId, direct.roomId);
+  assert.ok(store.listRooms(user.id).some(room => room.id === direct.roomId));
+  assert.ok(store.readMessages(user, direct.roomId, 0).some(message => message.body === "保留这条历史"));
+});
 
 function levelOf(store: Store, agentId: string) {
   const row = store.db.prepare("SELECT level FROM agents WHERE id = ?").get(agentId) as { level: number };
@@ -1481,4 +1542,82 @@ test("a review with nobody present blocks instead of passing itself", () => {
   store.reap(new Date(Date.now() + 5_000));
   assert.equal(step(store, researcher, roomId, "review").status, "blocked");
   assert.equal(step(store, researcher, roomId, "product").status, "blocked");
+});
+
+test("multiple identities require an explicit design role and preserve historical roles", () => {
+  const { store, user, roomId } = studio();
+  pauseDemos(store, user);
+  const coder = enroll(store, user, roomId, "coder", "build,custom");
+  store.setGroup(user, coder.id, ["product", "architect", "build", "review"]);
+  assert.deepEqual(store.whoami(coder).groups, ["product", "architect", "build", "review"]);
+  assert.match(store.whoami(coder).tags, /custom/);
+  const task = store.postMessage(user, roomId, { kind: "instruction", body: "多身份方案" }).task!;
+  assert.deepEqual(task.designPending, ["product", "architect"]);
+  assert.throws(() => store.submitDesign(coder, task.id, "含糊方案"), (error: unknown) => error instanceof ApiError && error.code === "ambiguous_group");
+  store.submitDesign(coder, task.id, "产品方案", "product");
+  const next = store.submitDesign(coder, task.id, "架构方案", "architect");
+  assert.deepEqual(next.designPending, []);
+  assert.deepEqual(next.designs?.map((item) => item.group), ["产品设计师", "技术架构师"]);
+  store.setGroup(user, coder.id, ["build", "review"]);
+  assert.deepEqual(store.getTask(user, task.id).designs?.map((item) => item.group), ["产品设计师", "技术架构师"]);
+  store.claim(coder, task.id, "implementer");
+  store.deliver(coder, task.id, "workspace:multi", "实现");
+  assert.throws(() => store.claim(coder, task.id, "reviewer"));
+  assert.throws(() => store.setGroup(user, coder.id, []));
+});
+
+test("a busy conversation shows the latest messages and search finds older history", () => {
+  const { store, user, roomId } = studio();
+  for (let index = 0; index < 310; index++) store.postMessage(user, roomId, { kind: "chat", body: `history-${index}` });
+  const snap = store.snapshot(user, roomId, new Set());
+  assert.equal(snap.messages.length, 300);
+  assert.equal(snap.messages.at(-1)?.body, "history-309");
+  assert.equal(store.searchMessages(user, roomId, "history-0")[0]?.body, "history-0");
+  const stranger = studio("外人");
+  assert.throws(() => store.searchMessages(stranger.user, roomId, "history"));
+});
+
+test("human private conversations are reused, private, and wake only the selected agent", () => {
+  const { store, user, roomId } = studio();
+  const coder = enroll(store, user, roomId, "coder", "build,review");
+  const other = enroll(store, user, roomId, "reader", "review");
+  const direct = store.userConversation(user, roomId, "coder");
+  assert.equal(store.userConversation(user, roomId, "coder").roomId, direct.roomId);
+  store.postMessage(user, direct.roomId, { kind: "chat", body: "私聊验证" });
+  assert.equal(events(store, coder.id, "mention").filter((event) => event.room_id === direct.roomId).length, 1);
+  assert.throws(() => store.readMessages(other, direct.roomId, 0));
+  assert.throws(() => store.postMessage(user, direct.roomId, { kind: "instruction", body: "任务" }));
+});
+
+test("unread counters count others, clamp cursors, and never move backwards", () => {
+  const { store, user, roomId } = studio();
+  const coder = enroll(store, user, roomId, "coder", "build");
+  store.markRead(user, roomId, 999);
+  store.postMessage(user, roomId, { kind: "chat", body: "自己的消息" });
+  assert.equal(store.listRooms(user.id).find((r) => r.id === roomId)?.unread, 0);
+  store.postMessage(coder, roomId, { kind: "chat", body: "未读回复" });
+  assert.equal(store.listRooms(user.id).find((r) => r.id === roomId)?.unread, 1);
+  const latest = store.snapshot(user, roomId, new Set()).messages.at(-1)!.seq;
+  store.markRead(user, roomId, Number(latest));
+  store.markRead(user, roomId, 0);
+  assert.equal(store.listRooms(user.id).find((r) => r.id === roomId)?.unread, 0);
+});
+
+test("ordinary tasks retain the execution report and expose review/test evidence", () => {
+  const { store, user, roomId } = studio();
+  pauseDemos(store, user);
+  const coder = enroll(store, user, roomId, "coder", "build");
+  const reviewer = enroll(store, user, roomId, "checker", "review");
+  const tester = enroll(store, user, roomId, "tester", "test");
+  const task = store.postMessage(user, roomId, { kind: "instruction", body: "@coder 执行报告验收" }).task!;
+  store.claim(coder, task.id, "implementer");
+  store.deliver(coder, task.id, "workspace:report", "报告已交付", { body: "实际执行结果及哈希" });
+  store.claim(reviewer, task.id, "reviewer");
+  store.review(reviewer, task.id, "approve", "评审依据原文");
+  store.claim(tester, task.id, "tester");
+  store.reportTest(tester, task.id, "pass", "测试依据原文");
+  const done = store.getTask(user, task.id);
+  assert.equal(done.status, "done");
+  assert.equal(done.deliverableBody, "实际执行结果及哈希");
+  assert.deepEqual(done.evidence?.map((entry) => [entry.kind, entry.handle, entry.body]), [["review", "checker", "评审依据原文"], ["test_result", "tester", "测试依据原文"]]);
 });

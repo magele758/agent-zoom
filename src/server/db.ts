@@ -140,6 +140,24 @@ CREATE TABLE IF NOT EXISTS file_locks (
   lease_until TEXT NOT NULL,
   PRIMARY KEY (org_id, path)
 );
+
+CREATE TABLE IF NOT EXISTS coordinator_runs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  room_id TEXT NOT NULL REFERENCES rooms(id),
+  prompt TEXT NOT NULL,
+  status TEXT NOT NULL,
+  model TEXT NOT NULL,
+  source TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  plan_json TEXT,
+  error TEXT NOT NULL DEFAULT '',
+  task_id TEXT,
+  trace_json TEXT NOT NULL DEFAULT '[]',
+  transcript_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS coordinator_one_running ON coordinator_runs(user_id, room_id) WHERE status='running';
 `;
 
 export function openDatabase(path: string): DatabaseSync {
@@ -160,6 +178,9 @@ function migrate(db: DatabaseSync) {
   const add = (table: string, column: string, definition: string) => {
     if (!names(table).has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   };
+  add("messages", "design_group", "design_group TEXT NOT NULL DEFAULT ''");
+  add("messages", "reply_group", "reply_group TEXT NOT NULL DEFAULT ''");
+  add("room_members", "hidden", "hidden INTEGER NOT NULL DEFAULT 0");
   add("agents", "tags", "tags TEXT NOT NULL DEFAULT ''");
   add("agents", "level", "level INTEGER NOT NULL DEFAULT 1");
   add("tasks", "complex", "complex INTEGER NOT NULL DEFAULT 0");

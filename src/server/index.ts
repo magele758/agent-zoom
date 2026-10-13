@@ -8,7 +8,8 @@ import { poke } from "./wait.ts";
 
 const port = Number(process.env.PORT ?? 8791);
 const dataPath = process.env.DATA_PATH ?? "data/chatroom.db";
-const store = openStore(dataPath);
+const demoEnabled = process.env.DEMO_MODE === "1";
+const store = openStore(dataPath, { demo: demoEnabled });
 const { app, injectWebSocket, nudge } = createApp(store);
 
 store.hooks = {
@@ -21,8 +22,12 @@ if (existsSync("web/dist")) {
   app.get("*", serveStatic({ root: "./web/dist", path: "index.html" }));
 }
 
-store.ensureDemoCast();
-startDemo(store);
+if (demoEnabled) {
+  store.ensureDemoCast();
+  startDemo(store);
+} else {
+  store.stopDemoAgents();
+}
 
 const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
   console.log(`工位服务 http://127.0.0.1:${info.port}`);

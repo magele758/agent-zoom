@@ -1,3 +1,7 @@
+import { completeCli } from "./cli-driver.ts";
+import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
@@ -388,4 +392,23 @@ test("ppeng reads an event stream and declines on timeout", async () => {
   } finally {
     await hung.close();
   }
+});
+
+
+test("CLI failures, empty reports, and aborts never produce a delivery", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chatroom-driver-test-"));
+  const binary = join(dir, "test-cli");
+  const task = { id: "fixture-task", title: "fixture", body: "fixture", scope: { directories: [dir] } };
+  const options = { binary, outputRoot: join(dir, "runs"), timeoutMs: 5000 };
+  writeFileSync(binary, "#!/usr/bin/env node\nprocess.exit(2);\n"); chmodSync(binary, 0o700);
+  await assert.rejects(() => completeCli(task, "codex", options), /退出码 2/);
+  writeFileSync(binary, "#!/usr/bin/env node\nprocess.exit(0);\n");
+  await assert.rejects(() => completeCli(task, "codex", options), /没有可交付/);
+  writeFileSync(binary, "#!/usr/bin/env node\nsetInterval(()=>{},1000);\n");
+  const controller = new AbortController();
+  const running = completeCli(task, "codex", { ...options, signal: controller.signal });
+  setTimeout(() => controller.abort(), 100);
+  await assert.rejects(() => running, /已终止/);
+  await assert.rejects(() => completeCli({ ...task, stepRole: "qa" }, "codex", options), /只执行开发/);
+  await assert.rejects(() => completeCli({ id: "no-dir", title: "x", body: "x" }, "codex", options), /需要存在的频道工作目录/);
 });

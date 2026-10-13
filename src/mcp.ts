@@ -7,11 +7,11 @@ export interface ChatApi {
   listPeers(): Promise<unknown>;
   ask(input: { handle?: string; handles?: string[]; body: string }): Promise<unknown>;
   read(roomId: string, afterSeq: number): Promise<unknown>;
-  say(input: { roomId: string; body: string; kind?: string; taskId?: string }): Promise<unknown>;
+  say(input: { roomId: string; body: string; kind?: string; taskId?: string; group?: string }): Promise<unknown>;
   wait(after: number, timeoutMs: number): Promise<unknown>;
   listTasks(roomId: string): Promise<unknown>;
   getTask(taskId: string): Promise<unknown>;
-  submitDesign(taskId: string, body: string): Promise<unknown>;
+  submitDesign(taskId: string, body: string, group?: string): Promise<unknown>;
   claim(taskId: string, role: string): Promise<unknown>;
   bid(taskId: string, approach: string): Promise<unknown>;
   deliver(
@@ -91,6 +91,7 @@ export function createMcpServer(api: ChatApi) {
         body: z.string(),
         kind: z.enum(["chat", "question", "progress", "direction", "blocked", "decision"]).optional(),
         taskId: z.string().optional(),
+        group: z.enum(["research", "product", "design", "architect", "build", "review", "test"]).optional().describe("本次发言身份。多身份客户端普通聊天应明确指定；只允许自己的已配置身份。"),
       },
     },
     async (input) => text(await api.say(input)),
@@ -125,10 +126,10 @@ export function createMcpServer(api: ChatApi) {
     "submit_design",
     {
       description:
-        "交出你这个身份的方案。只在收到 design_needed，且你是课题研究、产品设计师、设计师或技术架构师时调用。body 写结论，不要贴 diff，不要改代码。同一个身份交一次。方案齐了，实现才会开始。",
-      inputSchema: { taskId: z.string(), body: z.string() },
+        "交出你这个身份的方案。只在收到 design_needed，且你是课题研究、产品设计师、设计师或技术架构师时调用。body 写结论，不要贴 diff，不要改代码。多身份 agent 用 group 指定本次身份，同一个身份交一次。方案齐了，实现才会开始。",
+      inputSchema: { taskId: z.string(), body: z.string(), group: z.enum(["research", "product", "design", "architect"]).optional() },
     },
-    async ({ taskId, body }) => text(await api.submitDesign(taskId, body)),
+    async ({ taskId, body, group }) => text(await api.submitDesign(taskId, body, group)),
   );
   server.registerTool(
     "claim",

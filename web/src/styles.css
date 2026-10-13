@@ -179,6 +179,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .gate button { width: 100%; margin-top: 22px; }
 
 .shell {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr) 360px;
@@ -189,13 +193,14 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   min-width: 0;
 }
 .sidebar {
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   padding: 28px 18px 16px;
   border-right: 1px solid var(--line);
   background: transparent;
 }
-.brand { padding: 8px 8px 28px; }
+.brand { padding: 8px 8px 28px; flex-shrink: 0; }
 .mark { display: block; font-size: 36px; line-height: 1; }
 .mark::after {
   content: "";
@@ -213,7 +218,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   font-size: 11px;
   letter-spacing: 0.16em;
 }
-.rooms { flex: 1; overflow: auto; }
+.rooms { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
 .rooms h2, .side h2 {
   margin: 0;
   color: var(--brass);
@@ -284,6 +289,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .stack-form, .inline { display: grid; gap: 8px; padding: 0 8px 12px; }
 .inline { grid-template-columns: 1fr auto; padding: 0; }
 .leave {
+  flex-shrink: 0;
   margin-top: auto;
   color: var(--muted);
   min-height: 44px;
@@ -296,11 +302,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .leave:hover { color: var(--brass-2); }
 
 .stage {
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, rgba(198, 161, 90, 0.05), transparent 220px);
 }
 .channel-head {
+  max-height: 40dvh;
+  overflow-y: auto;
+  flex-shrink: 0;
+  overscroll-behavior-y: contain;
   justify-content: space-between;
   align-items: flex-end;
   padding: 28px 36px 18px;
@@ -332,7 +343,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   letter-spacing: 0.06em;
   white-space: nowrap;
 }
-.transcript { flex: 1; overflow: auto; padding: 18px 36px 20px; }
+.transcript { flex: 1; min-height: 0; overflow: auto; padding: 18px 36px 20px; }
 .empty {
   color: var(--muted);
   max-width: 36ch;
@@ -395,7 +406,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   min-height: 0;
   text-align: left;
 }
-.composer { padding: 8px 36px 24px; }
+.composer { padding: 8px 36px 24px; max-height: 50dvh; overflow-y: auto; flex-shrink: 0; }
 .kinds {
   display: inline-flex;
   gap: 0;
@@ -557,7 +568,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 }
 .stop-agent:hover, .task-actions .danger:hover { background: rgba(215, 160, 151, 0.08); }
 .roster .level, .local-level, .roster .group, .local-group {
-  background: transparent;
+  color-scheme: dark;
+  background: var(--inset);
   color: var(--brass-2);
   border: 0;
   border-bottom: 1px solid var(--line-strong);
@@ -566,6 +578,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   padding: 0 2px;
   font-size: 16px;
 }
+.roster select option, .local-dialog select option { background: var(--inset); color: var(--text); }
 .roster .level, .local-level { font-family: var(--latin); }
 .roster .group, .local-group {
   font-family: var(--display);
@@ -678,7 +691,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   background: rgba(5, 4, 8, 0.82);
 }
 .local-dialog {
-  width: min(560px, 100%);
+  width: min(640px, 100%);
   max-height: min(78vh, 720px);
   overflow: auto;
   padding: 22px 22px 28px;
@@ -699,11 +712,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   margin: 0;
   color: var(--brass);
   font-family: var(--display);
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 500;
   letter-spacing: 0.14em;
 }
-.local-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.local-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 .local-agents {
   list-style: none;
   margin: 16px 0 0;
@@ -714,16 +727,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 }
 .local-agents li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
-  align-items: center;
-  padding: 12px 0;
+  align-items: start;
+  padding: 20px 0;
   border-radius: 0;
   background: transparent;
   border: 0;
   border-bottom: 1px solid var(--line);
 }
-.local-agents .who { min-width: 0; }
+.local-agents .who { min-width: 0; overflow-wrap: anywhere; }
 .local-agents strong {
   font-family: var(--display);
   font-size: 16px;
@@ -747,6 +760,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   font-size: 11px;
   line-height: 1.45;
 }
+.local-agents .who em { font-family: var(--display); font-size: 13px; line-height: 1.65; }
+.local-agents .who em:first-of-type { font-family: var(--mono); font-size: 12px; }
+.local-dialog .role-choices { margin: 0; width: 100%; }
+.local-dialog .role-choices label { white-space: nowrap; min-height: 28px; }
+.local-dialog .local-level { min-width: 88px; }
 .local-add {
   min-height: 34px;
   padding: 0 14px;
@@ -906,3 +924,114 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .pipeline-steps .role { letter-spacing: 0.1em; }
 .pipeline-steps strong { font-weight: 500; overflow-wrap: anywhere; }
 .pipeline-steps em { font-style: normal; font-family: var(--mono); font-size: 11px; }
+
+/* Keep tasks and decisions visible; disclose configuration on demand. */
+:root { --display: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.55; }
+.identity { display: block; color: var(--muted); font-size: 12px; }
+.brand { flex-wrap: wrap; }
+.identity { width: 100%; }
+.brand-description { display: block; width: 100%; color: var(--muted); font-size: 12px; line-height: 1.6; letter-spacing: 0; }
+.task-filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+.task-filters button { padding: 6px 10px; background: transparent; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.task-filters button[aria-pressed="true"] { background: var(--brass); color: var(--brass-ink); }
+.setup-panel { margin: 16px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.setup-panel > summary, .advanced-options > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.setup-panel[open] > summary, .advanced-options[open] > summary { margin-bottom: 12px; }
+.task-owner { font-size: 13px; color: var(--muted); margin: 8px 0; }
+.task-detail-toggle { margin: 8px 0; min-height: 32px; }
+.task-detail { border-top: 1px solid var(--line); padding-top: 12px; }
+fieldset.task-actions { border: 0; padding: 0; min-width: 0; margin: 12px 0 0; }
+.advanced-options { display: block; }
+.advanced-options input, .advanced-options textarea { width: 100%; margin-top: 8px; }
+.advanced-options input[type="checkbox"] { width: auto; }
+.task-detail p, .note code { overflow-wrap: anywhere; }
+@media (max-width: 860px) { .task-filters button { min-height: 40px; } .side { padding-bottom: 76px; } }
+.agent-settings { font-size: 12px; position: relative; }
+.agent-settings summary { cursor: pointer; color: var(--muted); }
+.agent-settings[open] { grid-column: 2 / -1; }
+.roster li.with-level { grid-template-columns: 12px minmax(0, 1fr) auto auto; }
+
+.role-choices { border: 1px solid var(--line, #343640); border-radius: 8px; padding: 10px; display: flex; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.role-choices legend { font-size: 12px; color: var(--muted, #a1a1aa); }
+.role-choices label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.role-choices input { width: 15px; height: 15px; margin: 0; }
+.identity-settings { display: grid; gap: 8px; }
+.agent-settings { width: 100%; }
+.local-actions { flex-wrap: wrap; }
+.local-actions .role-choices { flex-basis: 100%; }
+.message-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.message-toolbar input { flex: 1; min-width: 140px; padding: 8px 10px; }
+.message-toolbar span { font-size: 12px; color: var(--muted); }
+.dm-button { grid-column: 2; justify-self: start; }
+.human-members { margin: 12px 0; color: var(--muted); font-size: 13px; }
+.roster .person { margin: 16px 0; }
+.roster .person-head { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.roster .person-agents .handle em { white-space: normal; overflow: visible; text-overflow: clip; }
+.shared-identity { color: var(--muted); font-size: 11px; align-self: center; }
+.role-empty { margin: 8px 0 12px 20px; }
+.role-fold > summary { cursor: pointer; list-style: none; grid-template-columns: 12px minmax(0, 1fr) auto; }
+.person-agents li.with-level { grid-template-columns: minmax(0, 1fr) auto; }
+.role-fold > summary::before { content: "▸"; color: var(--muted); }
+.role-fold[open] > summary::before { content: "▾"; }
+.role-fold > summary::-webkit-details-marker { display: none; }
+.reply-identity { color: var(--brass-2); }
+.client-management { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.managed-client { min-width: 0; overflow-wrap: anywhere; }
+.managed-client strong { display: block; font-size: 15px; }
+.managed-client em { display: block; color: var(--muted); font-style: normal; font-size: 12px; }
+.management-roster .agent-settings { grid-column: 2 / -1; }
+.management-roster .with-level { padding: 12px 0; }
+.view-toolbar { display: flex; justify-content: space-between; gap: 12px; padding: 8px 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.view-toolbar button { min-height: 32px; color: var(--muted); background: transparent; font-size: 13px; }
+.channel-options > summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 8px; }
+.compose-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+.compose-mode label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.compose-mode input { width: 15px; height: 15px; }
+.channel-head h1 { font-size: 28px; line-height: 1.2; margin: 0; }
+.channel-head { padding-top: 14px; padding-bottom: 14px; align-items: center; }
+.composer { padding-bottom: 14px; }
+@media (min-width: 861px) {
+  .shell.tools-collapsed { grid-template-columns: 240px minmax(0, 1fr); }
+  .shell.channels-collapsed { grid-template-columns: minmax(0, 1fr) 360px; }
+  .shell.channels-collapsed.tools-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .shell.channels-collapsed > .sidebar, .shell.tools-collapsed > .side { display: none; }
+}
+@media (max-width: 860px) { .view-toolbar { display: none; } }
+.shell { height: 100dvh; }
+.local-dialog { max-height: 85dvh; overflow-y: auto; }
+.msg p { overflow-wrap: anywhere; }
+.unread { margin-left: auto; border-radius: 12px; padding: 1px 7px; background: var(--brass); color: var(--brass-ink); font: 11px var(--mono); }
+.message-toolbar input { background: var(--inset); color: var(--text); border: 1px solid var(--line-strong); border-radius: 7px; }
+@media (max-width: 860px) {
+  .shell { grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
+  .sidebar.on, .stage.on, .side.on { min-height: 0; overflow-y: auto; }
+  .stage.on { overflow: hidden; }
+  .channel-head, .composer, .message-toolbar { flex-shrink: 0; }
+  .composer { max-height: 46dvh; overflow-y: auto; padding-bottom: 14px; }
+  .transcript { min-height: 0; flex: 1 1 0; }
+  .mobile-nav { position: relative; z-index: 5; grid-row: 2; padding-bottom: env(safe-area-inset-bottom); }
+}
+
+.task-evidence { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 12px; }
+.task-evidence h4 { font-size: 13px; margin: 0 0 8px; }
+.task-evidence article { margin: 8px 0 16px; font-size: 13px; overflow-wrap: anywhere; }
+.task-evidence time { font-size: 11px; color: var(--muted); }
+
+/* Keep wheel/trackpad gestures inside the application panel under the pointer. */
+html:has(.shell), body:has(.shell) { overflow: hidden; overscroll-behavior: none; }
+.transcript, .side, .composer, .local-dialog, .mention-menu { overscroll-behavior-y: contain; }
+
+.coordinator-panel { margin: 16px 0; padding: 12px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.coordinator-panel > summary { cursor: pointer; color: var(--brass-2); font-size: 14px; }
+.coordinator-panel > summary span { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.coordinator-panel[open] > summary { margin-bottom: 12px; }
+.coordinator-panel textarea { width: 100%; padding: 8px; resize: vertical; min-height: 80px; max-height: 30dvh; background: var(--inset); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.coordinator-label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.coordinator-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.coordinator-actions button { min-height: 36px; border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; background: var(--inset); }
+.coordinator-result { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; overflow-wrap: anywhere; }
+.coordinator-result summary { cursor: pointer; color: var(--muted); }
+.coordinator-result .local-add { margin-top: 12px; }
+.coordinator-result ul, .coordinator-result ol { padding-left: 20px; }
+.coordinator-body { white-space: pre-wrap; }
+.coordinator-warnings { color: var(--brass-2); }

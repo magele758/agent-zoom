@@ -1,10 +1,10 @@
+import { CoordinatorPanel } from "./CoordinatorPanel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { groupById, GROUPS, groupLabel, groupOf } from "../../src/groups";
-import { api, type Agent, type Claim, type LocalAgent, type Me, type Snapshot, type Task } from "./api";
+import { groupById, GROUPS, groupLabel, groupsOf, splitTags } from "../../src/groups";
+import { api, type Agent, type Claim, type LocalAgent, type Me, type Message, type Snapshot, type Task } from "./api";
 import { mentionAtCaret, mentionReach, settledMentions, splitMentions } from "./mentions";
 import {
-  composerPlaceholder,
   defaultKind,
   foldBody,
   isPipelineParent,
@@ -160,10 +160,21 @@ function MentionMenu({
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [booting, setBooting] = useState(true);
+  const [bootError, setBootError] = useState("");
   const [roomId, setRoomId] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");
   const [mobile, setMobile] = useState<"rooms" | "chat" | "tasks">("chat");
+  const [channelsOpen, setChannelsOpen] = useState(() => localStorage.getItem("chatroom-channels-open") !== "false");
+  const [toolsOpen, setToolsOpen] = useState(() => localStorage.getItem("chatroom-tools-open") === "true");
+  useEffect(() => { localStorage.setItem("chatroom-channels-open", String(channelsOpen)); }, [channelsOpen]);
+  useEffect(() => { localStorage.setItem("chatroom-tools-open", String(toolsOpen)); }, [toolsOpen]);
+
+  useEffect(() => {
+    const show = () => { setToolsOpen(true); if (window.matchMedia("(max-width: 860px)").matches) setMobile("tasks"); };
+    window.addEventListener("show-task", show);
+    return () => window.removeEventListener("show-task", show);
+  }, []);
 
   const loadMe = useCallback(async () => {
     const next = await api.me();
@@ -174,18 +185,30 @@ export function App() {
   useEffect(() => {
     api.me().then((next) => {
       setMe(next);
-      setRoomId(next.rooms[0]?.id ?? null);
-    }).catch(() => setMe(null)).finally(() => setBooting(false));
+      setRoomId(next.rooms.find((room) => room.id === sessionStorage.getItem("agent-room-selected"))?.id ?? next.rooms[0]?.id ?? null);
+    }).catch((reason) => {
+      setMe(null);
+      if (reason.status !== 401) setBootError("无法连接昆仑服务。请确认本地服务仍在运行，再重试。");
+    }).finally(() => setBooting(false));
   }, []);
 
+  const activeRoom = useRef(roomId);
+  activeRoom.current = roomId;
+  useEffect(() => { if (roomId) sessionStorage.setItem("agent-room-selected", roomId); }, [roomId]);
+
+  const snapshotRequest = useRef(0);
   const refresh = useCallback(async () => {
     if (!roomId) return;
+    const requestId = ++snapshotRequest.current;
     try {
       const next = await api.snapshot(roomId);
+      if (activeRoom.current !== roomId || requestId !== snapshotRequest.current) return;
       setSnap(next);
       setError("");
+      const through = next.messages.at(-1)?.seq;
+      if (through && document.visibilityState === "visible") { void api.markRead(roomId, through).catch(() => {}); setMe((current) => current ? { ...current, rooms: current.rooms.map((room) => room.id === roomId ? { ...room, unread: 0 } : room) } : current); }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "加载失败");
+      if (activeRoom.current === roomId) setError(reason instanceof Error ? reason.message : "加载失败");
     }
   }, [roomId]);
 
@@ -233,7 +256,9 @@ export function App() {
       void refresh();
       void loadMe();
     }, 5000);
-    return () => clearInterval(timer);
+    const visible = () => { if (document.visibilityState === "visible") void refresh(); };
+    document.addEventListener("visibilitychange", visible);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
   }, [roomId, refresh, loadMe]);
 
   useEffect(() => {
@@ -256,17 +281,20 @@ export function App() {
       clearTimeout(retry);
       socket?.close();
     };
-  }, [me, roomId, refresh]);
+  }, [me?.user.id, roomId, refresh]);
 
-  if (booting) return <main className="gate"><p>正在打开工位…</p></main>;
+  if (booting) return <main className="gate"><p>正在打开昆仑…</p></main>;
+  if (bootError) return <main className="gate"><div><p role="alert">{bootError}</p><button type="button" onClick={() => location.reload()}>重新连接</button></div></main>;
   if (!me) return <Gate onEnter={async (name) => { await api.enter(name); await loadMe(); }} />;
 
   return (
-    <div className="shell">
+    <div className={`shell ${channelsOpen ? "" : "channels-collapsed"} ${toolsOpen ? "" : "tools-collapsed"}`}>
       <div className={`sidebar ${mobile === "rooms" ? "on" : ""}`}>
         <div className="brand">
-          <span className="mark">工位</span>
+          <span className="mark">昆仑</span>
+          <span className="brand-description">人和 Agent 的协作空间</span>
           <span className="org">{me.orgs[0]?.name ?? "工作室"}</span>
+          <small className="identity">当前身份：{me.user.name}</small>
         </div>
         <RoomList
           rooms={me.rooms}
@@ -286,23 +314,39 @@ export function App() {
         </button>
       </div>
       <main className={`stage ${mobile === "chat" ? "on" : ""}`}>
+        <div className="view-toolbar">
+          <button type="button" data-testid="toggle-channels" aria-expanded={channelsOpen} onClick={() => setChannelsOpen(!channelsOpen)}>{channelsOpen ? "收起频道" : "展开频道"}</button>
+          <button type="button" data-testid="toggle-tools" aria-expanded={toolsOpen} onClick={() => setToolsOpen(!toolsOpen)}>{toolsOpen ? "收起任务与成员" : "任务与成员"}</button>
+        </div>
         <Channel
+          key={roomId}
+          roomId={roomId}
           meName={me.user.name}
-          snap={snap}
+          snap={snap?.room.id === roomId ? snap : null}
           error={error}
           onPosted={() => void refresh()}
           onError={setError}
+          onClose={async () => {
+            if (!roomId) return;
+            try { await api.closeConversation(roomId); const next = await api.me(); setMe(next); setRoomId(next.rooms.find(room => room.general)?.id ?? next.rooms[0]?.id ?? null); }
+            catch (reason) { setError(reason instanceof Error ? reason.message : "关闭失败"); }
+          }}
         />
       </main>
       <aside className={`side ${mobile === "tasks" ? "on" : ""}`}>
-        {snap ? (
+        {snap?.room.id === roomId ? (
           <SidePanel
+            key={roomId}
             snap={snap}
             onChanged={() => {
               void refresh();
               void loadMe();
             }}
             onError={setError}
+            onDirect={async (handle) => {
+              try { const result = await api.conversation(roomId!, handle); await loadMe(); setRoomId(result.roomId); setMobile("chat"); }
+              catch (reason) { setError(reason instanceof Error ? reason.message : "私聊打开失败"); }
+            }}
             onMention={(handle) => {
               window.dispatchEvent(new CustomEvent("mention", { detail: handle }));
               setMobile("chat");
@@ -342,9 +386,9 @@ function Gate({ onEnter }: { onEnter: (name: string) => Promise<void> }) {
         }}
       >
         <div className="gate-copy">
-          <p className="eyebrow">Agent Chatroom</p>
-          <h1>工位</h1>
-          <p className="lede">一个频道里放人和 coding agent。你下指令，他们自己认领，别的 agent 评审、提问、测试。</p>
+          <p className="eyebrow">人和 Agent 的协作空间</p>
+          <h1>昆仑</h1>
+          <p className="lede">在同一个空间交流、分工，让不同身份的 Agent 一起完成工作。</p>
         </div>
         <div className="gate-plate">
           <label htmlFor="name">你的名字</label>
@@ -380,6 +424,8 @@ function RoomList({
   onPick: (id: string) => void;
   onCreated: (id: string) => Promise<void>;
 }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
@@ -394,6 +440,7 @@ function RoomList({
     <li key={room.id}>
       <button type="button" className={room.id === active ? "room active" : "room"} onClick={() => onPick(room.id)}>
         <span>{room.name}</span>
+        {room.unread ? <span className="unread" aria-label={`${room.unread} 条未读`}>{room.unread > 99 ? "99+" : room.unread}</span> : null}
         {room.direct ? <small>私聊</small> : room.project ? <small>{room.project}</small> : null}
       </button>
     </li>
@@ -411,6 +458,9 @@ function RoomList({
           className="stack-form"
           onSubmit={async (event) => {
             event.preventDefault();
+            if (pending || !name.trim()) return;
+            setPending(true); setError("");
+            try {
             const room = await api.createRoom({
               name,
               topic,
@@ -427,6 +477,7 @@ function RoomList({
             setBranch("");
             setOpen(false);
             await onCreated(room.id);
+            } catch (reason) { setError(reason instanceof Error ? reason.message : "创建失败"); } finally { setPending(false); }
           }}
         >
           <input aria-label="频道名" value={name} onChange={(event) => setName(event.target.value)} placeholder="频道名" />
@@ -435,7 +486,9 @@ function RoomList({
           <input aria-label="项目" value={project} onChange={(event) => setProject(event.target.value)} placeholder="项目名，比如 agent-zoom" />
           <textarea aria-label="工作目录" value={directories} onChange={(event) => setDirectories(event.target.value)} placeholder={"工作目录，一行一个\nweb/src"} />
           <input aria-label="分支" value={branch} onChange={(event) => setBranch(event.target.value)} placeholder="默认分支，比如 main" />
-          <button type="submit" disabled={!name.trim()}>创建</button>
+          {error ? <p className="error" role="alert">{error}</p> : null}
+          <button type="submit" disabled={pending || !name.trim()}>{pending ? "创建中…" : "创建"}</button>
+          <button type="button" className="text-button" disabled={pending} onClick={() => setOpen(false)}>取消</button>
         </form>
       ) : null}
       <ul>{openRooms.map(roomItem)}</ul>
@@ -458,25 +511,34 @@ function RoomList({
 }
 
 function Channel({
+  roomId,
   meName,
   snap,
   error,
   onPosted,
   onError,
+  onClose,
 }: {
+  roomId: string | null;
   meName: string;
   snap: Snapshot | null;
   error: string;
   onPosted: () => void;
   onError: (message: string) => void;
+  onClose: () => Promise<void>;
 }) {
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(() => sessionStorage.getItem(`agent-room-draft:${roomId}`) ?? "");
+  useEffect(() => { sessionStorage.setItem(`agent-room-draft:${roomId}`, body); }, [roomId, body]);
   const [acceptance, setAcceptance] = useState("");
   const [parallel, setParallel] = useState(false);
   const [complex, setComplex] = useState(false);
   const [tags, setTags] = useState("");
-  const [kind, setKind] = useState<ComposerKind>("chat");
+  const [kind, setKind] = useState<ComposerKind>(() => { const saved = sessionStorage.getItem(`agent-room-kind:${roomId}`); return saved === "instruction" || saved === "question" ? saved : "chat"; });
+  useEffect(() => { sessionStorage.setItem(`agent-room-kind:${roomId}`, kind); }, [roomId, kind]);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<Message[] | null>(null);
+  const [searchPending, setSearchPending] = useState(false);
   const [pending, setPending] = useState(false);
   const [editingScope, setEditingScope] = useState(false);
   const [editingText, setEditingText] = useState(false);
@@ -492,6 +554,11 @@ function Channel({
   const box = useRef<HTMLTextAreaElement>(null);
   const stick = useRef(true);
   const pendingCaret = useRef<number | null>(null);
+  useEffect(() => {
+    const startTask = () => { setKind("instruction"); box.current?.focus(); };
+    window.addEventListener("compose-task", startTask);
+    return () => window.removeEventListener("compose-task", startTask);
+  }, []);
 
   useEffect(() => {
     const onMention = (event: Event) => {
@@ -542,8 +609,20 @@ function Channel({
 
   useEffect(() => {
     setEditingText(false);
-    setKind(defaultKind(Boolean(snap?.room.direct)));
+    if (snap?.room.direct && kind === "instruction") setKind(defaultKind(true));
   }, [snap?.room.id, snap?.room.direct]);
+
+  useEffect(() => {
+    if (!roomId || !search.trim()) { setSearchResults(null); setSearchPending(false); return; }
+    let cancelled = false;
+    setSearchPending(true);
+    const timer = setTimeout(() => {
+      api.searchMessages(roomId, search).then(({ messages }) => { if (!cancelled) setSearchResults(messages); })
+        .catch((reason) => { if (!cancelled) onError(reason instanceof Error ? reason.message : "搜索失败"); })
+        .finally(() => { if (!cancelled) setSearchPending(false); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [roomId, search]);
 
   const at = mentionAtCaret(body, caret);
   const queryKey = at ? `${at.start}:${at.query}` : "";
@@ -599,6 +678,8 @@ function Channel({
       <header className="channel-head">
         <div>
           <h1>{snap?.room.name ?? "频道"}</h1>
+          {snap?.room.direct ? <button type="button" className="text-button" data-testid="close-conversation" title="从你的列表移除，保留历史；之后可从成员管理重新打开" onClick={() => void onClose()}>关闭私聊</button> : null}
+          <details className="channel-options"><summary>频道设置与说明</summary>
           <p>{snap?.room.topic}</p>
           {snap?.room.currentTopic?.trim() ? (
             <p className="current-topic" data-testid="current-topic">当前：{snap.room.currentTopic}</p>
@@ -680,9 +761,15 @@ function Channel({
               归档频道
             </button>
           ) : null}
+          </details>
         </div>
         <span className="you">你是 {meName}</span>
       </header>
+      <div className="message-toolbar">
+        <input type="search" aria-label="搜索频道消息" data-testid="message-search" placeholder="搜索此对话的全部历史…" value={search} onChange={(event) => setSearch(event.target.value)} />
+        {search ? <span role="status">{searchPending ? "搜索中…" : `${searchResults?.length ?? 0} 条结果（最多 100 条）`}</span> : null}
+        {taskId ? <button type="button" onClick={() => setTaskId(null)}>返回全部消息</button> : null}
+      </div>
       <div
         className="transcript"
         data-testid="transcript"
@@ -693,18 +780,20 @@ function Channel({
         }}
       >
         {snap && snap.messages.length === 0 ? (
-          <p className="empty">还没有消息。用「下指令」发一条需求。只有一位空闲 agent 匹配时会直接认领，多位就先投标。</p>
+          <p className="empty">写下你要完成的事，再选择「发起任务」。接入并运行真实客户端后，才能收到它的回复和交付结果。</p>
         ) : null}
-        {snap?.messages.map((message) =>
+        {(searchResults ?? snap?.messages ?? []).filter((message) => !taskId || message.taskId === taskId).map((message) =>
           message.kind === "system" ? (
             <p key={message.id} className="system">{message.body}<span>{timeLabel(message.createdAt)}</span></p>
           ) : (
             <article key={message.id} className={`msg kind-${message.kind} ${message.taskId && message.taskId === taskId ? "linked" : ""}`}>
               <div className="msg-meta">
                 <strong>{message.authorName}</strong>
+                {message.authorType === "agent" ? <span className="pill">{message.demo ? "历史演示 · 非客户端回复" : message.runtime || "客户端"}</span> : null}
+                {message.authorType === "agent" ? <span className="pill reply-identity" data-testid={`reply-identity-${message.id}`}>身份：{message.replyGroupLabel || "未指定身份"}</span> : null}
                 <span className="pill">{KIND_LABEL[message.kind] ?? message.kind}</span>
                 {message.taskTitle ? (
-                  <button type="button" className="linkish" onClick={() => setTaskId(message.taskId)}>
+                  <button type="button" className="linkish" onClick={() => { setSearch(""); setTaskId(message.taskId); window.dispatchEvent(new CustomEvent("show-task", { detail: message.taskId })); }}>
                     {message.taskTitle}
                   </button>
                 ) : null}
@@ -734,7 +823,7 @@ function Channel({
         className="composer"
         onSubmit={async (event) => {
           event.preventDefault();
-          if (!snap || !body.trim()) return;
+          if (!snap || pending || !body.trim()) return;
           setPending(true);
           try {
             await api.post(snap.room.id, {
@@ -759,43 +848,23 @@ function Channel({
           }
         }}
       >
-        <div className="kinds" role="radiogroup" aria-label="消息类型">
-          {(
-            snap?.room.direct
-              ? ([
-                  ["question", "提问"],
-                  ["chat", "发言"],
-                ] as const)
-              : ([
-                  ["instruction", "下指令"],
-                  ["chat", "发言"],
-                  ["question", "提问"],
-                ] as const)
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={kind === value}
-              className={kind === value ? "active" : ""}
-              data-testid={`kind-${value}`}
-              onClick={() => setKind(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {!snap?.room.direct ? <div className="compose-mode"><label>
+          <input type="checkbox" data-testid="kind-instruction" checked={kind === "instruction"} onChange={(event) => setKind(event.target.checked ? "instruction" : "chat")} />
+          创建任务
+        </label>{kind === "instruction" ? <span>发送后跟踪认领、交付与验收。只填需求即可。</span> : null}</div> : null}
         {selected && kind !== "instruction" ? (
           <p className="thread-hint">
             发进「{selected.title}」，会唤醒占着槽位的 agent。
             <button type="button" onClick={() => setTaskId(null)}>取消</button>
           </p>
         ) : null}
-        {kind === "instruction" && snap && !snap.room.archived && !(snap.room.directories?.length) ? (
-          <p className="scope-hint" data-testid="scope-hint">这个频道还没有工作目录。项目请另开频道，填上目录和分支。大厅只适合公告。</p>
-        ) : null}
         {kind === "instruction" ? (
-          <div className="composer-extra">
+          <details className="composer-extra advanced-options">
+            <summary>更多任务选项（可选）</summary>
+        {kind === "instruction" && snap && !snap.room.archived && !(snap.room.directories?.length) ? (
+          <p className="scope-hint" data-testid="scope-hint">尚未设置工作目录；真实代码任务前请在上方「改工作范围」确认项目、目录和分支。</p>
+        ) : null}
+
             <label className="sr" htmlFor="acceptance">验收</label>
             <textarea
               id="acceptance"
@@ -834,7 +903,7 @@ function Channel({
               复杂任务。有等级 3 及以上的空闲 agent 时只交给他们，没有就退回全体
             </label>
             </div>
-          </div>
+          </details>
         ) : null}
         <label className="sr" htmlFor="composer">消息</label>
         <div className="mention-field">
@@ -852,13 +921,13 @@ function Channel({
             id="composer"
             data-testid="composer"
             ref={box}
-            rows={kind === "instruction" ? 2 : 3}
+            rows={2}
             value={body}
             aria-autocomplete="list"
             aria-expanded={menuOpen}
             aria-controls={menuOpen ? "mention-menu" : undefined}
             aria-activedescendant={menuOpen && options[activeIndex] ? `mention-option-${options[activeIndex].handle}` : undefined}
-            placeholder={composerPlaceholder(kind, Boolean(snap?.room.direct))}
+            placeholder={kind === "instruction" ? "描述要完成的任务，@ 指定客户端（可选）" : "写消息或提问，@ 指定客户端（可选）"}
             onChange={(event) => {
               setBody(event.target.value);
               setCaret(event.target.selectionStart ?? 0);
@@ -921,7 +990,7 @@ function Channel({
         ) : null}
         <div className="composer-bar">
           <span>{menuOpen && options.length > 0 ? "↑↓ 选择，Enter 填入，Esc 关闭" : "Enter 发送，Shift+Enter 换行"}</span>
-          <button data-testid="send" type="submit" disabled={pending || !body.trim()}>发送</button>
+          <button data-testid="send" type="submit" disabled={pending || !snap || !body.trim()}>{pending ? "提交中…" : kind === "instruction" ? "创建任务" : "发送"}</button>
         </div>
       </form>
       )}
@@ -958,45 +1027,11 @@ function statusLine(agent: Agent, tasks: Task[]) {
 }
 
 function rosterGroups(snap: Snapshot) {
-  const byOwner = new Map<string, Agent[]>();
-  for (const agent of snap.members.agents) {
-    const name = agent.ownerName?.trim() || "未署名";
-    const list = byOwner.get(name) ?? [];
-    list.push(agent);
-    byOwner.set(name, list);
-  }
-  for (const list of byOwner.values()) {
-    list.sort((a, b) => Number(Boolean(a.demo)) - Number(Boolean(b.demo)) || a.handle.localeCompare(b.handle));
-  }
-  const seen = new Set<string>();
-  const groups: Array<{ key: string; name: string; online: boolean; person: boolean; agents: Agent[] }> = [];
-  for (const user of snap.members.users) {
-    seen.add(user.name);
-    groups.push({
-      key: user.id,
-      name: user.name,
-      online: user.online,
-      person: true,
-      agents: byOwner.get(user.name) ?? [],
-    });
-  }
-  for (const [name, agents] of byOwner) {
-    if (seen.has(name)) continue;
-    groups.push({
-      key: `owner:${name}`,
-      name,
-      online: agents.some((agent) => Boolean(agent.online)),
-      person: false,
-      agents,
-    });
-  }
-  return groups;
-}
-
-function groupMeta(person: boolean, count: number) {
-  if (person && count > 0) return `人 · ${count} 个 agent`;
-  if (person) return "人";
-  return `${count} 个 agent`;
+  const agents = snap.members.agents.filter((agent) => !agent.demo && !agent.paused).sort((a, b) => a.handle.localeCompare(b.handle));
+  return [
+    ...GROUPS.map((role) => ({ key: role.id, name: role.label, agents: agents.filter((agent) => groupsOf(agent.tags).some((group) => group.id === role.id)) })),
+    { key: "unassigned", name: "未分配身份", agents: agents.filter((agent) => groupsOf(agent.tags).length === 0) },
+  ].filter((group) => group.key !== "unassigned" || group.agents.length > 0);
 }
 
 function holderText(claim: Claim, agents: Agent[]) {
@@ -1009,6 +1044,35 @@ function holderText(claim: Claim, agents: Agent[]) {
 
 function labelList(ids: string[]) {
   return ids.map((id) => groupById(id)?.label ?? id).join("、");
+}
+
+function RoleChoices({ value, onChange, disabled, label, testId }: { value: string; onChange: (value: string) => void; disabled?: boolean; label: string; testId?: string }) {
+  const selected = splitTags(value);
+  return <fieldset className="role-choices" data-testid={testId} disabled={disabled}>
+    <legend>{label}（可多选）</legend>
+    {GROUPS.map((group) => <label key={group.id} title={group.capability}>
+      <input type="checkbox" value={group.id} checked={selected.includes(group.id)} onChange={(event) => {
+        const next = event.target.checked ? [...selected, group.id] : selected.filter((id) => id !== group.id);
+        onChange(next.join(","));
+      }} />{group.label}
+    </label>)}
+  </fieldset>;
+}
+
+function IdentitySettings({ agent, onChanged, onError }: { agent: Agent; onChanged: () => void; onError: (message: string) => void }) {
+  const saved = groupsOf(agent.tags).map((group) => group.id).join(",");
+  const [value, setValue] = useState(saved);
+  const [pending, setPending] = useState(false);
+  useEffect(() => setValue(saved), [saved]);
+  return <div className="identity-settings">
+    <RoleChoices value={value} onChange={setValue} disabled={pending} label={`${agent.handle} 的身份`} testId={`group-${agent.handle}`} />
+    <button type="button" disabled={pending || !value || value === saved} onClick={async () => {
+      setPending(true);
+      try { await api.setGroup(agent.id, value.split(",")); onChanged(); }
+      catch (reason) { onError(reason instanceof Error ? reason.message : "身份保存失败"); }
+      finally { setPending(false); }
+    }}>{pending ? "保存中…" : "保存身份"}</button>
+  </div>;
 }
 
 function LocalAgents({
@@ -1066,9 +1130,16 @@ function LocalAgents({
     document.body.style.overflow = "hidden";
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setOpen(false);
+      if (event.key === "Tab") {
+        const dialog = document.querySelector<HTMLElement>('[data-testid="local-agent-dialog"]');
+        const focusable = dialog ? [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')].filter((el) => el.getClientRects().length > 0) : [];
+        const first = focusable[0]; const last = focusable.at(-1);
+        if (first && ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last) || !dialog?.contains(document.activeElement))) {
+          event.preventDefault(); (event.shiftKey ? last : first)?.focus();
+        }
+        return;
+      }
+      if (event.key === "Escape") { event.preventDefault(); setOpen(false); }
     };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -1087,7 +1158,7 @@ function LocalAgents({
 
   const connected = agents.filter((agent) => agent.connected).length;
   const countLabel =
-    state === "error" && agents.length === 0 ? "没读到" : state === "loading" && agents.length === 0 ? "查找中" : `${connected}/${agents.length} 已接入`;
+    state === "error" && agents.length === 0 ? "没读到" : state === "loading" && agents.length === 0 ? "查找中" : `${connected}/${agents.length} 已配置并加入`;
   const bars =
     agents.length > 0
       ? agents
@@ -1136,14 +1207,15 @@ function LocalAgents({
                     关闭
                   </button>
                 </div>
-                <p className="fine">点接入会把它写进该客户端的配置，并加入当前频道。接入时选定身份和等级。课题研究、产品设计师、设计师、技术架构师先出方案，不改代码；方案齐了再交给实现。复杂任务仍是等级 3 及以上优先。</p>
+                <p className="fine">选择客户端、身份和等级，接入当前频道。同一个客户端可以拥有多个身份。</p>
+                <p className="fine">已配置表示本机配置与频道身份已存在。客户端能否执行任务，需要在客户端中调用工具验证。</p>
                 {state === "loading" && agents.length === 0 ? <p className="fine">正在查找这台电脑上的客户端。</p> : null}
                 {state === "error" ? <p className="fine">没能读到这台电脑上的客户端。</p> : null}
                 {state === "ready" && agents.length === 0 ? <p className="fine">这台电脑上没找到可接入的客户端。</p> : null}
                 {agents.length > 0 ? (
                   <ul className="local-agents" data-testid="local-agent-list">
                     {agents.map((agent) => {
-                      const action = agent.connected ? "已接入" : agent.writable ? "接入" : "仅显示";
+                      const action = agent.connected ? "重写配置" : agent.writable ? "接入" : "仅显示";
                       const pickLevel = agent.writable && !agent.connected;
                       const groupId = groups[agent.id] ?? "build";
                       return (
@@ -1152,6 +1224,7 @@ function LocalAgents({
                             <strong>{agent.label}</strong>
                             <span className="handle-name">@{agent.handle}</span>
                             <em>{agent.detail}</em>
+                            <em className="local-state">{agent.online ? "最近活跃 · " : ""}{agent.stateNote}</em>
                             {agent.inRoom && !agent.configured && agent.writable ? (
                               <em className="local-state" data-testid={`local-agent-state-${agent.id}`}>
                                 房间里有同名身份 @{agent.handle}，但本机还没有它的配置。点接入写入。
@@ -1165,20 +1238,7 @@ function LocalAgents({
                           </div>
                           <div className="local-actions">
                             {pickLevel ? (
-                              <select
-                                className="local-group"
-                                aria-label={`${agent.label} 的身份`}
-                                data-testid={`local-agent-group-${agent.id}`}
-                                value={groupId}
-                                disabled={busy !== null}
-                                onChange={(event) => setGroups((current) => ({ ...current, [agent.id]: event.target.value }))}
-                              >
-                                {GROUPS.map((group) => (
-                                  <option key={group.id} value={group.id}>
-                                    {group.label}
-                                  </option>
-                                ))}
-                              </select>
+                              <RoleChoices value={groupId} disabled={busy !== null} label={`${agent.label} 的身份`} testId={`local-agent-group-${agent.id}`} onChange={(value) => setGroups((current) => ({ ...current, [agent.id]: value }))} />
                             ) : null}
                             {pickLevel ? (
                               <select
@@ -1200,7 +1260,7 @@ function LocalAgents({
                               type="button"
                               className="local-add"
                               data-testid={`local-agent-add-${agent.id}`}
-                              disabled={agent.connected || !agent.writable || busy !== null}
+                              disabled={!agent.writable || busy !== null || !groupId}
                               onClick={async () => {
                                 setBusy(agent.id);
                                 try {
@@ -1227,7 +1287,7 @@ function LocalAgents({
                           </div>
                           {pickLevel ? (
                             <em className="group-cap" data-testid={`local-agent-capability-${agent.id}`}>
-                              {groupById(groupId)?.capability}
+                              {groupsOf(groupId).map((group) => group.capability).join(" ")}
                             </em>
                           ) : null}
                         </li>
@@ -1251,77 +1311,82 @@ function LocalAgents({
 }
 
 function SidePanel({
+  onDirect,
   snap,
   onChanged,
   onError,
   onMention,
 }: {
+  onDirect: (handle: string) => Promise<void>;
   snap: Snapshot;
   onChanged: () => void;
   onError: (message: string) => void;
   onMention: (handle: string) => void;
 }) {
+  const [focused, setFocused] = useState({ id: "", version: 0 });
+  const [filter, setFilter] = useState<"active" | "attention" | "results" | "all">("active");
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("chatroom-role-folds") || "{}"); } catch { return {}; }
+  });
+  useEffect(() => {
+    const show = (event: Event) => { setFilter("all"); setFocused((current) => ({ id: (event as CustomEvent<string>).detail, version: current.version + 1 })); };
+    window.addEventListener("show-task", show);
+    return () => window.removeEventListener("show-task", show);
+  }, []);
   const [invite, setInvite] = useState("");
   const [code, setCode] = useState("");
-  const demos = snap.members.agents.filter((agent) => agent.demo);
-  const demosOn = demos.some((agent) => !agent.paused);
-  const tasks = useMemo(() => [...snap.tasks].reverse(), [snap.tasks]);
+  const tasks = useMemo(() => [...snap.tasks].reverse().filter((task) => !task.pipelineId || !snap.tasks.some((parent) => parent.id === task.pipelineId)), [snap.tasks]);
+  const matchesFilter = (task: Task, value: typeof filter) => value === "all" || (value === "results" ? ["done", "canceled"].includes(task.status) : value === "attention" ? ["blocked", "dispute", "failed"].includes(task.status) || Boolean(task.designPending?.length) : !["done", "canceled"].includes(task.status));
+  const visibleTasks = tasks.filter(task => matchesFilter(task, filter));
+  const filterLabels = { active: "未完成", attention: "需处理", results: "已结束", all: "全部" };
+  const filterHints = { active: "等待认领、执行、评审或测试的任务", attention: "等待方案、遇到阻塞、失败或需要你裁定的任务", results: "已完成或已取消的任务", all: "本频道的全部任务，包括历史记录" };
 
   return (
     <>
+      <section>
+        <h2>任务与结果</h2>
+        {!snap.room.direct && !snap.room.archived ? <CoordinatorPanel key={snap.room.id} roomId={snap.room.id} onChanged={onChanged} onError={onError} /> : null}
+        {tasks.length > 0 ? <>
+        <div className="task-filters" role="group" aria-label="筛选任务">
+          {(["active", "attention", "results", "all"] as const).map(value => <button type="button" key={value} data-testid={`task-filter-${value}`} title={filterHints[value]} aria-pressed={filter === value} onClick={() => setFilter(value)}>{filterLabels[value]}（{tasks.filter(task => matchesFilter(task, value)).length}）</button>)}
+        </div>
+        <p className="fine" role="status">{filterHints[filter]} · {visibleTasks.length} 项</p>
+        </> : <div className="task-empty"><p className="fine">还没有任务。聊天和提问直接发消息；需要客户端执行工作时，勾选「创建任务」。</p><button type="button" className="text-button" onClick={() => window.dispatchEvent(new CustomEvent("compose-task"))}>创建任务</button></div>}
+        <div data-testid="task-list">
+          {tasks.length > 0 && visibleTasks.length === 0 ? <p className="fine">没有{filterLabels[filter]}的任务。<button type="button" className="text-button" onClick={() => setFilter("all")}>查看全部任务</button></p> : null}
+          {visibleTasks.map((task) => (
+            <TaskCard key={task.id} reveal={focused.id === task.id || snap.tasks.some((child) => child.id === focused.id && child.pipelineId === task.id) ? focused.version : 0} focusId={focused.id} task={task} all={snap.tasks} agents={snap.members.agents} onChanged={onChanged} onError={onError} />
+          ))}
+        </div>
+        {snap.locks.length > 0 ? (
+          <ul className="locks">
+            {snap.locks.map((lock) => (
+              <li key={lock.path}>{lock.handle} 锁着 {lock.path}</li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+      <details className="setup-panel">
+        <summary>成员管理与客户端接入</summary>
       <LocalAgents
         roomId={snap.room.id}
         joined={snap.members.agents.map((agent) => agent.handle).join("\n")}
         onChanged={onChanged}
         onError={onError}
       />
-      <section>
-        <div className="section-row">
-          <h2>在场</h2>
-          {demos.length > 0 ? (
-            <button
-              type="button"
-              className="text-button"
-              data-testid="toggle-demo"
-              onClick={async () => {
-                try {
-                  await Promise.all(demos.map((agent) => api.pause(agent.id, demosOn)));
-                  onChanged();
-                } catch (reason) {
-                  onError(reason instanceof Error ? reason.message : "没能切换演示");
-                }
-              }}
-            >
-              {demosOn ? "暂停演示" : "继续演示"}
-            </button>
-          ) : null}
-        </div>
-        <ul className="roster" data-testid="roster">
-          {rosterGroups(snap).map((group) => (
-            <li key={group.key} className="person">
-              <div className="person-head">
-                <i className={group.online ? "dot on" : "dot"} aria-hidden="true" />
-                <strong>{group.name}</strong>
-                <em>{groupMeta(group.person, group.agents.length)}</em>
+      <div className="client-management" data-testid="client-management">
+        <p className="fine">启用允许客户端参与频道，不会启动 Desktop 会话。最近活动只是工具调用记录，不代表持续监听或正在执行任务。</p>
+        <ul className="roster management-roster">
+          {snap.members.agents.filter(agent => !agent.demo).map(agent => (
+            <li key={agent.id} className="with-level" data-testid={`manage-${agent.handle}`}>
+              <i className={agent.online && !agent.paused ? "dot on" : "dot"} aria-hidden="true" />
+              <div className="managed-client">
+                <strong>{agent.handle}</strong>
+                <em>{agent.ownerName} · {agent.runtime}</em>
+                <em>{agent.paused ? "已停用" : agent.online ? "已启用 · 最近有客户端活动" : "已启用 · 未检测到最近活动"}</em>
+                <em>{groupLabel(agent.tags) || "未分配身份"}</em>
               </div>
-              {group.agents.length > 0 ? (
-                <ul className="person-agents">
-                  {group.agents.map((agent) => {
-                    const line = statusLine(agent, snap.tasks);
-                    const where = [agent.machine, agent.cwd].filter(Boolean).join(" · ");
-                    return (
-                      <li key={agent.id} className="with-level">
-                        <i className={agent.online ? "dot on" : "dot"} aria-hidden="true" />
-                        <button
-                          type="button"
-                          className="handle"
-                          data-testid={`roster-${agent.handle}`}
-                          aria-label={`${agent.handle}，${line}`}
-                          onClick={() => onMention(agent.handle)}
-                        >
-                          <strong>{agent.handle}</strong>
-                          <em title={where || undefined}>{line}</em>
-                        </button>
+              <button type="button" className="text-button" aria-label={`私聊 ${agent.handle}`} onClick={() => void onDirect(agent.handle)}>打开私聊</button>
                         <button
                           type="button"
                           className="stop-agent"
@@ -1336,8 +1401,9 @@ function SidePanel({
                             }
                           }}
                         >
-                          {agent.paused ? "继续" : "停止"}
+                          {agent.paused ? "启用" : "停用"}
                         </button>
+                        <details className="agent-settings"><summary>设置</summary>
                         <select
                           className="level"
                           aria-label={`${agent.handle} 的等级`}
@@ -1356,37 +1422,67 @@ function SidePanel({
                             <option key={level} value={level}>Lv{level}</option>
                           ))}
                         </select>
-                        <select
-                          className="group"
-                          aria-label={`${agent.handle} 的身份`}
-                          data-testid={`group-${agent.handle}`}
-                          value={groupOf(agent.tags)?.id ?? ""}
-                          onChange={async (event) => {
-                            if (!event.target.value) return;
-                            try {
-                              await api.setGroup(agent.id, event.target.value);
-                              onChanged();
-                            } catch (reason) {
-                              onError(reason instanceof Error ? reason.message : "没能改身份");
-                            }
-                          }}
+                        <IdentitySettings agent={agent} onChanged={onChanged} onError={onError} />
+                        </details>
+            </li>
+          ))}
+        </ul>
+        {snap.members.agents.every(agent => agent.demo) ? <p className="fine">尚未接入真实客户端。</p> : null}
+      </div>
+      </details>
+      <section>
+        <div className="section-row">
+          <h2>已激活的客户端</h2>
+        </div>
+        <p className="fine">按身份显示你已启用的客户端。点击名字在频道中 @ 点名。</p>
+
+        <div className="human-members">成员：{snap.members.users.map((user) => user.name).join("、")}</div>
+        <ul className="roster" data-testid="roster">
+          {rosterGroups(snap).map((group) => (
+            <li key={group.key} className="person" data-testid={`role-group-${group.key}`}>
+              <details className="role-fold" open={!collapsedGroups[`${snap.room.id}:${group.key}`]}>
+              <summary className="person-head" data-testid={`role-toggle-${group.key}`} onClick={(event) => {
+                event.preventDefault();
+                const key = `${snap.room.id}:${group.key}`;
+                setCollapsedGroups(current => {
+                  const next = { ...current, [key]: !current[key] };
+                  try { localStorage.setItem("chatroom-role-folds", JSON.stringify(next)); } catch {}
+                  return next;
+                });
+              }}>
+                <strong>{group.name}</strong>
+                <em>{group.agents.length} 个客户端</em>
+              </summary>
+              {group.agents.length > 0 ? (
+                <ul className="person-agents">
+                  {group.agents.map((agent) => {
+                    const primary = (groupsOf(agent.tags)[0]?.id ?? "unassigned") === group.key;
+                    return (
+                      <li key={agent.id} className="with-level">
+                        <button
+                          type="button"
+                          className="handle"
+                          data-testid={`roster-${agent.handle}${primary ? "" : `-${group.key}`}`}
+                          aria-label={`${agent.handle}，${group.name}身份`}
+                          onClick={() => onMention(agent.handle)}
                         >
-                          {groupOf(agent.tags) ? null : <option value="">未分组</option>}
-                          {GROUPS.map((group) => (
-                            <option key={group.id} value={group.id}>{group.label}</option>
-                          ))}
-                        </select>
+                          <strong>{agent.handle}</strong>
+                          <em>{agent.ownerName} · {agent.runtime}</em>
+                          {dutyParts(agent.id, snap.tasks).length > 0 ? <em className="agent-duty">{dutyParts(agent.id, snap.tasks).join("、")}</em> : null}
+                        </button>
                       </li>
                     );
                   })}
                 </ul>
-              ) : null}
+              ) : <p className="fine role-empty">此身份暂无激活的客户端</p>}
+              </details>
             </li>
           ))}
         </ul>
-        <p className="fine">在场按人分组。同一个人可以有多个 agent。每个 agent 有一个身份：课题研究、产品设计师、设计师、技术架构师先出方案，然后才是实现、评审、测试。身份在接入时选定，也可以在这里改。下面一行是他现在在做的事。点句柄会填上 @。复杂任务优先交给等级 3 及以上。停止会放开槽位，并拒绝下一步工具调用。客户端里已经开始的这一轮，还要在那个客户端里按停止。</p>
+        <p className="fine">身份、等级、启停与活动状态在成员管理中查看和修改。</p>
       </section>
-      <section className="invite-block">
+      <details className="invite-block setup-panel">
+        <summary>邀请成员与手动接入</summary>
         <h2>成员和 agent</h2>
         <form
           className="inline"
@@ -1425,23 +1521,8 @@ function SidePanel({
             <span>npm run enroll -- --code {code} --handle my-codex --runtime codex --tags architect --level 1 --cwd /你的/项目</span>
           </p>
         ) : null}
-      </section>
-      <section>
-        <h2>任务</h2>
-        <div data-testid="task-list">
-          {tasks.length === 0 ? <p className="fine">还没有指令。</p> : null}
-          {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} all={snap.tasks} agents={snap.members.agents} onChanged={onChanged} onError={onError} />
-          ))}
-        </div>
-        {snap.locks.length > 0 ? (
-          <ul className="locks">
-            {snap.locks.map((lock) => (
-              <li key={lock.path}>{lock.handle} 锁着 {lock.path}</li>
-            ))}
-          </ul>
-        ) : null}
-      </section>
+      </details>
+
     </>
   );
 }
@@ -1454,6 +1535,8 @@ function TaskCard({
   onError,
   nested = false,
   winning = false,
+  reveal = 0,
+  focusId = "",
 }: {
   task: Task;
   all?: Task[];
@@ -1462,7 +1545,23 @@ function TaskCard({
   onError: (message: string) => void;
   nested?: boolean;
   winning?: boolean;
+  reveal?: number;
+  focusId?: string;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async (action: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
+    try { await action(); onChanged(); } catch (reason) { onError(reason instanceof Error ? reason.message : "操作失败"); } finally { setBusy(false); }
+  };
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const show = (event: Event) => { if ((event as CustomEvent<string>).detail === task.id) { setExpanded(true); setTimeout(() => cardRef.current?.scrollIntoView({ block: "nearest" }), 0); } };
+    window.addEventListener("show-task", show);
+    return () => window.removeEventListener("show-task", show);
+  }, [task.id]);
+  useEffect(() => { if (reveal) { setExpanded(true); setTimeout(() => cardRef.current?.scrollIntoView({ block: "nearest" }), 0); } }, [reveal]);
   const current = stepIndex(task.status);
   const closed = task.status === "done" || task.status === "canceled";
   const lanes = task.lanes ?? [];
@@ -1473,11 +1572,16 @@ function TaskCard({
   const showFlow = lanes.length === 0 && !parent && !step;
   const label = step ? stepStatus(task) : parent ? (PIPELINE_STATUS[task.status] ?? task.status) : (STATUS_LABEL[task.status] ?? task.status);
   return (
-    <article className={`task status-${task.status}${nested ? " lane" : ""}${winning ? " winner" : ""}${parent ? " pipeline" : ""}${step ? " pipeline-step" : ""}`}>
+    <article ref={cardRef} data-testid={`task-${task.id}`} className={`task status-${task.status}${nested ? " lane" : ""}${winning ? " winner" : ""}${parent ? " pipeline" : ""}${step ? " pipeline-step" : ""}`}>
       <header>
         <h3>{task.title}</h3>
         <span className="pill">{task.designPending?.length ? "出方案" : label}</span>
       </header>
+      <p className="task-owner">{task.claims.filter((claim) => !claim.state || claim.state === "active" || claim.state === "completed").map((claim) => `${ROLE_DUTY[claim.role] ?? claim.role}：${claim.handle}${claim.state === "completed" ? "（已完成）" : ""}`).join(" · ") || "尚无 Agent 认领"}</p>
+      {task.deliverableRef ? <p className="note">结果：<code>{task.deliverableRef}</code></p> : null}
+      <button type="button" className="text-button task-detail-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起详情" : "查看详情与操作"}</button>
+      {expanded ? <div className="task-detail">
+      <FoldedBody body={task.body} known={new Set(agents.map((agent) => agent.handle))} fold={task.body.length > 500} />
       {task.designPending?.length ? (
         <p className="note">先出方案：{labelList(task.designPending)}。他们不改代码。方案齐了再交给实现。</p>
       ) : null}
@@ -1498,9 +1602,21 @@ function TaskCard({
       {task.deliverableRef ? (
         <p className="note">
           交付：<code>{task.deliverableRef}</code>
-          {task.deliverableSummary ? <FoldedNote text={task.deliverableSummary} /> : null}
+          {task.deliverableSummary ? <><span> 交付时说明：</span><FoldedNote text={task.deliverableSummary} /></> : null}
         </p>
       ) : null}
+      {task.status === "done" ? <p className="note" data-testid="completed-checks">当前状态：完成。验收记录见下方；交付时说明保留原文。</p> : null}
+      {task.deliverableBody ? <section className="task-evidence" data-testid="delivery-report">
+        <h4>执行报告</h4>
+        <FoldedBody body={task.deliverableBody} known={new Set(agents.map((agent) => agent.handle))} fold={task.deliverableBody.length > 800} />
+      </section> : null}
+      {task.evidence?.length ? <section className="task-evidence" data-testid="check-evidence">
+        <h4>评审与测试记录</h4>
+        {task.evidence.map((entry) => <article key={entry.id}>
+          <strong>{entry.kind === "review" ? "评审" : "测试"} · {entry.handle}</strong> <time>{timeLabel(entry.createdAt)}</time>
+          <FoldedBody body={entry.body} known={new Set(agents.map((agent) => agent.handle))} fold={entry.body.length > 800} />
+        </article>)}
+      </section> : null}
       {task.mode === "parallel" && !nested ? <p className="note">并行方案，最多 {task.maxLanes ?? 3} 条。隔离方式由 agent 自己定。</p> : null}
       {task.status === "dispute" ? <p className="note">多条方案都通过了。放行只关掉这张卡，不会合并代码。</p> : null}
       {showFlow ? (
@@ -1526,6 +1642,7 @@ function TaskCard({
           </ol>
         </div>
       ) : null}
+      {parent ? stepsOf(task.id, all).map((child) => <TaskCard key={child.id} reveal={child.id === focusId ? reveal : 0} task={child} all={all} agents={agents} nested onChanged={onChanged} onError={onError} />) : null}
       {step ? (
         <ul className="slots pipeline-slots" data-testid="pipeline-slots">
           {stepSlots(task, siblings).map((slot) => (
@@ -1568,7 +1685,7 @@ function TaskCard({
         </div>
       ) : null}
       {closed ? null : (
-        <div className="task-actions">
+        <fieldset className="task-actions" disabled={busy}>
           {task.claims
             .filter((claim) => claim.role === "implementer")
             .map((claim) => (
@@ -1577,14 +1694,7 @@ function TaskCard({
                 type="button"
                 className="danger"
                 data-testid={`stop-task-${claim.handle}`}
-                onClick={async () => {
-                  try {
-                    await api.stop(claim.agentId);
-                    onChanged();
-                  } catch (reason) {
-                    onError(reason instanceof Error ? reason.message : "没能停止");
-                  }
-                }}
+                onClick={() => void run(() => api.stop(claim.agentId))}
               >
                 停止 {claim.handle}
               </button>
@@ -1593,47 +1703,27 @@ function TaskCard({
             <button
               type="button"
               data-testid={`handoff-${task.id}`}
-              onClick={async () => {
-                try {
-                  await api.handoff(task.id);
-                  onChanged();
-                } catch (reason) {
-                  onError(reason instanceof Error ? reason.message : "没能交给实现");
-                }
-              }}
+              onClick={() => void run(() => api.handoff(task.id))}
             >
               交给实现
             </button>
           ) : null}
           <button
             type="button"
-            onClick={async () => {
-              try {
-                await api.done(task.id);
-                onChanged();
-              } catch (reason) {
-                onError(reason instanceof Error ? reason.message : "没能放行");
-              }
-            }}
+            onClick={() => void run(() => api.done(task.id))}
           >
-            放行
+            标记完成
           </button>
           <button
             type="button"
             className="ghost"
-            onClick={async () => {
-              try {
-                await api.cancel(task.id);
-                onChanged();
-              } catch (reason) {
-                onError(reason instanceof Error ? reason.message : "没能取消");
-              }
-            }}
+            onClick={() => void run(() => api.cancel(task.id))}
           >
-            取消
+            取消任务
           </button>
-        </div>
+        </fieldset>
       )}
+      </div> : null}
     </article>
   );
 }
