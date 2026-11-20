@@ -2,6 +2,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 export interface ChatApi {
+  delegatedWork(id?:string): Promise<unknown>;
+  claimDelegatedWork(id:string,session:string): Promise<unknown>;
+  renewDelegatedWork(id:string,claimId:string): Promise<unknown>;
+  reportDelegatedWork(id:string,event:{claimId:string; eventId:string; kind:"progress"|"question"|"completed"; body:string; requiresApproval?:boolean; evidence?:string[]}): Promise<unknown>;
   whoami(): Promise<unknown>;
   listRooms(): Promise<unknown>;
   listPeers(): Promise<unknown>;
@@ -100,7 +104,7 @@ export function createMcpServer(api: ChatApi) {
     "wait",
     {
       description:
-        "阻塞到有新事件：频道里有人说话（room）、有人 @ 你、请你出方案、请你投标、你中标或没中、轮到评审或测试、你占着的任务有新消息，或主人让你停止。event_type 为 room 时，用 say 回一句，不要认领，不要改代码。event_type 为 design_needed 时用 submit_design 交出方案，不要改代码。event_type 为 stop 时立刻结束这一轮，不要再调用工具，不要再改代码。返回的是短通知，不是整段历史。超时就再调一次。",
+        "阻塞到有新事件：频道里有人说话（room）、有人 @ 你、请你出方案、请你投标、你中标或没中、轮到评审或测试、你占着的任务有新消息，或主人让你停止。event_type 为 stage_offer 时，用 delegated_work 读取 ref_id 对应的工单。event_type 为 room 时，用 say 回一句，不要认领，不要改代码。event_type 为 design_needed 时用 submit_design 交出方案，不要改代码。event_type 为 stop 时立刻结束这一轮，不要再调用工具，不要再改代码。返回的是短通知，不是整段历史。超时就再调一次。",
       inputSchema: {
         after: z.number().optional(),
         timeoutMs: z.number().optional(),
@@ -108,6 +112,22 @@ export function createMcpServer(api: ChatApi) {
     },
     async ({ after, timeoutMs }) => text(await api.wait(after ?? 0, timeoutMs ?? 20_000)),
   );
+  server.registerTool("delegated_work", {
+    description:"列出 OPC OS 指定给你且尚未交付的工单。传工单 ID 可查看原事项、用户指定的方法、要求和最新反馈。",
+    inputSchema:{id:z.uuid().optional()},
+  }, async ({id}) => text(await api.delegatedWork(id)));
+  server.registerTool("claim_delegated_work", {
+    description:"认领指定给你的工单；session 使用当前宿主的稳定会话标识。重试同一次认领复用该标识。保存返回的 claimId。",
+    inputSchema:{id:z.uuid(), session:z.string().min(1)},
+  }, async ({id,session}) => text(await api.claimDelegatedWork(id,session)));
+  server.registerTool("renew_delegated_work", {
+    description:"进行长任务时在本次认领到期前续租，返回新的 leaseUntil。",
+    inputSchema:{id:z.uuid(),claimId:z.uuid()},
+  }, async ({id,claimId}) => text(await api.renewDelegatedWork(id,claimId)));
+  server.registerTool("report_delegated_work", {
+    description:"向原委派报告进展、需要本人决定的问题或带证据的交付。重复提交复用 eventId。需要本人授权的问题设置 requiresApproval 为 true。批准计划、原仓改动和最终验收须由本人完成。",
+    inputSchema:{id:z.uuid(),claimId:z.uuid(),eventId:z.string().min(1),kind:z.enum(["progress","question","completed"]),body:z.string().min(1),requiresApproval:z.boolean().optional(),evidence:z.array(z.string()).optional()},
+  }, async ({id,...event}) => text(await api.reportDelegatedWork(id,event)));
   server.registerTool(
     "list_tasks",
     { description: "查看频道里的父任务。并行方案在父任务的 lanes 里，不单独占一行。", inputSchema: { roomId: z.string() } },

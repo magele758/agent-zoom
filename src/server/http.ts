@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -12,11 +12,18 @@ import { ApiError, PRESENCE_MS, type Principal, type Store } from "./logic.ts";
 import { waitInbox } from "./wait.ts";
 import { CoordinatorService, type CoordinatorModel } from "./coordinator.ts";
 
-const COOKIE = "ac_session";
+import { addWorkflowRoutes, type configureWorkflow } from "./workflow/http.ts";
+import { addOpportunityRoutes } from "./autonomy.ts";
+import { addHomeRoomRoutes } from "./home-room.ts";
+import { agentDelegationRoutes, type AgentDelegations } from "./delegated-agent.ts";
+import { addActivityIndex } from "./company-activity-index.ts";
+import { addZoomRoutes } from "./zoom-http.ts";
+
+const COOKIE = process.env.KUNLUN_SESSION_COOKIE || "ac_session";
 
 type Watcher = { userId: string; rooms: Set<string>; send: (data: string) => void };
 
-export function createApp(store: Store, options: { coordinatorModel?: () => CoordinatorModel } = {}) {
+export function createApp(store: Store, options: { activityIndexEnabled?: boolean; coordinatorModel?: () => CoordinatorModel; workflow?: ReturnType<typeof configureWorkflow> } = {}) {
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const watchers = new Set<Watcher>();
@@ -34,7 +41,7 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
 
   const requireUser = (cookie: string | undefined) => {
     const principal = store.userBySession(cookie);
-    if (!principal || principal.type !== "user") throw new ApiError(401, "auth", "先进入工作室");
+    if (!principal || principal.type !== "user") throw new ApiError(401, "auth", "请重新打开OPC OS以连接本机服务");
     return principal;
   };
 
@@ -53,13 +60,37 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
     return c.json({ error: "internal", message: "服务出错了" }, 500);
   });
 
-  app.get("/api/health", (c) => c.json({ ok: true }));
+  addWorkflowRoutes(app, options.workflow, c => requireUser(getCookie(c, COOKIE)).name);
+  const opportunities = addOpportunityRoutes(app, store.db, options.workflow?.service,
+    options.workflow?.submitToken ?? process.env.WORKFLOW_SUBMIT_TOKEN, c => requireUser(getCookie(c, COOKIE)));
+  const homeUser = (c: Context) => requireUser(getCookie(c, COOKIE));
+  const activityIndex = addActivityIndex(app, store.db, homeUser, options.activityIndexEnabled === true);
+  const homeRooms = addHomeRoomRoutes(app, store, homeUser,
+    c => c.req.header("authorization") ? requireAgent(c.req.header("authorization")) : homeUser(c));
+  const agentWork = agentDelegationRoutes(app, store, c => requireAgent(c.req.header("authorization")));
+  const delegations = addZoomRoutes(app, store, {
+    opportunities, homeRooms,
+    submitToken: options.workflow?.submitToken ?? process.env.WORKFLOW_SUBMIT_TOKEN,
+    workflow: options.workflow?.service,
+    user: c => requireUser(getCookie(c, COOKIE)),
+  });
 
-  app.post("/api/session", async (c) => {
-    const body = await c.req.json();
-    const result = store.session(String(body.name ?? ""));
-    setCookie(c, COOKIE, result.token, { httpOnly: true, path: "/", sameSite: "Lax" });
-    return c.json({ user: result.user, orgId: result.orgId, roomId: result.roomId });
+  app.get("/api/health", (c) => c.json({ ok: true, sharedLocal: true }));
+
+  const openLocal = (c: Context) => {
+    c.header("Cache-Control", "no-store");
+    const user = store.userBySession(getCookie(c, COOKIE));
+    if (user?.type === "user") return user;
+    const session = store.session();
+    setCookie(c, COOKIE, session.token, { httpOnly: true, path: "/", sameSite: "Lax" });
+    return store.localUser();
+  };
+  // Older clients can still open a session by POST. Names no longer select data.
+  app.post("/api/session", c => {
+    const user = openLocal(c);
+    const roomId = store.localRoom();
+    const room = store.db.prepare("SELECT org_id FROM rooms WHERE id=?").get(roomId);
+    return c.json({ user: { id: user.id, name: user.name }, orgId: room?.org_id, roomId });
   });
 
   app.post("/api/logout", (c) => {
@@ -68,7 +99,7 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
     return c.json({ ok: true });
   });
 
-  app.get("/api/me", (c) => c.json(store.me(requireUser(getCookie(c, COOKIE)))));
+  app.get("/api/me", c => c.json(store.me(openLocal(c))));
   app.get("/api/coordinator", c => { requireUser(getCookie(c,COOKIE)); return c.json(coordinator.info()); });
   app.get("/api/rooms/:id/coordination", c => { const user=requireUser(getCookie(c,COOKIE)); return c.json({runs:coordinator.list(user,c.req.param("id"))}); });
   app.post("/api/rooms/:id/coordination", async c => { const user=requireUser(getCookie(c,COOKIE)); const body=await c.req.json(); return c.json(coordinator.start(user,c.req.param("id"),String(body.prompt??"")),202); });
@@ -151,6 +182,7 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
       store.postMessage(user, c.req.param("id"), {
         body: String(body.body ?? ""),
         kind: body.kind ? String(body.kind) : "chat",
+        replyTo: typeof body.replyTo === "string" ? body.replyTo : undefined,
         taskId: body.taskId ? String(body.taskId) : null,
         group: body.group == null ? undefined : String(body.group),
         acceptance: body.acceptance ? String(body.acceptance) : undefined,
@@ -182,11 +214,11 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
     return c.json({ agents: listLocalAgents(connected).map((local) => {
       const saved = savedCredential(credentials, local.handle);
       const principal = saved ? store.agentByToken(saved.token) : null;
-      const valid = principal?.type === "agent" && principal.ownerUserId === user.id && principal.handle === local.handle;
-      const member = snap.members.agents.find((agent) => agent.handle === local.handle);
-      return { ...local, connected: local.connected && valid, credentialValid: valid,
+      const valid = principal?.type === "agent" && principal.handle === local.handle;
+      const member = valid ? snap.members.agents.find(agent => agent.id === principal.id) : undefined;
+      return { ...local, connected: Boolean(member && local.configured), credentialValid: valid,
         online: Boolean(member?.online && valid),
-        stateNote: saved && !valid ? "本地凭证归属不匹配或已失效；同名登记不代表实际接入。" : !saved ? "本机没有这个句柄的凭证。" : member?.online ? "最近 5 分钟有实际 API 活动，执行能力仍需任务验收。" : "配置与凭证已登记；当前未观察到客户端活动。" };
+        stateNote: saved && !valid ? "已保存的凭证与本机登记不匹配。" : !saved ? "本机没有这个句柄的凭证。" : member?.online ? "最近 5 分钟有实际 API 活动。" : "配置与凭证已登记，当前未观察到客户端活动。" };
     }) });
   });
 
@@ -195,11 +227,9 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
     const roomId = c.req.param("id");
     let level: unknown = 1;
     let group = "build";
-    let replace = false;
     try {
       const body = await c.req.json();
       if (body && typeof body === "object") {
-        replace = (body as { replace?: unknown }).replace === true;
         if ("level" in body) level = (body as { level?: unknown }).level;
         if ("group" in body && (body as { group?: unknown }).group != null && String((body as { group?: unknown }).group).trim() !== "") {
           const id = normalizeGroups((body as { group?: unknown }).group);
@@ -225,9 +255,10 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
         connected,
         level,
         group,
-        ownerId: user.id,
-        replace,
-        inspectToken: (token) => store.credentialOwner(token),
+        inspectToken: token => {
+          const agent = store.agentByToken(token);
+          return agent?.type === "agent" ? { id: agent.id, handle: agent.handle } : null;
+        },
         enroll: (spec) => {
           const issued = store.createJoinCode(user, roomId);
           const enrolled = store.enroll(
@@ -241,8 +272,8 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
           );
           return { token: enrolled.token, roomId: enrolled.roomId };
         },
-        placeExisting: (handle) => {
-          store.placeExisting(user, roomId, handle);
+        placeExisting: (handle, agentId) => {
+          store.placeExisting(user, roomId, handle, agentId);
         },
       });
       return c.json({ handle: result.handle, already: result.already, path: result.path, note: result.note });
@@ -475,7 +506,7 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
 
   app.all("/mcp", async (c) => {
     const agent = requireAgent(c.req.header("authorization"));
-    const mcp = createMcpServer(apiFor(store, agent));
+    const mcp = createMcpServer(apiFor(store, agent, agentWork));
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -526,11 +557,15 @@ export function createApp(store: Store, options: { coordinatorModel?: () => Coor
     }),
   );
 
-  return { app, injectWebSocket, nudge };
+  return { app, injectWebSocket, nudge, opportunities, homeRooms, activityIndex, delegations };
 }
 
-function apiFor(store: Store, agent: Principal & { type: "agent" }): ChatApi {
+function apiFor(store: Store, agent: Principal & { type: "agent" }, work: AgentDelegations): ChatApi {
   return {
+    delegatedWork: async id => work.read(agent,id),
+    claimDelegatedWork: async (id,session) => work.claim(agent,id,session),
+    reportDelegatedWork: async (id,event) => work.report(agent,id,event),
+    renewDelegatedWork: async (id,claimId) => work.renew(agent,id,claimId),
     whoami: async () => store.whoami(agent),
     listRooms: async () => store.whoami(agent).rooms,
     listPeers: async () => store.listPeers(agent),

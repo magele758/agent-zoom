@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CoordinatorService, validateCoordination } from "./server/coordinator.ts";
+import { CoordinatorService, coordinationFingerprint, validateCoordination } from "./server/coordinator.ts";
 import { openStore, type Principal } from "./server/logic.ts";
 import type { ModelAdapter, ModelTurnInput } from "@ppeng/agent-loop";
 function fixture() {
@@ -21,10 +21,10 @@ test("real SDK executes channel read and plan tools without dispatch, then appli
   const ready=await settle(svc,f.user,run.id);assert.equal(ready.status,"ready");assert.equal(f.store.snapshot(f.user,f.roomId,new Set()).tasks.length,0);assert.ok(ready.trace.some(t=>t.tool==="read_current_channel"));
   const first=svc.apply(f.user,run.id);const second=svc.apply(f.user,run.id);assert.equal(first.task!.id,second.task!.id);assert.equal(f.store.snapshot(f.user,f.roomId,new Set()).tasks.length,1);assert.equal(first.task!.status,"open");
 });
-test("role changes invalidate a saved plan and other users cannot read or apply it",async()=>{
+test("role changes invalidate a saved plan even when opened from a second browser",async()=>{
   const f=fixture();const svc=new CoordinatorService(f.store,{model:()=>({adapter:model(),model:"test",source:"fixture"})});const run=svc.start(f.user,f.roomId,"做计划");await settle(svc,f.user,run.id);
-  const other=f.store.userBySession(f.store.session("另一用户").token) as Principal & {type:"user"};assert.throws(()=>svc.get(other,run.id),/没有这条/);assert.throws(()=>svc.apply(other,run.id),/没有这条/);
-  const agent=f.store.agentByToken(f.worker.token)!;f.store.setGroup(f.user,agent.id,"review");assert.throws(()=>svc.apply(f.user,run.id),/重新分析/);assert.equal(f.store.snapshot(f.user,f.roomId,new Set()).tasks.length,0);
+  const other=f.store.userBySession(f.store.session("另一用户").token) as Principal & {type:"user"};assert.equal(svc.get(other,run.id).status,"ready");
+  const agent=f.store.agentByToken(f.worker.token)!;f.store.setGroup(f.user,agent.id,"review");assert.throws(()=>svc.apply(other,run.id),/重新分析/);assert.equal(f.store.snapshot(f.user,f.roomId,new Set()).tasks.length,0);
 });
 test("plan validation rejects fake clients, wrong roles, busy agents and self checks",()=>{
   const f=fixture();const snap=f.store.snapshot(f.user,f.roomId,new Set());assert.throws(()=>validateCoordination({...plan,handle:"made-up"},snap),/真实客户端/);assert.throws(()=>validateCoordination({...plan,handle:"sdk-review"},snap),/没有配置/);
@@ -50,4 +50,35 @@ test("an agent working in another room is not scheduled and private task content
 test("ordinary lease heartbeat does not invalidate another agent's plan",async()=>{
   const f=fixture();const joined=f.store.enroll(f.store.createJoinCode(f.user,f.roomId).code,"heartbeat-worker","test-client","build",3);const actor=f.store.agentByToken(joined.token) as Principal & {type:"agent"};const task=f.store.postMessage(f.user,f.roomId,{kind:"instruction",body:"@heartbeat-worker 已存在的任务"}).task!;f.store.claim(actor,task.id,"implementer");
   const svc=new CoordinatorService(f.store,{model:()=>({adapter:model(),model:"test",source:"fixture"})});const run=svc.start(f.user,f.roomId,"安排另一个客户端");await settle(svc,f.user,run.id);f.store.heartbeat(actor,task.id);assert.equal(svc.apply(f.user,run.id).run.status,"applied");
+});
+
+test("a legacy proposal can be explicitly confirmed once if only the local reader was added", () => {
+  for (const changed of [false,true]) {
+    const { store,user,roomId,worker } = fixture();
+    const svc = new CoordinatorService(store);
+    const at = new Date().toISOString();
+    store.db.prepare("INSERT INTO users VALUES ('legacy-owner','旧名字','旧名字',?)").run(at);
+    store.db.prepare("INSERT INTO room_members(room_id,principal_type,principal_id,joined_at) VALUES (?,'user','legacy-owner',?)").run(roomId,at);
+    const snap = store.snapshot(user,roomId,new Set());
+    const priorMembers = {
+      users: snap.members.users.filter(member=>member.id!==user.id),
+      agents: snap.members.agents.map(member=>({...member,busy:false})),
+    };
+    const fingerprint=coordinationFingerprint({...snap,members:priorMembers});
+    store.db.prepare(`INSERT INTO coordinator_runs(id,user_id,room_id,prompt,status,model,source,fingerprint,plan_json,created_at)
+      VALUES ('legacy-plan','legacy-owner',?,'旧提案','ready','fixture','fixture',?,?,?)`).run(roomId,fingerprint,JSON.stringify(plan),at);
+    assert.deepEqual(svc.list(user,roomId).map(run=>run.id),["legacy-plan"]);
+    if (changed) {
+      store.setGroup(user,worker.agent.id,"test");
+      assert.throws(()=>svc.apply(user,"legacy-plan"),/重新分析/);
+      assert.equal(store.listTasks(user,roomId).length,0);
+    } else {
+      const first = svc.apply(user,"legacy-plan");
+      assert.equal(first.run.status,"applied");
+      assert.equal(svc.apply(user,"legacy-plan").task?.id,first.task?.id);
+      assert.equal(store.listTasks(user,roomId).length,1);
+    }
+    assert.equal(store.db.prepare("SELECT user_id FROM coordinator_runs WHERE id='legacy-plan'").get()?.user_id,"legacy-owner");
+    store.db.close();
+  }
 });

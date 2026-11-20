@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS rooms (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS local_console (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  room_id TEXT NOT NULL REFERENCES rooms(id)
+);
+
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES orgs(id),
@@ -65,6 +71,14 @@ CREATE TABLE IF NOT EXISTS room_members (
   joined_at TEXT NOT NULL,
   PRIMARY KEY (room_id, principal_type, principal_id)
 );
+
+-- Keep the shared room reader present even if an older local client creates a room.
+CREATE TRIGGER IF NOT EXISTS local_reader_for_new_room AFTER INSERT ON rooms
+WHEN EXISTS (SELECT 1 FROM local_console WHERE singleton=1)
+BEGIN
+  INSERT OR IGNORE INTO room_members(room_id,principal_type,principal_id,joined_at)
+    SELECT NEW.id,'user',user_id,NEW.created_at FROM local_console WHERE singleton=1;
+END;
 
 CREATE TABLE IF NOT EXISTS join_codes (
   code TEXT PRIMARY KEY,
@@ -102,6 +116,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS channel_question_replies (
+  question_id TEXT PRIMARY KEY REFERENCES messages(id),
+  reply_id TEXT NOT NULL UNIQUE REFERENCES messages(id)
+);
+
 CREATE TABLE IF NOT EXISTS task_claims (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -131,6 +150,8 @@ CREATE TABLE IF NOT EXISTS inbox (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS inbox_recipient ON inbox(recipient_type, recipient_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS inbox_stage_offer ON inbox(ref_id) WHERE event_type='stage_offer';
+
 
 CREATE TABLE IF NOT EXISTS desktop_bridges (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id),
@@ -175,6 +196,77 @@ CREATE TABLE IF NOT EXISTS coordinator_runs (
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS coordinator_one_running ON coordinator_runs(user_id, room_id) WHERE status='running';
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  snapshot TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_claims (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  lease_until TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_one_active_attempt ON workflow_claims(task_id) WHERE state='active';
+
+CREATE TABLE IF NOT EXISTS zoom_tasks (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  folder TEXT NOT NULL,
+  context TEXT NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(source, external_id)
+);
+CREATE TABLE IF NOT EXISTS zoom_messages (
+  seq INTEGER PRIMARY KEY,
+  id TEXT NOT NULL UNIQUE,
+  task_id TEXT NOT NULL REFERENCES zoom_tasks(id),
+  event_key TEXT,
+  kind TEXT NOT NULL,
+  body TEXT NOT NULL,
+  choices TEXT,
+  reply_to TEXT UNIQUE REFERENCES zoom_messages(id),
+  choice TEXT,
+  actor TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(task_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS zoom_feedback ON zoom_messages(task_id,seq) WHERE kind='reply';
+CREATE INDEX IF NOT EXISTS zoom_messages_task_seq ON zoom_messages(task_id,seq);
+CREATE INDEX IF NOT EXISTS zoom_messages_kind_seq ON zoom_messages(kind,seq);
+CREATE INDEX IF NOT EXISTS workflow_runs_created ON workflow_runs(created_at DESC, id);
+CREATE TABLE IF NOT EXISTS stage_work (
+  task_id TEXT PRIMARY KEY REFERENCES zoom_tasks(id),
+  request_id TEXT NOT NULL UNIQUE,
+  brief TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS stage_claims (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES stage_work(task_id),
+  role TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  lease_until TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(task_id,agent_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS stage_one_active_owner ON stage_claims(task_id) WHERE state='active';
+CREATE TABLE IF NOT EXISTS stage_receipts (
+  task_id TEXT NOT NULL REFERENCES stage_work(task_id),
+  event_key TEXT NOT NULL,
+  claim_id TEXT NOT NULL REFERENCES stage_claims(id),
+  PRIMARY KEY(task_id,event_key)
+);
 `;
 
 export function openDatabase(path: string): DatabaseSync {
@@ -196,6 +288,9 @@ function migrate(db: DatabaseSync) {
     if (!names(table).has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   };
   add("messages", "design_group", "design_group TEXT NOT NULL DEFAULT ''");
+  add("zoom_tasks", "stage", "stage TEXT");
+  add("zoom_messages", "evidence", "evidence TEXT");
+  add("zoom_messages", "requires_approval", "requires_approval INTEGER NOT NULL DEFAULT 0");
   add("messages", "reply_group", "reply_group TEXT NOT NULL DEFAULT ''");
   add("room_members", "hidden", "hidden INTEGER NOT NULL DEFAULT 0");
   add("agents", "tags", "tags TEXT NOT NULL DEFAULT ''");

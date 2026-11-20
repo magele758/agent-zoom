@@ -1,0 +1,128 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { createApp } from "./server/http.ts";
+import { openStore } from "./server/logic.ts";
+import { ZoomStore } from "./server/zoom.ts";
+import type { ZoomMessage } from "./zoom-types.ts";
+
+test("older Zoom tasks keep their directory, id and history without a product stage", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kunlun-zoom-stage-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "existing.db");
+  let store = openStore(path);
+  const input = { source: "Codex", externalId: "legacy-task", folder: "开发组/测试", title: "PRD" };
+  const zoom = new ZoomStore(store.db);
+  const original = zoom.register(input);
+  const question = zoom.report(original.id, { eventId: "v1", kind: "question", body: "采用哪一版？" });
+  store.db.exec("ALTER TABLE zoom_tasks DROP COLUMN stage");
+  store.db.exec("ALTER TABLE zoom_messages DROP COLUMN requires_approval");
+  store.db.close();
+  store = openStore(path);
+  t.after(() => store.db.close());
+  const reopened = new ZoomStore(store.db);
+  assert.equal(reopened.register(input).id, original.id);
+  assert.deepEqual(reopened.messages().find(row => row.id === question.id), question);
+  assert.equal(reopened.report(original.id, { eventId: "v1", kind: "question", body: question.body, requiresApproval: false }).id, question.id);
+  assert.ok(reopened.messages().every(row => row.stage === undefined));
+});
+
+test("Zoom preserves native tasks, open questions and feedback cursors across a service restart", async t => {
+  const temp = mkdtempSync(join(tmpdir(), "kunlun-zoom-"));
+  const dbPath = join(temp, "messages.db");
+  const agentToken = "local-integration-test-submit-token";
+  const saved = process.env.WORKFLOW_SUBMIT_TOKEN;
+  process.env.WORKFLOW_SUBMIT_TOKEN = agentToken;
+  let store = openStore(dbPath);
+  let { app } = createApp(store);
+  t.after(() => {
+    store.db.close();
+    rmSync(temp, { recursive: true, force: true });
+    if (saved === undefined) delete process.env.WORKFLOW_SUBMIT_TOKEN;
+    else process.env.WORKFLOW_SUBMIT_TOKEN = saved;
+  });
+  const call = async (path: string, body?: unknown, credential: "agent" | "user" | "none" = "agent") => {
+    const headers = new Headers();
+    if (credential === "agent") headers.set("authorization", "Bearer " + agentToken);
+    if (credential === "user") headers.set("cookie", "ac_session=" + cookie);
+    if (body !== undefined) headers.set("content-type", "application/json");
+    return app.request("/api/zoom/" + path, { headers, method: body === undefined ? "GET" : "POST",
+      body: body === undefined ? undefined : JSON.stringify(body) });
+  };
+  const cookie = store.session("测试用户").token;
+  const task = { source: "grok", externalId: "session/42", title: "实现消息列表", folder: "OPC OS/消息", context: "grok-thread:42", stage: "design" };
+  assert.equal((await call("tasks", task, "user")).status, 401);
+  assert.equal((await call("tasks", { ...task, folder: "../项目" })).status, 400);
+  assert.equal((await call("tasks", { ...task, stage: "implementation" })).status, 400);
+  assert.equal((await call("messages")).status, 401);
+  const registration = await call("tasks", task);
+  assert.equal(registration.status, 200);
+  const { id, stage } = await registration.json();
+  assert.equal(stage, "design");
+  assert.equal((await (await call("tasks", task)).json()).id, id);
+  assert.equal((await call("tasks", { ...task, title: "another task" })).status, 409);
+  assert.equal((await call("tasks", { ...task, stage: "testing" })).status, 409);
+  const { id: otherId } = await (await call("tasks", { ...task, source: "agy", stage: undefined })).json();
+  assert.notEqual(otherId, id);
+
+  const thread = "tasks/" + id;
+  const report = (body: unknown) => call(thread + "/messages", body);
+  const ask = { eventId: "layout", kind: "question", body: "确认分组方案", choices: ["项目", "agent"], requiresApproval: true };
+  const q1: ZoomMessage = await (await report(ask)).json();
+  assert.equal(q1.requiresApproval, true);
+  const q2: ZoomMessage = await (await report({ eventId: "theme", kind: "question", body: "主题颜色？" })).json();
+  await report({ eventId: "preview", kind: "progress", body: "草图已准备好" });
+  const list = async (): Promise<ZoomMessage[]> => (await (await call("messages", undefined, "user")).json()).messages;
+  const open = () => list().then(items => items.filter(m => m.pending));
+  assert.deepEqual((await open()).map(m => m.id).sort(), [q1.id, q2.id].sort());
+  assert.equal((await report({ ...ask, body: "替换问题" })).status, 409);
+  assert.equal((await report({ ...ask, requiresApproval: false })).status, 409);
+  assert.equal((await report({ eventId: "theme", kind: "question", body: "主题颜色？", requiresApproval: true })).status, 409);
+  assert.equal((await report({ eventId: "bad-approval", kind: "progress", body: "x", requiresApproval: true })).status, 400);
+  assert.equal((await report({ eventId: "bad", kind: "progress", body: "x", choices: ["no"] })).status, 400);
+  assert.equal((await call("tasks/" + otherId + "/replies", { questionId: q1.id, body: "串线" }, "user")).status, 404);
+  const reply = { questionId: q1.id, choice: "项目", body: "先按项目，再分模块" };
+  assert.equal((await call(thread + "/replies", reply)).status, 401);
+  assert.equal((await call(thread + "/replies", { ...reply, choice: "其他" }, "user")).status, 400);
+  const answer: ZoomMessage = await (await call(thread + "/replies", reply, "user")).json();
+  assert.equal(answer.replyTo, q1.id);
+  assert.deepEqual((await open()).map(m => m.id), [q2.id]);
+  const firstFeedback = await (await call(thread + "/feedback")).json();
+  assert.equal(firstFeedback.events.length, 1);
+  assert.deepEqual(firstFeedback.events[0], { seq: firstFeedback.cursor, questionId: q1.id, questionEventId: ask.eventId,
+    question: ask.body, body: reply.body, choice: reply.choice, actor: store.localUser().name, at: answer.at });
+  assert.equal(firstFeedback.context, task.context);
+
+  store.db.close();
+  store = openStore(dbPath);
+  app = createApp(store).app;
+  assert.equal((await list()).find(row => row.id === q1.id)?.requiresApproval, true);
+  assert.ok((await list()).filter(row => row.taskId === id).every(row => row.stage === "design"));
+  assert.equal((await list()).find(row => row.taskId === otherId)?.stage, undefined);
+  assert.equal((await (await call("tasks", task)).json()).id, id);
+  assert.equal((await (await report(ask)).json()).id, q1.id);
+  assert.equal((await (await call(thread + "/replies", reply, "user")).json()).id, answer.id);
+  assert.equal((await call(thread + "/replies", { ...reply, body: "覆盖原回复" }, "user")).status, 409);
+  assert.deepEqual((await (await call(thread + "/feedback?after=" + firstFeedback.cursor)).json()).events, []);
+  assert.deepEqual((await (await call("tasks/" + otherId + "/feedback")).json()).events, []);
+  assert.equal((await call(thread + "/feedback?after=-1")).status, 400);
+  const reply2 = { questionId: q2.id, body: "深青" };
+  assert.equal((await call(thread + "/replies", reply2, "user")).status, 200);
+  assert.deepEqual((await (await call(thread + "/feedback?after=" + firstFeedback.cursor)).json()).events.map((r: { body: string }) => r.body), ["深青"]);
+
+  const q3 = await (await report({ eventId: "optional", kind: "question", body: "还有别的问题吗？" })).json();
+  const done = { eventId: "done", kind: "completed", body: "已经结束" };
+  const completed: ZoomMessage = await (await report(done)).json();
+  assert.equal((await (await report(done)).json()).id, completed.id);
+  assert.deepEqual(await open(), []);
+  assert.equal((await call(thread + "/replies", { questionId: q3.id, body: "迟到回复" }, "user")).status, 409);
+  assert.equal((await report({ eventId: "late", kind: "progress", body: "迟到" })).status, 409);
+  const feedback = await (await call(thread + "/feedback")).json();
+  assert.equal(feedback.completed, true);
+  assert.equal(feedback.events.length, 2);
+  assert.equal((await list()).filter(m => m.id === q1.id).length, 1);
+  assert.equal((await list()).find(m => m.id === q1.id)?.context, task.context);
+  assert.equal(store.db.prepare("SELECT count(*) AS total FROM workflow_runs").get()?.total, 0);
+});

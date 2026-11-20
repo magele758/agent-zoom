@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ZoomMessage } from "./zoom-types.ts";
+import { messageText, messageViews } from "../web/src/zoom-view.ts";
 import {
   composerPlaceholder,
   defaultKind,
@@ -84,4 +86,23 @@ test("the composer opens on chat, and question differs from chat in its hint", (
   assert.equal(new Set([chat, question, instruction]).size, 3);
   assert.match(question, /问/);
   assert.match(composerPlaceholder("question", true), /私聊/);
+});
+
+test("Zoom keeps each unanswered question and only the latest update per other task", () => {
+  const task: ZoomMessage = {
+    taskId: "local-id", taskTitle: "草稿策略", source: "Grok", folder: "OPC OS/工作台", origin: "external",
+    kind: "task", body: "草稿策略", at: "10:00", pending: false, id: "original",
+  };
+  const first: ZoomMessage = { ...task, id: "q1", kind: "question", body: "关闭后要保留吗？默认只保留本次。", pending: true, at: "10:01" };
+  const second: ZoomMessage = { ...first, id: "q2", at: "10:02", body: "需要同步吗？" };
+  const channel: ZoomMessage = { ...task, origin: "channel", id: "created", at: "11:00" };
+  const latest: ZoomMessage = { ...channel, kind: "progress", id: "progress", at: "12:00" };
+  const updates = [task, first, second, channel, latest];
+  assert.deepEqual(messageText(first), { title: "关闭后要保留吗？", body: "默认只保留本次。" });
+  assert.deepEqual(messageViews(updates).all.map(item => item.id), ["q2", "q1", "progress"]);
+  const reply: ZoomMessage = { ...task, kind: "reply", id: "reply", replyTo: "q1", body: "保留", at: "12:05" };
+  const afterReply = messageViews([task, { ...first, pending: false }, second, channel, latest, reply]);
+  assert.deepEqual(afterReply.pending, [second]);
+  assert.deepEqual(afterReply.all, [second, latest]);
+  assert.deepEqual(afterReply.handled, [reply]);
 });

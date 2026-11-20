@@ -65,7 +65,7 @@ test('desktop receipts survive restart and unauthorized HTTP never exposes inbox
  assert.throws(()=>restored.configureDesktop(actual,{roomId:restored.listRooms(foreign.id)[0].id,threadId,enabled:true}));
 });
 
-test('old thread cannot reply after rebind; owner controls and private room access are enforced',async()=>{
+test('old threads cannot reply after rebind and local browsers share bridge controls',async()=>{
  const {store,user,roomId,agent,token}=setup();
  store.configureDesktop(agent,{roomId,threadId,enabled:true});
  store.postMessage(user,roomId,{body:'@chatgpt old binding'});
@@ -77,7 +77,7 @@ test('old thread cannot reply after rebind; owner controls and private room acce
  store.postMessage(agent,roomId,{body:'agent chatter',group:'build'});
  assert.deepEqual(store.desktopInbox(agent).events.map(e=>e.body),['new binding']);
  const other=store.session('other-owner');const foreign=store.userBySession(other.token)!;assert.ok(foreign.type==='user');
- assert.throws(()=>store.pauseDesktop(foreign,roomId,agent.id,false));
+ assert.equal(store.pauseDesktop(foreign,roomId,agent.id,false).enabled,false);
  const rows=store.desktopBridges(user,roomId);assert.equal(rows.length,1);assert.equal(rows[0].threadId,'other-thread-id-20261013');
  store.pauseDesktop(user,roomId,agent.id,false);assert.equal(store.desktopInbox(agent).events.length,0);
  store.pauseDesktop(user,roomId,agent.id,true);assert.equal(store.desktopInbox(agent).events.length,1);

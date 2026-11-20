@@ -20,7 +20,7 @@ function studio(name = "磊") {
   return { store, user, roomId };
 }
 
-test("default workspaces have no demo clients and historical demo messages are explicit", () => {
+test("the local console starts empty and historical demo messages are explicit", () => {
   const store = openStore(":memory:");
   const session = store.session("真实模式");
   const user = store.userBySession(session.token);
@@ -29,18 +29,19 @@ test("default workspaces have no demo clients and historical demo messages are e
   assert.equal(store.snapshot(user, roomId, new Set()).members.agents.length, 0);
   store.ensureDemoCast();
   assert.equal(store.snapshot(user, roomId, new Set()).members.agents.length, 0);
-  const demoStore = new Store(store.db, true);
+  const demoStore = openStore(":memory:", { demo: true });
   const old = demoStore.session("历史演示");
   const demoUser = demoStore.userBySession(old.token);
   assert.ok(demoUser && demoUser.type === "user");
   const oldRoom = demoStore.listRooms(demoUser.id)[0].id;
   const agent = demoAgent(demoStore, "builder");
   demoStore.postMessage(agent, oldRoom, { kind: "chat", body: "旧演示回复" });
-  store.stopDemoAgents();
-  const snapshot = store.snapshot(demoUser, oldRoom, new Set());
+  const restored = new Store(demoStore.db);
+  restored.stopDemoAgents();
+  const snapshot = restored.snapshot(demoUser, oldRoom, new Set());
   assert.ok(snapshot.members.agents.every(agent => agent.paused));
   assert.equal(snapshot.messages.find(message => message.body === "旧演示回复")?.demo, true);
-  assert.throws(() => store.setPaused(demoUser, agent.id, false), /演示模式已关闭/);
+  assert.throws(() => restored.setPaused(demoUser, agent.id, false), /演示模式已关闭/);
 });
 
 function enroll(
@@ -92,8 +93,8 @@ test("closing a private conversation hides only the user's list and reopening re
   const outsiderSession = store.session("关闭权限外部用户");
   const outsider = store.userBySession(outsiderSession.token)!;
   assert.ok(outsider.type === "user");
-  assert.throws(() => store.closeConversation(outsider, direct.roomId));
-  store.closeConversation(user, direct.roomId);
+  assert.equal(outsider.id, user.id);
+  store.closeConversation(outsider, direct.roomId);
   assert.ok(!store.listRooms(user.id).some(room => room.id === direct.roomId));
   const reopened = store.userConversation(user, roomId, "close-test");
   assert.equal(reopened.roomId, direct.roomId);
@@ -167,7 +168,7 @@ test("two matching agents bid, and only one implementer is awarded", () => {
   assert.equal(events(store, holder.agentId, "awarded").length, 1);
 });
 
-test("room history is visible to members and hidden from outsiders", () => {
+test("local browsers share room history while agents read only joined rooms", () => {
   const { store, user, roomId } = studio();
   const agent = enroll(store, user, roomId, "coder");
   store.postMessage(user, roomId, { kind: "chat", body: "房间里的话" });
@@ -176,9 +177,7 @@ test("room history is visible to members and hidden from outsiders", () => {
   const other = store.session("别人");
   const outsider = store.userBySession(other.token);
   assert.ok(outsider && outsider.type === "user");
-  assert.throws(() => store.snapshot(outsider, roomId, new Set()), (error: unknown) => {
-    return error instanceof ApiError && error.status === 403;
-  });
+  assert.equal(store.snapshot(outsider, roomId, new Set()).messages.at(-1)?.body, "房间里的话");
 
   const otherRoom = store.createRoom(user, "密室", "");
   assert.throws(() => store.readMessages(agent, otherRoom.id, 0), (error: unknown) => {
@@ -604,7 +603,7 @@ test("a first-pass review raises level, a rejection lowers it, and a human relea
   assert.equal(store.readMessages(user, roomId, 0).filter((message) => String(message.body).includes("调到")).length, moved);
 });
 
-test("level stays inside 1 to 5, and studio members can set it", () => {
+test("level stays inside 1 to 5, and all local browser sessions can set it", () => {
   const { store, user, roomId } = studio();
   const coder = enroll(store, user, roomId, "coder", "lab", 5);
   const reviewer = enroll(store, user, roomId, "critic", "review");
@@ -632,11 +631,8 @@ test("level stays inside 1 to 5, and studio members can set it", () => {
   const outsiderSession = store.session("外人");
   const outsider = store.userBySession(outsiderSession.token);
   assert.ok(outsider && outsider.type === "user");
-  assert.throws(() => store.setLevel(outsider, coder.id, 4), (error: unknown) => {
-    return error instanceof ApiError && error.code === "no_agent";
-  });
+  assert.equal(store.setLevel(outsider, coder.id, 4).level, 4);
 
-  store.invite(user, roomId, "同事");
   const colleagueSession = store.session("同事");
   const colleague = store.userBySession(colleagueSession.token);
   assert.ok(colleague && colleague.type === "user");
@@ -669,9 +665,7 @@ test("levels are clamped on enroll and humans can change them", () => {
   assert.equal(store.setLevel(user, low.id, "bad").level, 1);
   const outsider = store.userBySession(store.session("别人").token);
   assert.ok(outsider && outsider.type === "user");
-  assert.throws(() => store.setLevel(outsider, low.id, 3), (error: unknown) => {
-    return error instanceof ApiError && error.code === "no_agent";
-  });
+  assert.equal(store.setLevel(outsider, low.id, 3).level, 3);
 });
 
 test("a complex task goes to strong agents only, a normal task ignores level", () => {
@@ -744,9 +738,7 @@ test("a channel keeps a project, several directories, and a branch on every task
   );
   const outsider = store.userBySession(store.session("外人").token);
   assert.ok(outsider && outsider.type === "user");
-  assert.throws(() => store.setScope(outsider, created.id, { project: "nope" }), (error: unknown) => {
-    return error instanceof ApiError && error.status === 403;
-  });
+  assert.equal(store.setScope(outsider, created.id, { project: "新名称" }).project, "新名称");
   const hall = store.snapshot(user, roomId, new Set()).room;
   assert.deepEqual(hall.directories, []);
   assert.equal(hall.project, "");
@@ -776,7 +768,7 @@ test("complex parallel tasks bid normally, and malformed JSON is a 400", async (
   const posted = store.postMessage(user, roomId, { kind: "instruction", body: "并行复杂", tags: "lab", complex: true, parallel: true });
   assert.equal(posted.task?.status, "bidding");
   const { app } = createApp(store);
-  const response = await app.request("/api/session", { method: "POST", body: "{oops", headers: { "content-type": "application/json" } });
+  const response = await app.request("/api/rooms", { method: "POST", body: "{oops", headers: { "content-type": "application/json", cookie: "ac_session=" + store.session().token } });
   assert.equal(response.status, 400);
 });
 
@@ -865,15 +857,13 @@ test("a project room can be archived, and history stays readable until it is res
   assert.equal(store.snapshot(user, created.id, new Set()).messages.some((message) => message.body === "频道已取消归档。"), true);
 });
 
-test("an outsider cannot archive a room", () => {
+test("another local browser can archive a room", () => {
   const { store, user } = studio();
   const created = store.createRoom(user, "前端", "界面");
   const outsider = store.userBySession(store.session("外人").token);
   assert.ok(outsider && outsider.type === "user");
-  assert.throws(() => store.setArchived(outsider, created.id, true), (error: unknown) => {
-    return error instanceof ApiError && error.status === 403 && error.code === "not_member";
-  });
-  assert.equal(store.listRooms(user.id).find((room) => room.id === created.id)?.archived, false);
+  store.setArchived(outsider, created.id, true);
+  assert.equal(store.listRooms(user.id).find((room) => room.id === created.id)?.archived, true);
 });
 
 test("patch updates channel text and archive, and an old database marks its earliest room as the hall", async () => {

@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { GROUPS, groupById, groupOf, groupsOf, normalizeGroups } from "../groups.ts";
 import { openDatabase } from "./db.ts";
+import { humanChannelQuestion } from "./zoom-channel.ts";
+import { acquireClaim, finishClaim, renewClaim } from "./claims.ts";
 import {
   ARTIFACT_LIMIT,
   CROSS_RETURN_LIMIT,
@@ -20,7 +22,7 @@ import {
   normalizeShots,
 } from "./pipeline.ts";
 
-export const LEASE_MS = 10 * 60 * 1000;
+export { LEASE_MS } from "./claims.ts";
 export const LOCK_MS = 120_000;
 const JOIN_MS = 30 * 60 * 1000;
 export const PRESENCE_MS = 5 * 60 * 1000;
@@ -74,6 +76,7 @@ type RoomRecord = {
 };
 
 type InboxKind =
+  | "stage_offer"
   | "mention"
   | "thread"
   | "task_open"
@@ -281,7 +284,45 @@ export class Store {
   private pendingInbox: string[] = [];
   private dirtyRooms = new Set<string>();
 
-  constructor(readonly db: DatabaseSync, readonly demoEnabled = false) {}
+  private readonly local: { userId: string; roomId: string; orgId: string };
+
+  constructor(readonly db: DatabaseSync, readonly demoEnabled = false) {
+    this.local = this.transaction(() => {
+      const saved = this.db.prepare(`SELECT l.user_id AS userId,l.room_id AS roomId,r.org_id AS orgId
+        FROM local_console l JOIN rooms r ON r.id = l.room_id WHERE l.singleton = 1`).get() as typeof this.local | undefined;
+      if (saved) {
+        this.db.prepare("UPDATE orgs SET name = 'OPC OS' WHERE id = ? AND name = '昆仑'").run(saved.orgId);
+        return saved;
+      }
+      const created = nowIso();
+      const userId = uuid();
+      this.db.prepare("INSERT INTO users(id,name,name_key,created_at) VALUES (?, '本机', ?, ?)").run(userId, userId, created);
+      // Existing rooms and agent identities keep their IDs, authors, tokens and inboxes.
+      let home = this.db.prepare(`SELECT id AS roomId, org_id AS orgId FROM rooms
+        WHERE general = 1 AND direct = 0 ORDER BY created_at, id LIMIT 1`).get() as { roomId: string; orgId: string } | undefined;
+      if (!home) {
+        home = { roomId: uuid(), orgId: uuid() };
+        this.db.prepare("INSERT INTO orgs(id,name,created_at) VALUES (?, 'OPC OS', ?)").run(home.orgId, created);
+        this.db.prepare(`INSERT INTO rooms(id, org_id, name, topic, general, created_by, created_at)
+          VALUES (?, ?, '大厅', '在这里与本机的 coding agent 协作。', 1, ?, ?)`).run(home.roomId, home.orgId, userId, created);
+        if (this.demoEnabled) this.seedDemo(home.orgId, userId, home.roomId);
+      }
+      this.db.prepare("INSERT INTO local_console(singleton,user_id,room_id) VALUES (1,?,?)").run(userId, home.roomId);
+      this.db.prepare(`INSERT INTO room_members(room_id,principal_type,principal_id,last_read_seq,hidden,joined_at)
+        SELECT r.id,'user',?,COALESCE(MAX(m.last_read_seq),0),COALESCE(MIN(m.hidden),0),?
+        FROM rooms r LEFT JOIN room_members m ON m.room_id=r.id AND m.principal_type='user' GROUP BY r.id`).run(userId, created);
+      this.db.prepare("INSERT INTO org_members(org_id,user_id,role) VALUES (?,?,'owner')").run(home.orgId,userId);
+      return { ...home, userId };
+    });
+  }
+
+  localUser(): Extract<Principal, { type: "user" }> {
+    return { type: "user", id: this.local.userId, name: "本机" };
+  }
+
+  localRoom() {
+    return this.local.roomId;
+  }
 
   private transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
@@ -324,56 +365,11 @@ export class Store {
     return paused !== 1 && !!lastSeenAt && Date.parse(lastSeenAt) > Date.now() - PRESENCE_MS;
   }
 
-  session(name: string) {
-    const clean = name.trim().replace(/\s+/g, " ");
-    if (!clean || clean.length > 40) throw new ApiError(400, "bad_name", "名字需要 1 到 40 个字");
-    const key = nameKey(clean);
-    const result = this.transaction(() => {
-      let user = this.db.prepare("SELECT * FROM users WHERE name_key = ?").get(key) as
-        | { id: string; name: string }
-        | undefined;
-      if (!user) {
-        user = { id: uuid(), name: clean };
-        this.db
-          .prepare("INSERT INTO users (id, name, name_key, created_at) VALUES (?, ?, ?, ?)")
-          .run(user.id, clean, key, nowIso());
-      }
-      const membership = this.db
-        .prepare("SELECT org_id FROM org_members WHERE user_id = ? LIMIT 1")
-        .get(user.id) as { org_id: string } | undefined;
-      let orgId = membership?.org_id;
-      let roomId: string | null = null;
-      if (!orgId) {
-        orgId = uuid();
-        const created = nowIso();
-        this.db.prepare("INSERT INTO orgs (id, name, created_at) VALUES (?, ?, ?)").run(orgId, "工作室", created);
-        this.db
-          .prepare("INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, 'owner')")
-          .run(orgId, user.id);
-        roomId = uuid();
-        this.db
-          .prepare(
-            "INSERT INTO rooms (id, org_id, name, topic, general, created_by, created_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
-          )
-          .run(
-            roomId,
-            orgId,
-            "大厅",
-            "把需求发在这里。在场的 agent 自己认领，别的 agent 负责评审和测试。",
-            user.id,
-            created,
-          );
-        this.addRoomMember(roomId, "user", user.id);
-        if (this.demoEnabled) this.seedDemo(orgId, user.id, roomId);
-      }
-      const token = `ses_${randomBytes(24).toString("base64url")}`;
-      this.db
-        .prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)")
-        .run(token, user.id, nowIso());
-      return { token, user, orgId, roomId };
-    });
-    this.flush();
-    return result;
+  session(_name?: string) {
+    const { id, name } = this.localUser();
+    const token = `ses_${randomBytes(24).toString("base64url")}`;
+    this.db.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)").run(token, id, nowIso());
+    return { token, user: { id, name }, orgId: this.local.orgId, roomId: this.localRoom() };
   }
 
   private seedDemo(orgId: string, ownerId: string, roomId: string) {
@@ -429,12 +425,7 @@ export class Store {
 
   userBySession(token: string | undefined): Principal | null {
     if (!token) return null;
-    const row = this.db
-      .prepare(
-        `SELECT u.id, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`,
-      )
-      .get(token) as { id: string; name: string } | undefined;
-    return row ? { type: "user", id: row.id, name: row.name } : null;
+    return this.db.prepare("SELECT 1 FROM sessions WHERE token = ?").get(token) ? this.localUser() : null;
   }
 
   agentByToken(token: string | undefined): Principal | null {
@@ -571,9 +562,9 @@ export class Store {
     const rooms = this.listRooms(user.id);
     const agents = this.db
       .prepare(
-        `SELECT id, handle, runtime, paused, demo, level, org_id, last_seen_at FROM agents WHERE owner_user_id = ? ORDER BY created_at`,
+        `SELECT id, handle, runtime, paused, demo, level, org_id, last_seen_at FROM agents ORDER BY created_at`,
       )
-      .all(user.id);
+      .all();
     return { user: { id: user.id, name: user.name }, orgs, rooms, agents };
   }
 
@@ -607,10 +598,6 @@ export class Store {
   ) {
     const clean = name.trim();
     if (!clean || clean.length > 40) throw new ApiError(400, "bad_name", "频道名需要 1 到 40 个字");
-    const org = this.db
-      .prepare("SELECT org_id FROM org_members WHERE user_id = ? ORDER BY role DESC LIMIT 1")
-      .get(user.id) as { org_id: string } | undefined;
-    if (!org) throw new ApiError(400, "no_org", "还没有工作室");
     const topicText = trimTopic(topic);
     const currentTopic = trimCurrentTopic(scope.currentTopic);
     const project = cleanLine(scope.project, 80);
@@ -624,12 +611,12 @@ export class Store {
              (id, org_id, name, topic, current_topic, project, directories, branch, created_by, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, org.org_id, clean, topicText, currentTopic, project, JSON.stringify(directories), branch, user.id, nowIso());
+        .run(id, this.local.orgId, clean, topicText, currentTopic, project, JSON.stringify(directories), branch, user.id, nowIso());
       this.addRoomMember(id, "user", user.id);
       return {
         id,
         name: clean,
-        org_id: org.org_id,
+        org_id: this.local.orgId,
         topic: topicText,
         currentTopic,
         general: false,
@@ -774,7 +761,6 @@ export class Store {
 
   createJoinCode(user: Principal & { type: "user" }, roomId: string) {
     this.assertMember(user, roomId);
-    const room = this.roomRow(roomId);
     const code = `join_${randomBytes(9).toString("base64url")}`;
     const expiresAt = plus(JOIN_MS);
     this.db
@@ -782,7 +768,7 @@ export class Store {
         `INSERT INTO join_codes (code, org_id, room_id, created_by, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(code, room.org_id, roomId, user.id, expiresAt, nowIso());
+      .run(code, this.local.orgId, roomId, user.id, expiresAt, nowIso());
     return { code, expiresAt, roomId };
   }
 
@@ -814,9 +800,9 @@ export class Store {
       if (row.used_by_agent_id) throw new ApiError(409, "code_used", "这个接入码已经用过了");
       if (row.expires_at < nowIso()) throw new ApiError(410, "code_expired", "接入码过期了，请重新生成");
       const taken = this.db
-        .prepare("SELECT 1 FROM agents WHERE org_id = ? AND handle = ?")
-        .get(row.org_id, cleanHandle);
-      if (taken) throw new ApiError(409, "handle_taken", "这个句柄在工作室里已经有了");
+        .prepare("SELECT 1 FROM agents WHERE handle = ?")
+        .get(cleanHandle);
+      if (taken) throw new ApiError(409, "handle_taken", "本机已有相同句柄的客户端");
       const id = uuid();
       const token = `agt_${randomBytes(24).toString("base64url")}`;
       const cleanTags = parseTags(tags).join(",");
@@ -873,21 +859,20 @@ export class Store {
     return result;
   }
 
-  placeExisting(user: Principal & { type: "user" }, roomId: string, handle: string) {
+  placeExisting(user: Extract<Principal, { type: "user" }>, roomId: string, handle: string, agentId?: string) {
     const clean = handle.trim().toLowerCase();
     const result = this.transaction(() => {
       this.assertMember(user, roomId);
-      const room = this.roomRow(roomId);
-      const agent = this.db
-        .prepare("SELECT id, handle FROM agents WHERE org_id = ? AND handle = ?")
-        .get(room.org_id, clean) as { id: string; handle: string } | undefined;
-      if (!agent) throw new ApiError(404, "no_agent", "工作室里没有这个句柄");
-      const member = this.db
-        .prepare(
-          "SELECT 1 AS ok FROM room_members WHERE room_id = ? AND principal_type = 'agent' AND principal_id = ?",
-        )
-        .get(roomId, agent.id);
-      if (!member) {
+      const match = this.db.prepare(`SELECT a.id,a.handle FROM agents a JOIN room_members m
+        ON m.principal_type='agent' AND m.principal_id=a.id WHERE m.room_id=? AND a.handle=?`)
+        .get(roomId, clean) as { id: string; handle: string } | undefined;
+      if (match && agentId && match.id !== agentId) throw new ApiError(409, "handle_conflict", "频道已有同名的另一个客户端");
+      const candidates = match ? [match] : this.db.prepare("SELECT id,handle FROM agents WHERE handle=? AND (? IS NULL OR id=?)")
+        .all(clean, agentId ?? null, agentId ?? null) as Array<{ id: string; handle: string }>;
+      if (candidates.length > 1) throw new ApiError(409, "ambiguous_handle", "本机有多个同名客户端，需要使用对应的接入凭证");
+      const agent = candidates[0];
+      if (!agent) throw new ApiError(404, "no_agent", "找不到这个客户端");
+      if (!match) {
         this.addRoomMember(roomId, "agent", agent.id);
         this.insertMessage({
           roomId,
@@ -899,7 +884,7 @@ export class Store {
           addressed: [],
         });
       }
-      return { id: agent.id, handle: agent.handle, joined: !member };
+      return { id: agent.id, handle: agent.handle, joined: !match };
     });
     this.flush();
     return result;
@@ -914,10 +899,9 @@ export class Store {
 
   setPaused(user: Principal & { type: "user" }, agentId: string, paused: boolean) {
     const row = this.db
-      .prepare("SELECT owner_user_id, org_id, demo FROM agents WHERE id = ?")
-      .get(agentId) as { owner_user_id: string; demo: number } | undefined;
+      .prepare("SELECT demo FROM agents WHERE id = ?")
+      .get(agentId) as { demo: number } | undefined;
     if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
-    if (row.owner_user_id !== user.id) throw new ApiError(403, "not_owner", "只能暂停自己接入的 agent");
     if (row.demo && !this.demoEnabled && !paused) throw new ApiError(400, "demo_disabled", "演示模式已关闭，请接入真实客户端");
     this.db.prepare("UPDATE agents SET paused = ? WHERE id = ?").run(paused ? 1 : 0, agentId);
     return { id: agentId, paused };
@@ -931,10 +915,9 @@ export class Store {
   stopAgent(user: Principal & { type: "user" }, agentId: string) {
     const result = this.transaction(() => {
       const row = this.db
-        .prepare("SELECT owner_user_id, handle FROM agents WHERE id = ?")
-        .get(agentId) as { owner_user_id: string; handle: string } | undefined;
+        .prepare("SELECT handle FROM agents WHERE id = ?")
+        .get(agentId) as { handle: string } | undefined;
       if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
-      if (row.owner_user_id !== user.id) throw new ApiError(403, "not_owner", "只能停止自己接入的 agent");
       this.db.prepare("UPDATE agents SET paused = 1 WHERE id = ?").run(agentId);
       const claims = this.db
         .prepare(
@@ -978,11 +961,9 @@ export class Store {
     const result = this.transaction(() => {
       const row = this.db
         .prepare(
-          `SELECT a.handle, a.level FROM agents a
-           JOIN org_members m ON m.org_id = a.org_id AND m.user_id = ?
-           WHERE a.id = ?`,
+          `SELECT handle, level FROM agents WHERE id = ?`,
         )
-        .get(user.id, agentId) as { handle: string; level: number } | undefined;
+        .get(agentId) as { handle: string; level: number } | undefined;
       if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
       if (row.level === next) return { id: agentId, level: next };
       this.db.prepare("UPDATE agents SET level = ? WHERE id = ?").run(next, agentId);
@@ -1014,11 +995,9 @@ export class Store {
     const result = this.transaction(() => {
       const row = this.db
         .prepare(
-          `SELECT a.handle, a.tags FROM agents a
-           JOIN org_members m ON m.org_id = a.org_id AND m.user_id = ?
-           WHERE a.id = ?`,
+          `SELECT handle, tags FROM agents WHERE id = ?`,
         )
-        .get(user.id, agentId) as { handle: string; tags: string } | undefined;
+        .get(agentId) as { handle: string; tags: string } | undefined;
       if (!row) throw new ApiError(404, "no_agent", "没有这个 agent");
       const custom = parseTags(row.tags).filter((tag) => !groupById(tag));
       const nextTags = [...parseTags(next.id), ...custom].join(",");
@@ -1055,7 +1034,7 @@ export class Store {
     const latest = this.db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE room_id = ?").get(roomId) as { seq: number };
     const messages = this.decorateMessages(roomId, Math.max(0, latest.seq - 300), 300);
     const tasks = this.tasksInRoom(roomId);
-    const locks = this.locksForOrg(room.org_id);
+    const locks = this.activeLocks(principal);
     return {
       room: { id: room.id, orgId: room.org_id, name: room.name, ...this.channelView(room) },
       members,
@@ -1100,7 +1079,7 @@ export class Store {
     const existing = this.db.prepare(`SELECT r.id FROM rooms r WHERE r.direct = 1
       AND EXISTS (SELECT 1 FROM room_members m WHERE m.room_id = r.id AND m.principal_type = 'user' AND m.principal_id = ?)
       AND EXISTS (SELECT 1 FROM room_members m WHERE m.room_id = r.id AND m.principal_type = 'agent' AND m.principal_id = ?)
-      AND (SELECT COUNT(*) FROM room_members m WHERE m.room_id = r.id) = 2`).get(user.id, target.id) as { id: string } | undefined;
+      AND (SELECT COUNT(*) FROM room_members m WHERE m.room_id = r.id AND m.principal_type='agent') = 1 ORDER BY r.created_at DESC LIMIT 1`).get(user.id, target.id) as { id: string } | undefined;
     if (existing) {
       this.db.prepare("UPDATE room_members SET hidden = 0 WHERE room_id = ? AND principal_type = 'user' AND principal_id = ?").run(existing.id, user.id);
       return { roomId: existing.id };
@@ -1139,6 +1118,7 @@ export class Store {
       steps?: unknown;
       group?: string;
       coordinatorRunId?: string;
+      replyTo?: string;
       desktopEventId?: number;
       desktopThreadId?: string;
     },
@@ -1195,7 +1175,7 @@ export class Store {
       }
       if (input.coordinatorRunId) {
         if (principal.type !== "user" || kind !== "instruction") throw new ApiError(403,"coordinator_dispatch","只有用户可以确认协调派发");
-        const run = this.db.prepare("SELECT status,task_id FROM coordinator_runs WHERE id=? AND user_id=? AND room_id=?").get(input.coordinatorRunId,principal.id,roomId) as {status:string;task_id:string|null}|undefined;
+        const run = this.db.prepare("SELECT status,task_id FROM coordinator_runs WHERE id=? AND room_id=?").get(input.coordinatorRunId,roomId) as {status:string;task_id:string|null}|undefined;
         if (run?.status === "applied" && run.task_id) {
           const existing = this.taskRow(run.task_id);
           return {message:this.decorateOne(existing.message_id),task:this.publicTask(existing.id)};
@@ -1203,6 +1183,28 @@ export class Store {
         if (run?.status !== "ready") throw new ApiError(409,"coordination_not_ready","协调方案不能派发");
       }
       let taskId = input.taskId ?? null;
+      if (input.replyTo !== undefined) {
+        if (principal.type !== "user" || kind !== "chat") throw new ApiError(400, "bad_reply", "请选择一条待答问题");
+        const question = this.db.prepare(`SELECT m.task_id, a.id, a.handle, r.archived, membership.hidden
+          FROM messages m JOIN agents a ON a.id = m.author_id
+          JOIN rooms r ON r.id = m.room_id JOIN room_members membership ON membership.room_id = r.id
+          WHERE m.id = ? AND r.id = ? AND membership.principal_type = 'user' AND membership.principal_id = ?
+          AND ${humanChannelQuestion}`)
+          .get(input.replyTo, roomId, principal.id) as { task_id: string | null; id: string; handle: string; archived: number; hidden: number } | undefined;
+        if (!question || question.hidden || question.archived) throw new ApiError(404, "question_missing", "找不到可答复的原问题");
+        if (taskId && taskId !== question.task_id) throw new ApiError(409, "wrong_task", "答复需要回到原任务");
+        const prior = this.db.prepare(`SELECT m.id,m.body,m.author_id FROM channel_question_replies q
+          JOIN messages m ON m.id = q.reply_id WHERE q.question_id = ?`).get(input.replyTo) as { id: string; body: string; author_id: string } | undefined;
+        if (prior) {
+          if (prior.body !== body || prior.author_id !== principal.id) throw new ApiError(409, "already_answered", "这个问题已经答复");
+          return { message: this.decorateOne(prior.id), task: question.task_id ? this.publicTask(question.task_id) : null };
+        }
+        if (question.task_id && ["done", "failed", "canceled"].includes(this.taskRow(question.task_id).status)) {
+          throw new ApiError(409, "closed_task", "原任务已经结束");
+        }
+        taskId = question.task_id;
+        addressed.splice(0, addressed.length, { type: "agent", id: question.id, handle: question.handle });
+      }
       if (kind === "instruction") taskId = null;
       let current: TaskRow | null = null;
       if (taskId) {
@@ -1228,6 +1230,7 @@ export class Store {
         replyGroup,
       });
       let task = null;
+      if (input.replyTo !== undefined) this.db.prepare("INSERT INTO channel_question_replies(question_id, reply_id) VALUES (?, ?)").run(input.replyTo, message.id);
       if (createdTaskId) {
         if (input.steps !== undefined && input.steps !== null) {
           this.createPipeline({
@@ -1277,6 +1280,7 @@ export class Store {
         author: principal,
         message,
         addressed: createdTaskId ? [] : addressed,
+        replyingToQuestion: input.replyTo !== undefined,
         taskId: message.task_id,
         share:
           principal.type === "user" &&
@@ -1524,18 +1528,8 @@ export class Store {
     this.assertAwake(agent);
     const task = this.taskRow(taskId);
     this.assertMember(agent, task.room_id);
-    const claims = this.db
-      .prepare(
-        `SELECT id FROM task_claims WHERE task_id = ? AND agent_id = ? AND state = 'active'`,
-      )
-      .all(taskId, agent.id) as Array<{ id: string }>;
-    if (claims.length === 0) throw new ApiError(403, "not_holder", "你没有这条任务的槽位");
-    const until = plus(LEASE_MS);
-    this.db
-      .prepare(
-        `UPDATE task_claims SET lease_until = ?, updated_at = ? WHERE task_id = ? AND agent_id = ? AND state = 'active'`,
-      )
-      .run(until, nowIso(), taskId, agent.id);
+    const until = renewClaim(this.db, "task_claims", taskId, agent.id);
+    if (!until) throw new ApiError(403, "not_holder", "你没有这条任务的槽位");
     this.touchSeen(agent.id);
     return { leaseUntil: until };
   }
@@ -1569,7 +1563,7 @@ export class Store {
         taskId,
         kind,
         body: text,
-        addressed: [],
+        addressed: verdict === "question" && implementer ? [{ type: "agent", id: implementer, handle: this.handleOf(implementer) }] : [],
       });
       if (verdict === "approve") {
         this.finishClaim(taskId, "reviewer", agent.id, "completed");
@@ -1728,30 +1722,19 @@ export class Store {
   lockFile(agent: Principal & { type: "agent" }, path: string, taskId?: string | null) {
     this.assertAwake(agent);
     const clean = cleanPath(path);
-    if (taskId) {
-      const task = this.taskRow(taskId);
-      if (task.room_id && this.roomRow(task.room_id).org_id !== agent.orgId) {
-        throw new ApiError(403, "wrong_org", "任务不在你的工作室");
-      }
-    }
+    if (taskId) this.assertMember(agent, this.taskRow(taskId).room_id);
     const until = plus(LOCK_MS);
-    const existing = this.db
-      .prepare("SELECT agent_id, lease_until FROM file_locks WHERE org_id = ? AND path = ?")
-      .get(agent.orgId, clean) as { agent_id: string; lease_until: string } | undefined;
-    if (existing && existing.agent_id !== agent.id && existing.lease_until > nowIso()) {
-      throw new ApiError(409, "locked", `这个路径锁在 ${this.handleOf(existing.agent_id)} 手上`);
-    }
-    this.db
-      .prepare(
-        `INSERT INTO file_locks (org_id, path, agent_id, task_id, lease_until)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(org_id, path) DO UPDATE SET
-           agent_id = excluded.agent_id,
-           task_id = excluded.task_id,
-           lease_until = excluded.lease_until`,
-      )
-      .run(agent.orgId, clean, agent.id, taskId ?? null, until);
-    this.dirtyRooms.add(this.anyRoom(agent.orgId) ?? "");
+    this.transaction(() => {
+      // Old databases can contain simultaneous leases on the same path under different org IDs.
+      const blocker = this.db.prepare("SELECT agent_id FROM file_locks WHERE path=? AND agent_id<>? AND lease_until>? LIMIT 1")
+        .get(clean, agent.id, nowIso()) as { agent_id: string } | undefined;
+      if (blocker) throw new ApiError(409, "locked", `这个路径锁在 ${this.handleOf(blocker.agent_id)} 手上`);
+      this.db.prepare("DELETE FROM file_locks WHERE path=? AND agent_id=?").run(clean, agent.id);
+      this.db.prepare(`INSERT INTO file_locks(org_id,path,agent_id,task_id,lease_until) VALUES (?,?,?,?,?)
+        ON CONFLICT(org_id,path) DO UPDATE SET agent_id=excluded.agent_id,task_id=excluded.task_id,lease_until=excluded.lease_until`)
+        .run(this.local.orgId, clean, agent.id, taskId ?? null, until);
+    });
+    this.dirtyRooms.add(taskId ? this.taskRow(taskId).room_id : this.localRoom());
     this.flush();
     return { path: clean, leaseUntil: until };
   }
@@ -1759,13 +1742,31 @@ export class Store {
   unlockFile(agent: Principal & { type: "agent" }, path: string) {
     this.assertAwake(agent);
     const clean = cleanPath(path);
-    const existing = this.db
-      .prepare("SELECT agent_id FROM file_locks WHERE org_id = ? AND path = ?")
-      .get(agent.orgId, clean) as { agent_id: string } | undefined;
-    if (!existing) return { path: clean, released: false };
-    if (existing.agent_id !== agent.id) throw new ApiError(403, "not_holder", "这把锁不是你的");
-    this.db.prepare("DELETE FROM file_locks WHERE org_id = ? AND path = ?").run(agent.orgId, clean);
-    return { path: clean, released: true };
+    const deleted = this.db.prepare("DELETE FROM file_locks WHERE path=? AND agent_id=?").run(clean, agent.id);
+    if (!deleted.changes && this.db.prepare("SELECT 1 FROM file_locks WHERE path=? AND lease_until>?").get(clean, nowIso())) {
+      throw new ApiError(403, "not_holder", "这把锁不是你的");
+    }
+    return { path: clean, released: Boolean(deleted.changes) };
+  }
+
+  notifyStageOffer(workId: string, target: string) {
+    // A room inbox is a transport. The stage lease is the sole owner of execution.
+    this.transaction(() => {
+      const row = this.db.prepare(`SELECT a.id,r.id AS room_id,t.title
+        FROM stage_work w JOIN zoom_tasks t ON t.id=w.task_id
+        JOIN agents a ON a.handle=? COLLATE NOCASE AND a.org_id=? AND a.paused=0 AND a.demo=0
+        JOIN room_members agent ON agent.principal_id=a.id AND agent.principal_type='agent'
+        JOIN rooms r ON r.id=agent.room_id AND r.archived=0
+        JOIN room_members reader ON reader.room_id=r.id AND reader.principal_type='user' AND reader.principal_id=? AND reader.hidden=0
+        WHERE w.task_id=? AND t.completed=0 AND json_extract(w.brief,'$.requestedAgent')=? COLLATE NOCASE
+        AND json_extract(w.brief,'$.target')='coding-agent' AND json_extract(w.brief,'$.templateId')='inbox-delegation'
+        AND NOT EXISTS (SELECT 1 FROM stage_claims c WHERE c.task_id=w.task_id AND c.state IN ('active','completed'))
+        AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.event_type='stage_offer' AND i.ref_id=w.task_id)
+        ORDER BY r.general DESC,r.id LIMIT 1`).get(target, this.local.orgId, this.local.userId, workId, target) as
+        { id: string; room_id: string; title: string } | undefined;
+      if (row) this.pushInbox(row.id, row.room_id, "stage_offer", workId, "OPC OS 委派给你。用 delegated_work 查看、claim_delegated_work 接手。" + row.title);
+    });
+    this.flush();
   }
 
   takePending(agentId: string) {
@@ -1799,14 +1800,14 @@ export class Store {
     const rows = this.db.prepare(`SELECT a.id AS agentId,a.handle,a.paused,b.thread_id AS threadId,b.enabled,b.last_poll_at AS lastPollAt,
       (SELECT MAX(r.created_at) FROM desktop_receipts r JOIN inbox i ON i.id=r.event_id WHERE r.agent_id=a.id AND i.room_id=b.room_id) AS lastReplyAt,
       (SELECT COUNT(*) FROM desktop_receipts r JOIN inbox i ON i.id=r.event_id WHERE r.agent_id=a.id AND i.room_id=b.room_id) AS replies
-      FROM desktop_bridges b JOIN agents a ON a.id=b.agent_id WHERE b.room_id=? AND a.owner_user_id=?`).all(roomId,user.id) as Array<{agentId:string;handle:string;paused:number;threadId:string;enabled:number;lastPollAt:string|null;lastReplyAt:string|null;replies:number}>;
+      FROM desktop_bridges b JOIN agents a ON a.id=b.agent_id WHERE b.room_id=?`).all(roomId) as Array<{agentId:string;handle:string;paused:number;threadId:string;enabled:number;lastPollAt:string|null;lastReplyAt:string|null;replies:number}>;
     return rows.map(row=>({...row,enabled:row.enabled===1,paused:row.paused===1}));
   }
 
   pauseDesktop(user: Principal & {type:"user"},roomId:string,agentId:string,enabled:boolean) {
     this.assertMember(user,roomId);
-    const own=this.db.prepare("SELECT a.id FROM agents a JOIN desktop_bridges b ON b.agent_id=a.id WHERE a.id=? AND a.owner_user_id=? AND b.room_id=?").get(agentId,user.id,roomId);
-    if (!own) throw new ApiError(403,"not_owner","只能修改自己的桌面桥接");
+    const bridge=this.db.prepare("SELECT 1 FROM desktop_bridges WHERE agent_id=? AND room_id=?").get(agentId,roomId);
+    if (!bridge) throw new ApiError(404,"no_bridge","这个频道没有该客户端的桌面桥接");
     this.db.prepare("UPDATE desktop_bridges SET enabled=? WHERE agent_id=?").run(enabled?1:0,agentId);
     return {enabled};
   }
@@ -1967,7 +1968,9 @@ export class Store {
     if (body.length > 8000) throw new ApiError(400, "too_long", "一条消息最多 8000 字");
     const peers = this.listPeers(agent);
     const targets = handles.map((handle) => {
-      const peer = peers.find((item) => item.handle === handle);
+      const matches = peers.filter(item => item.id === handle || item.handle === handle);
+      if (matches.length > 1) throw new ApiError(409, "ambiguous_handle", "多个同名客户端共享频道，请从 list_peers 选择对应的 ID");
+      const peer = matches[0];
       if (!peer) throw new ApiError(404, "no_peer", `你和 ${handle} 不在同一个频道，不能私聊`);
       return peer;
     });
@@ -2073,7 +2076,7 @@ export class Store {
 
   private openConversation(agent: Principal & { type: "agent" }, peerIds: string[]) {
     const ids = [...new Set([agent.id, ...peerIds])].sort();
-    const existing = this.findDirectRoom(agent.orgId, ids);
+    const existing = this.findDirectRoom(ids);
     if (existing) return existing;
     const handles = ids.map((id) => this.handleOf(id)).sort();
     const name = handles.join("、").slice(0, 40);
@@ -2085,15 +2088,7 @@ export class Store {
            VALUES (?, ?, ?, ?, 1, ?, ?)`,
         )
         .run(id, agent.orgId, name, "只有参与者能看到的对话。", agent.ownerUserId, nowIso());
-      const owners = new Set<string>();
-      for (const memberId of ids) {
-        this.addRoomMember(id, "agent", memberId);
-        const owner = this.db.prepare("SELECT owner_user_id FROM agents WHERE id = ?").get(memberId) as {
-          owner_user_id: string;
-        };
-        owners.add(owner.owner_user_id);
-      }
-      for (const ownerId of owners) this.addRoomMember(id, "user", ownerId);
+      for (const memberId of ids) this.addRoomMember(id, "agent", memberId);
       this.insertMessage({
         roomId: id,
         authorType: "system",
@@ -2109,9 +2104,9 @@ export class Store {
     return result;
   }
 
-  private findDirectRoom(orgId: string, agentIds: string[]) {
+  private findDirectRoom(agentIds: string[]) {
     const wanted = agentIds.slice().sort().join("\0");
-    const rooms = this.db.prepare("SELECT id FROM rooms WHERE org_id = ? AND direct = 1").all(orgId) as Array<{
+    const rooms = this.db.prepare("SELECT id FROM rooms WHERE direct = 1").all() as Array<{
       id: string;
     }>;
     const membersOf = this.db.prepare(
@@ -2240,11 +2235,7 @@ export class Store {
   }
 
   private finishClaim(taskId: string, role: Role, agentId: string, state: string) {
-    this.db
-      .prepare(
-        `UPDATE task_claims SET state = ?, updated_at = ? WHERE task_id = ? AND role = ? AND agent_id = ? AND state = 'active'`,
-      )
-      .run(state, nowIso(), taskId, role, agentId);
+    finishClaim(this.db, "task_claims", taskId, role, agentId, state);
   }
 
   private finishRole(taskId: string, role: Role, state: string) {
@@ -2304,13 +2295,7 @@ export class Store {
   }
 
   private insertClaim(taskId: string, role: Role, agentId: string) {
-    const stamp = nowIso();
-    this.db
-      .prepare(
-        `INSERT INTO task_claims (id, task_id, role, agent_id, state, lease_until, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`,
-      )
-      .run(uuid(), taskId, role, agentId, plus(LEASE_MS), stamp, stamp);
+    acquireClaim(this.db, "task_claims", uuid(), taskId, role, agentId);
   }
 
   private agentTags(agentId: string) {
@@ -2946,6 +2931,22 @@ export class Store {
     });
   }
 
+  writeRoomMessages<T>(action: () => T) {
+    const result = this.transaction(action);
+    this.flush();
+    return result;
+  }
+
+  // An explicitly addressed Home conversation is mirrored into its real local room.
+  // It does not fan out ordinary chat notifications or allocate an execution task.
+  recordHomeRoomMessage(roomId: string, author: Principal | null, body: string) {
+    if (author) this.assertMember(author, roomId);
+    if (this.roomRow(roomId).archived) throw new ApiError(409, "room_archived", "项目房间已归档。");
+    const message = this.insertMessage({ roomId, authorType: author?.type ?? "system",
+      authorId: author?.id ?? "agent-home", kind: "chat", taskId: null, body, addressed: [] });
+    return message.id;
+  }
+
   private insertMessage(input: {
     roomId: string;
     authorType: string;
@@ -3017,6 +3018,7 @@ export class Store {
     addressed: Addressed[];
     taskId: string | null;
     share?: boolean;
+    replyingToQuestion?: boolean;
   }) {
     const sent = new Set<string>();
     const push = (agentId: string, eventType: InboxKind, summary: string) => {
@@ -3052,7 +3054,10 @@ export class Store {
       const holders = this.db
         .prepare(`SELECT agent_id FROM task_claims WHERE task_id = ? AND state = 'active'`)
         .all(input.taskId) as Array<{ agent_id: string }>;
-      for (const holder of holders) push(holder.agent_id, "thread", input.message.body);
+      for (const holder of holders) {
+        if (input.replyingToQuestion && input.addressed.some(recipient => recipient.id === holder.agent_id)) continue;
+        push(holder.agent_id, "thread", input.message.body);
+      }
     }
   }
 
@@ -3281,14 +3286,17 @@ export class Store {
     };
   }
 
-  private locksForOrg(orgId: string) {
+  private activeLocks(principal: Principal) {
     const rows = this.db
       .prepare(
         `SELECT l.path, l.task_id, l.lease_until, a.handle
          FROM file_locks l JOIN agents a ON a.id = l.agent_id
-         WHERE l.org_id = ? AND l.lease_until > ?`,
+         WHERE l.lease_until > ? AND (? = 'user' OR l.agent_id=? OR EXISTS (
+           SELECT 1 FROM room_members mine JOIN room_members theirs ON theirs.room_id=mine.room_id
+           WHERE mine.principal_type='agent' AND mine.principal_id=?
+             AND theirs.principal_type='agent' AND theirs.principal_id=l.agent_id))`,
       )
-      .all(orgId, nowIso()) as Array<{ path: string; task_id: string | null; lease_until: string; handle: string }>;
+      .all(nowIso(),principal.type,principal.id,principal.id) as Array<{ path: string; task_id: string | null; lease_until: string; handle: string }>;
     return rows.map((row) => ({
       path: row.path,
       taskId: row.task_id,
@@ -3807,12 +3815,6 @@ export class Store {
     });
   }
 
-  private anyRoom(orgId: string) {
-    const row = this.db.prepare("SELECT id FROM rooms WHERE org_id = ? LIMIT 1").get(orgId) as
-      | { id: string }
-      | undefined;
-    return row?.id;
-  }
 }
 
 function reviewLine(handle: string, verdict: string, body: string) {

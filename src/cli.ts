@@ -90,6 +90,10 @@ function httpApi(url: string, token: string): ChatApi {
     return body;
   };
   return {
+    delegatedWork: id => call("/api/agent/delegations"+(id ? "/"+encodeURIComponent(id) : "")),
+    claimDelegatedWork: (id,session) => call("/api/agent/delegations/"+encodeURIComponent(id)+"/claim",{method:"POST",body:JSON.stringify({session})}),
+    reportDelegatedWork: (id,event) => call("/api/agent/delegations/"+encodeURIComponent(id)+"/report",{method:"POST",body:JSON.stringify(event)}),
+    renewDelegatedWork: (id,claimId) => call("/api/agent/delegations/"+encodeURIComponent(id)+"/renew",{method:"POST",body:JSON.stringify({claimId})}),
     whoami: () => call("/api/agent/me"),
     listRooms: async () => (await call("/api/agent/me")).rooms,
     listPeers: async () => (await call("/api/agent/peers")).peers,

@@ -341,8 +341,7 @@ export class LocalAgentError extends Error {
   }
 }
 
-const NO_OWN_CREDENTIAL =
-  "这个句柄已经在工作室里，但这台电脑上没有属于当前身份的有效凭证。不会改动现有凭证；要修正归属见 README 的「凭证归属修复」。";
+const NO_CREDENTIAL = "已有同名客户端，请使用原客户端的接入凭证。";
 
 function taken(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "handle_taken";
@@ -371,11 +370,9 @@ export function connectInstalled(input: {
   apps?: (name: string) => boolean;
   level?: unknown;
   group?: unknown;
-  ownerId?: string;
-  replace?: boolean;
-  inspectToken?: (token: string) => { ownerId: string; ownerName: string } | null;
+  inspectToken?: (token: string) => { id: string; handle: string } | null;
   enroll: (spec: { handle: string; runtime: string; level: unknown; group: string }) => { token: string; roomId: string };
-  placeExisting: (handle: string) => void;
+  placeExisting: (handle: string, agentId?: string) => void;
 }) {
   const spec = specFor(input.id);
   if (!spec) throw new LocalAgentError(404, "unknown_agent", "没有这个客户端");
@@ -390,27 +387,13 @@ export function connectInstalled(input: {
   const launch = mcpLaunch(input.repo, input.node, spec.handle);
   const credText = existsSync(input.credPath) ? readFileSync(input.credPath, "utf8") : null;
   const saved = savedCredential(credText, spec.handle);
-  const savedOwner = saved && input.inspectToken ? input.inspectToken(saved.token) : null;
-  const foreign = Boolean(savedOwner && input.ownerId && savedOwner.ownerId !== input.ownerId);
-  const ours = Boolean(savedOwner) && !foreign;
-  if (input.connected.has(spec.handle)) {
-    if (input.inspectToken && !ours) {
-      throw new LocalAgentError(409, "no_credential", NO_OWN_CREDENTIAL);
-    }
+  const agent = saved && input.inspectToken ? input.inspectToken(saved.token) : null;
+  if (agent && agent.handle !== spec.handle) throw new LocalAgentError(409, "no_credential", NO_CREDENTIAL);
+  if (agent || input.connected.has(spec.handle)) {
+    if (input.inspectToken && !agent) throw new LocalAgentError(409, "no_credential", NO_CREDENTIAL);
+    if (agent) input.placeExisting(spec.handle, agent.id);
     const path = writeLaunch(input.home, spec.id, launch);
-    return {
-      handle: spec.handle,
-      already: true,
-      path,
-      note: `${spec.label} 已经在这个频道里。配置已写好，完全退出再打开它。`,
-    };
-  }
-  if (foreign && !input.replace) {
-    throw new LocalAgentError(
-      409,
-      "credential_other_owner",
-      `这台电脑上 ${spec.handle} 的凭证属于「${savedOwner?.ownerName}」，不是当前身份。继续会换成当前身份的新凭证，旧的会留在凭证文件的 previous 里。`,
-    );
+    return { handle: spec.handle, already: true, path, note: `${spec.label} 已加入这个频道。重开客户端即可使用。` };
   }
   try {
     const enrolled = input.enroll({ handle: spec.handle, runtime: spec.runtime, level: input.level ?? 1, group });
@@ -425,8 +408,8 @@ export function connectInstalled(input: {
     writeFileSync(input.credPath, next, { mode: 0o600 });
   } catch (error) {
     if (!taken(error)) throw error;
-    if (!saved || (input.inspectToken && !ours)) {
-      throw new LocalAgentError(409, "no_credential", NO_OWN_CREDENTIAL);
+    if (!saved || input.inspectToken) {
+      throw new LocalAgentError(409, "no_credential", NO_CREDENTIAL);
     }
     input.placeExisting(spec.handle);
     const path = writeLaunch(input.home, spec.id, launch);
@@ -434,7 +417,7 @@ export function connectInstalled(input: {
       handle: spec.handle,
       already: true,
       path,
-      note: `${spec.label} 本来就在工作室里，已经加入这个频道。完全退出再打开它。`,
+      note: `${spec.label} 已加入这个频道。重开客户端即可使用。`,
     };
   }
   const path = writeLaunch(input.home, spec.id, launch);

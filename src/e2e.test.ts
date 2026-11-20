@@ -10,7 +10,7 @@ import { GROUPS } from "./groups.ts";
 import { MAX_LEVEL, MIN_LEVEL, PRESENCE_MS } from "./server/logic.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const OWNER = "彭磊";
+const OWNER = "本机";
 
 type Json = Record<string, any>;
 type Agent = { handle: string; id: string; token: string };
@@ -124,26 +124,25 @@ after(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
-test("entering as the owner names the user and lands in 大厅 with the demo cast", async () => {
-  assert.equal((await call("/api/me")).status, 401);
-  const entered = await call("/api/session", { body: { name: OWNER } });
-  assert.equal(entered.status, 200);
-  const set = entered.headers.get("set-cookie") ?? "";
-  assert.match(set, /ac_session=/);
-  cookie = set.split(";")[0];
-  roomId = entered.data.roomId;
+test("opening the app creates a shared local session and lands in 大厅 with the demo cast", async () => {
+  const first = await call("/api/me");
+  assert.equal(first.status,200);
+  cookie = (first.headers.get("set-cookie") ?? "").split(";")[0];
+  assert.match(cookie,/ac_session=/);
+  const me = first.data;
+  assert.equal(me.user.name,OWNER);
+  const hall = me.rooms.find((room: Json) => room.general);
+  assert.equal(hall.name,"大厅");
+  roomId = hall.id;
 
-  const me = (await call("/api/me")).data;
-  assert.equal(me.user.name, OWNER);
-  assert.equal(me.orgs[0].name, "工作室");
-  const hall = me.rooms.find((room: Json) => room.id === roomId);
-  assert.equal(hall.name, "大厅");
-  assert.equal(hall.general, true);
-
-  const again = await call("/api/session", { body: { name: OWNER } });
-  assert.equal(again.data.user.id, me.user.id, "same name is the same studio");
-  assert.equal(again.data.roomId, null, "an existing studio has no new hall");
-  assert.equal((await call("/api/me")).data.rooms[0].id, roomId, "the page opens on 大厅");
+  const legacy = await call("/api/session",{body:{name:"旧入口的名字"}});
+  assert.equal(legacy.data.user.id,me.user.id);
+  assert.equal(legacy.data.roomId,roomId);
+  const fresh = await fetch(base + "/api/me");
+  assert.equal(fresh.status,200);
+  const second = await fresh.json() as Json;
+  assert.equal(second.user.id,me.user.id);
+  assert.deepEqual(second.rooms.map((room:Json)=>room.id),[roomId]);
 
   const snap = await snapshot();
   assert.deepEqual(snap.members.users.map((user: Json) => user.name), [OWNER]);
@@ -223,7 +222,7 @@ test("the local-client list for 这台电脑 answers with a catalog and marks wh
   }
   cookie = "";
   assert.equal((await call(`/api/rooms/${roomId}/local-agents`)).status, 401);
-  cookie = (await call("/api/session", { body: { name: OWNER } })).headers.get("set-cookie")!.split(";")[0];
+  cookie = (await call("/api/me")).headers.get("set-cookie")!.split(";")[0];
 });
 
 test("presence: silent until the first sign of life, a ping brings it online, and it expires", async () => {

@@ -405,102 +405,35 @@ function credHome(agents: Record<string, { token: string; roomId: string; runtim
   return { home, cred };
 }
 
-const owners: Record<string, { ownerId: string; ownerName: string }> = {
-  tok_penglei: { ownerId: "u-penglei", ownerName: "彭磊" },
-  tok_magele: { ownerId: "u-magele", ownerName: "magele758" },
-};
-
-function connectCursor(
-  home: string,
-  cred: string,
-  ownerId: string,
-  extra: { replace?: boolean; connected?: string[]; enroll?: () => { token: string; roomId: string } } = {},
-) {
+function connectCursor(home: string, credPath: string, connected: string[], enrolled: string[], placed: string[]) {
   return connectInstalled({
-    id: "cursor",
-    home,
-    repo: "/repo",
-    node: "/node",
-    url: "http://127.0.0.1:8791",
-    credPath: cred,
-    connected: new Set(extra.connected ?? []),
-    probe: probe([]),
-    apps: apps(["Cursor.app"]),
-    ownerId,
-    replace: extra.replace,
-    inspectToken: (token) => owners[token] ?? null,
-    enroll: extra.enroll ?? (() => ({ token: "tok_new", roomId: "room-new" })),
-    placeExisting: () => undefined,
+    id: "cursor", home, credPath, connected: new Set(connected), repo: "/repo", node: "/node",
+    url: "http://127.0.0.1:8791", group: "build", probe: probe([]), apps: apps(["Cursor.app"]),
+    inspectToken: token => token === "tok_old" ? { id: "historical-agent-id", handle: "cursor" } : null,
+    enroll: spec => { enrolled.push(spec.handle); return { token: "new", roomId: "here" }; },
+    placeExisting: (_handle, id) => placed.push(id!),
   });
 }
 
-test("connecting under another identity refuses to overwrite a live credential and does not enroll", () => {
-  const { home, cred } = credHome({ cursor: { token: "tok_penglei", roomId: "room-penglei", runtime: "cursor" } });
-  let enrolled = 0;
-  assert.throws(
-    () =>
-      connectCursor(home, cred, "u-magele", {
-        enroll: () => {
-          enrolled += 1;
-          return { token: "tok_new", roomId: "room-new" };
-        },
-      }),
-    (error: unknown) =>
-      error instanceof LocalAgentError && error.code === "credential_other_owner" && error.message.includes("彭磊"),
-  );
-  assert.equal(enrolled, 0);
-  const saved = JSON.parse(readFileSync(cred, "utf8")) as { agents: { cursor: { token: string } } };
-  assert.equal(saved.agents.cursor.token, "tok_penglei");
-  assert.equal(existsSync(join(home, ".cursor/mcp.json")), false);
+test("a saved agent is attached by immutable ID across former workspace boundaries", () => {
+  const { home, cred } = credHome({ cursor: { token: "tok_old", roomId: "historical-room", runtime: "cursor" } });
+  const installed = readFileSync(cred, "utf8");
+  const enrolled: string[] = [], placed: string[] = [];
+  assert.equal(connectCursor(home, cred, [], enrolled, placed).already, true);
+  assert.equal(connectCursor(home, cred, ["cursor"], enrolled, placed).already, true);
+  assert.deepEqual(enrolled, []);
+  assert.deepEqual(placed, ["historical-agent-id", "historical-agent-id"]);
+  assert.equal(readFileSync(cred, "utf8"), installed);
 });
 
-test("an explicit replace swaps the credential and keeps the old token under previous", () => {
-  const { home, cred } = credHome({ cursor: { token: "tok_penglei", roomId: "room-penglei", runtime: "cursor" } });
-  const result = connectCursor(home, cred, "u-magele", { replace: true });
-  assert.equal(result.already, false);
-  const saved = JSON.parse(readFileSync(cred, "utf8")) as {
-    agents: { cursor: { token: string } };
-    previous: Array<{ handle: string; token: string }>;
-  };
-  assert.equal(saved.agents.cursor.token, "tok_new");
-  assert.equal(saved.previous.length, 1);
-  assert.equal(saved.previous[0].handle, "cursor");
-  assert.equal(saved.previous[0].token, "tok_penglei");
-});
-
-test("a dead credential is replaced without a prompt, a matching owner is reused", () => {
-  const stale = credHome({ cursor: { token: "tok_gone", roomId: "r", runtime: "cursor" } });
-  assert.equal(connectCursor(stale.home, stale.cred, "u-magele").already, false);
-  const same = credHome({ cursor: { token: "tok_magele", roomId: "r", runtime: "cursor" } });
-  const reused = connectCursor(same.home, same.cred, "u-magele", { connected: ["cursor"] });
-  assert.equal(reused.already, true);
-  const saved = JSON.parse(readFileSync(same.cred, "utf8")) as { agents: { cursor: { token: string } } };
-  assert.equal(saved.agents.cursor.token, "tok_magele");
-});
-
-test("an already-connected handle never retargets onto someone else's credential", () => {
-  const { home, cred } = credHome({ cursor: { token: "tok_penglei", roomId: "room-penglei", runtime: "cursor" } });
-  assert.throws(
-    () => connectCursor(home, cred, "u-magele", { connected: ["cursor"], replace: true }),
-    (error: unknown) => error instanceof LocalAgentError && error.code === "no_credential",
-  );
-  assert.equal(existsSync(join(home, ".cursor/mcp.json")), false);
-});
-
-test("a taken handle is not joined with a credential that belongs to another owner", () => {
-  const { home, cred } = credHome({ cursor: { token: "tok_penglei", roomId: "room-penglei", runtime: "cursor" } });
-  assert.throws(
-    () =>
-      connectCursor(home, cred, "u-magele", {
-        replace: true,
-        enroll: () => {
-          const error = new Error("taken") as Error & { code: string };
-          error.code = "handle_taken";
-          throw error;
-        },
-      }),
-    (error: unknown) => error instanceof LocalAgentError && error.code === "no_credential",
-  );
+test("an unrelated stale token cannot attach an existing handle; a new agent may enroll", () => {
+  const { home, cred } = credHome({ cursor: { token: "stale", roomId: "old", runtime: "cursor" } });
+  assert.throws(() => connectCursor(home, cred, ["cursor"], [], []),
+    (error: unknown) => error instanceof LocalAgentError && error.code === "no_credential");
+  const enrolled: string[] = [];
+  assert.equal(connectCursor(home, cred, [], enrolled, []).already, false);
+  assert.deepEqual(enrolled, ["cursor"]);
+  assert.equal(JSON.parse(readFileSync(cred, "utf8")).previous[0].token, "stale");
 });
 
 test("mergeCredentials archives a replaced token and leaves unrelated entries alone", () => {
