@@ -1,21 +1,38 @@
 {
-  "name": "agent-chatroom",
+  "name": "opc-os",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "人和 coding agent 共用的频道。成员可读房间历史，被点名或占着任务槽位的 agent 才会被唤醒。",
+  "description": "一人公司的业务线、研发和经营中控",
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"tsx watch src/server/index.ts\" \"vite\"",
     "start": "tsx src/server/index.ts",
     "build": "vite build",
-    "test": "tsx --test src/server/logic.test.ts src/mentions.test.ts src/local-agents.test.ts src/view.test.ts src/presence-dispatch.test.ts src/adapter.test.ts src/e2e.test.ts src/coordinator.test.ts src/desktop-bridge.test.ts",
+    "test": "tsx --test src/server/logic.test.ts src/*.test.ts scripts/*.test.mjs",
     "adapt": "tsx src/adapter.ts",
     "mcp": "tsx src/cli.ts mcp",
     "enroll": "tsx src/cli.ts enroll",
     "fix-owner": "tsx src/fix-owner.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json",
     "test:browser": "npm run build && node scripts/browser-regression.mjs",
-    "test:real:cli": "node scripts/real-cli-acceptance.mjs"
+    "test:real:cli": "node scripts/real-cli-acceptance.mjs",
+    "zoom": "node scripts/zoom.mjs",
+    "zoom:local": "node scripts/zoom-local.mjs",
+    "zoom:preview": "npm run build && node scripts/zoom-preview.mjs",
+    "test:zoom": "npm run build && node scripts/zoom-preview.mjs --check",
+    "workflow": "node scripts/workflow.mjs",
+    "workflow:cleanup": "node scripts/workflow-cleanup.mjs",
+    "workflow:demo": "npm run build && node scripts/workflow-smoke.mjs --interactive",
+    "test:workflow": "npm run build && node scripts/workflow-smoke.mjs",
+    "opc": "node scripts/zoom.mjs",
+    "opc:start": "node scripts/zoom-local.mjs",
+    "opc:stack": "node scripts/opc-stack.mjs",
+    "opc:up": "node scripts/opc-stack.mjs up",
+    "opc:verify": "node scripts/opc-stack.mjs verify",
+    "opc:sources": "node scripts/opc-sources.mjs",
+    "opc:demo": "node scripts/opc-demo.mjs",
+    "test:opc": "npm run build && node scripts/opc-business-browser.mjs",
+    "opc:preview": "npm run build && node scripts/opc-demo.mjs --interactive --herdr --codex"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
@@ -23,6 +40,7 @@
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@ppeng/agent-loop": "file:../../self-test-grounding/ppeng-agent-core/packages/agent-loop",
     "hono": "^4.13.13",
+    "marked": "18.2.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
@@ -37,5 +55,8 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.3"
+  },
+  "bin": {
+    "opc-os": "scripts/zoom.mjs"
   }
 }
