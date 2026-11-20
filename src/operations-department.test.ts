@@ -1,0 +1,62 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { randomUUID } from "node:crypto";
+import { Hono } from "hono";
+import { openDatabase } from "./server/db.ts";
+import { ProjectStore } from "./server/projects.ts";
+import { CompanyStore } from "./server/company.ts";
+import { ApiError } from "./server/logic.ts";
+import { OperationsDepartmentStore, registerOperationsDepartmentRoutes } from "./server/operations-department.ts";
+
+test("运维记录按项目归属，区分健康、更新计划、回退与已验证版本", t => {
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  new ProjectStore(db).create({ name: "产品甲" });
+  new CompanyStore(db).createProject({ product: "产品甲", name: "网关" });
+  const ops = new OperationsDepartmentStore(db);
+  const registration = { id: randomUUID(), name: "消息服务", scope: "产品甲/网关", version: "1.0" };
+  assert.throws(() => ops.create({ ...registration, scope: "产品乙/网关" }), /从目录/);
+  let service = ops.create(registration);
+  assert.deepEqual(ops.create(registration), service);
+  assert.throws(() => ops.create({ ...registration, id: randomUUID() }), /已存在/);
+  const observation = { id: randomUUID(), revision: 0, event: { kind: "observation", health: "degraded", source: "11:00 网关日志", note: "请求延迟增加" } };
+  service = ops.append(service.id, observation);
+  assert.deepEqual(ops.append(service.id, observation), service);
+  assert.throws(() => ops.append(service.id, { ...observation, event: { ...observation.event, health: "healthy" } }), /已使用/);
+  const plan = { id: randomUUID(), revision: 1, event: { kind: "plan", target: "2.0", note: "小范围更新" } };
+  assert.throws(() => ops.append(service.id, { ...plan, revision: 0 }), /已有更新/);
+  service = ops.append(service.id, plan);
+  assert.equal(service.version, "1.0");
+  assert.throws(() => ops.append(service.id, { ...plan, revision: 2, id: randomUUID() }), /当前更新的结果/);
+  const result = { id: randomUUID(), revision: 2, event: { kind: "result", planId: plan.id, outcome: "rolled_back", note: "验证失败，已回退至 1.0" } };
+  assert.throws(() => ops.append(service.id, { ...result, event: { ...result.event, planId: randomUUID() } }), /不属于/);
+  assert.equal(ops.append(service.id, result).version, "1.0");
+  const nextPlan = { ...plan, id: randomUUID(), revision: 3 };
+  service = ops.append(service.id, nextPlan);
+  service = ops.append(service.id, { id: randomUUID(), revision: 4, event: { kind: "result", planId: nextPlan.id, outcome: "applied", note: "版本检查和请求均通过" } });
+  assert.equal(service.version, "2.0");
+  assert.equal(service.observations[0].health, "degraded");
+  assert.deepEqual(new OperationsDepartmentStore(db).index(), { scopes: ["产品甲", "产品甲/网关"], services: [service] });
+});
+
+test("读取服务台账和健康检查都需要本机身份，检查只返回可用性与延迟", async t => {
+  const db = openDatabase(":memory:"); t.after(() => db.close()); new ProjectStore(db);
+  const app = new Hono();
+  const url = "/api/opc/departments/operations";
+  let checks = 0;
+  app.onError((error,c) => c.json({ message: error.message }, error instanceof ApiError ? error.status as 401 : 500));
+  registerOperationsDepartmentRoutes(app, db, c => {
+    if (!c.req.header("x-test-user")) throw new ApiError(401, "auth", "请先登录");
+  }, async () => { checks++; return [{ id: "opc", name: "OPC", healthy: false, latencyMs: 52, body: "不公开的诊断" }]; });
+  assert.equal((await app.request(url)).status, 401);
+  assert.equal((await app.request(url + "/health")).status, 401);
+  assert.equal((await app.request(url + "/services", { method: "POST" })).status, 401);
+  assert.equal(checks, 0);
+  const opts = { headers: { "x-test-user": "1" } };
+  assert.deepEqual(await (await app.request(url, opts)).json(), { scopes: [], services: [] });
+  const result = await app.request(url + "/health", opts);
+  assert.equal(result.headers.get("cache-control"), "no-store");
+  const body = await result.json();
+  assert.deepEqual(body.services, [{ id: "opc", name: "OPC", healthy: false, latencyMs: 52 }]);
+  assert.ok(Number.isFinite(Date.parse(body.checkedAt)));
+  assert.equal(checks, 1);
+});

@@ -1,0 +1,74 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { openDatabase } from "./server/db.ts";
+import { ProjectStore } from "./server/projects.ts";
+import { CompanyStore } from "./server/company.ts";
+import { OpportunityStore } from "./server/autonomy.ts";
+import { journalExcerpts, listJournalDays, readJournalDay } from "./server/company-journal.ts";
+
+test("日记读取限于库内日期原件；同一摘录插入新行后仍能认出，引用只保存选中的一条", async t => {
+  const dir = await mkdtemp(join(tmpdir(),"opc-journal-case-")); t.after(() => rm(dir,{force:true,recursive:true}));
+  const name = "2026-11-20.md";
+  const md = ["# 日记","## 上午","- 选中的事实","- 另一个摘录","```text","隐藏的示例","```"].join("\n");
+  await writeFile(join(dir,name),md);
+  await symlink(join(dir,name),join(dir,"2026-11-19.md"));
+  const directory = await listJournalDays(dir);
+  assert.deepEqual(directory.days,["2026-11-20"]);
+  const result = await readJournalDay(dir,"2026-11-20");
+  assert.equal(result.markdown,md);
+  assert.match(result.article.reference,/2026-11-20\.md$/);
+  assert.equal(result.article.body,"");
+  const selected = result.excerpts.find(x => x.body === "- 选中的事实")!;
+  assert.equal(selected.line,3);
+  assert.ok(selected.reference.includes("上午"));
+  assert.ok(!result.excerpts.some(x => x.body.includes("隐藏的示例")));
+  assert.equal(journalExcerpts(name,"\n"+md).find(x => x.body === selected.body)?.id,selected.id);
+  await assert.rejects(readJournalDay(dir,"../2026-11-20"));
+  await assert.rejects(readJournalDay(dir,"2026-11-19"));
+});
+
+test("同一公司想法关联多个产品，每个项目只产生一个候选并保留选定出处", t => {
+  const db=openDatabase(":memory:");t.after(()=>db.close());
+  const projects=new ProjectStore(db),notes=new CompanyStore(db),queue=new OpportunityStore(db);
+  const one=journalExcerpts("2026-11-20.md","# 研发\n真实的选中材料\n未选中的内容")[1];
+  notes.addNote("research",{id:one.id,title:one.title,body:one.body,reference:one.reference});
+  const id=crypto.randomUUID();
+  projects.create({name:"工具"});projects.create({name:"店铺"});
+  notes.addNote("idea",{id,title:"研究同一项能力",body:"先看用户效果",sources:[one.id],products:["工具","店铺"]});
+  notes.createProject({product:"工具",name:"能力包"}); notes.createProject({product:"店铺",name:"集成"});
+  assert.throws(()=>notes.refer(id,{product:"店铺",name:"能力包"},queue),/请先/);
+  const first=notes.refer(id,{product:"工具",name:"能力包"},queue);
+  const second=notes.refer(id,{product:"店铺",name:"集成"},queue);
+  assert.deepEqual(notes.refer(id,{product:"工具",name:"能力包"},queue),first);
+  assert.notEqual(first.opportunityId,second.opportunityId);
+  assert.equal(notes.index().referrals.length,2);assert.equal(queue.list().opportunities.length,2);
+  assert.ok(queue.list().opportunities.every(o=>o.state==="queued" && o.evidence.includes(one.body)));
+  assert.ok(!JSON.stringify(notes.index()).includes("未选中的内容"));
+});
+
+test("通用来源不能冒用公司想法或经营实验，长凭据通过回链引用原件", async t => {
+  const {BusinessStore} = await import("./server/business.ts");
+  const db=openDatabase(":memory:"); t.after(()=>db.close());
+  const queue=new OpportunityStore(db), company=new BusinessStore(db,queue);
+  const trial=company.start("shop",{requestId:"case-one",title:"验证试用",hypothesis:"减少返工",metric:"首次通过率",scope:"内测"});
+  const note="现场记录".repeat(280), reference="https://example.org/" + "r".repeat(420);
+  const saved=company.record(trial.id,{eventId:"ev-one",kind:"observation",note,reference});
+  const evidence=saved.evidence[0], project="工具/" + "验证".repeat(60), sourceId="business:"+trial.id+":"+evidence.id;
+  const draft = {project,sourceId,kind:"feature",title:"冲突名称",rationale:"伪造材料",evidence:["其他项目"]};
+  assert.throws(()=>queue.add(draft),/原记录/);
+  assert.throws(()=>queue.import({items:[{...draft,sourceId:"external-1"},draft]}),/原记录/);
+  assert.throws(()=>queue.add({...draft,sourceId:"company-idea/"+crypto.randomUUID()+"/"+"a".repeat(64)}),/原记录/);
+  assert.equal(queue.list().opportunities.length,0);
+  const transfer={project,evidenceId:evidence.id,title:"让检查可复用"};
+  assert.equal(company.refer(trial.id,transfer).referrals.length,1);
+  assert.equal(company.refer(trial.id,transfer).referrals.length,1);
+  const item = queue.list().opportunities[0];
+  assert.match(item.evidence[0],new RegExp(evidence.id));
+  assert.ok(item.evidence[1].includes(trial.id));
+  assert.throws(()=>queue.import({items:[draft]}),/原记录/);
+  assert.equal(company.index().trials[0].evidence[0].reference,reference);
+  assert.equal(queue.list().opportunities[0].title,transfer.title);
+});

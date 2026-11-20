@@ -1,0 +1,44 @@
+[
+  {
+    "repo": "magele758/chromegate-gateway",
+    "name": "浏览器场景回放与失败证据",
+    "version": "de40180a00fc6e035709b8f3223347fd7b0d28de",
+    "interfaceRef": "node native/cli.mjs verify scenario.json；用 --dry-run 先核对场景",
+    "evidence": "https://github.com/magele758/chromegate-gateway/blob/de40180a00fc6e035709b8f3223347fd7b0d28de/native/cli.mjs"
+  },
+  {
+    "repo": "magele758/pagelens-agent",
+    "name": "浏览器侧栏读取与操作当前网页",
+    "version": "f85756dde0738e29385d59877448ef9e6408095f",
+    "interfaceRef": "Chrome 扩展侧栏，在用户可见的当前页面读页、填表和操作标签",
+    "evidence": "https://github.com/magele758/pagelens-agent/blob/f85756dde0738e29385d59877448ef9e6408095f/README.md"
+  },
+  {
+    "repo": "magele758/pagelens-interpret",
+    "name": "视频同传与后台配音预处理",
+    "version": "3ee0847c24a88143da5d8cfd36183e7840bc37b1",
+    "interfaceRef": "Chrome 扩展的同传预处理队列和音频导出，共用 Media Helper",
+    "evidence": "https://github.com/magele758/pagelens-interpret/blob/3ee0847c24a88143da5d8cfd36183e7840bc37b1/README.md"
+  },
+  {
+    "repo": "magele758/audiobook",
+    "name": "有声书文本分段",
+    "version": "18a4578499ae400330a7354dddd3246bf699faef",
+    "interfaceRef": "src/paragraphs.js 导出的 splitParagraphs(text, options)",
+    "evidence": "https://github.com/magele758/audiobook/blob/18a4578499ae400330a7354dddd3246bf699faef/src/paragraphs.js"
+  },
+  {
+    "repo": "magele758/learn-agent",
+    "name": "诊断理解与按依赖教学",
+    "version": "8e86ceed9a73c6e625ceb52d584dfd22f2c1b2e8",
+    "interfaceRef": "本仓库 npm start 的 learn 会话与本地学习记录",
+    "evidence": "https://github.com/magele758/learn-agent/blob/8e86ceed9a73c6e625ceb52d584dfd22f2c1b2e8/package.json"
+  },
+  {
+    "repo": "magele758/ppeng-agent-bot",
+    "name": "可嵌入的 Agent Loop",
+    "version": "b70e9733ad820ec6c8486a9e48e9c1b18f35c165",
+    "interfaceRef": "packages/agent-loop 的公开 SDK，供协调器调用模型与工具循环",
+    "evidence": "https://github.com/magele758/ppeng-agent-bot/blob/b70e9733ad820ec6c8486a9e48e9c1b18f35c165/packages/agent-loop/README.md"
+  }
+]
