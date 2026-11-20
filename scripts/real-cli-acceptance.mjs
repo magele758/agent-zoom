@@ -29,8 +29,8 @@ try {
   const creds = join(dir, 'credentials.json');
   launch(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/server/index.ts'], { PORT: String(port), DATA_PATH: join(dir, 'test.db'), DEMO_MODE: '0', AGENT_CHATROOM_CREDENTIALS: creds }, 'server.log');
   for (let i = 0; i < 100; i++) { try { if ((await fetch(base + '/api/health')).ok) break; } catch {} await sleep(100); }
-  const enter = await fetch(base + '/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '真实自动验收' }) });
-  assert.ok(enter.ok); const cookie = enter.headers.get('set-cookie').split(';')[0];
+  const local = await fetch(base + '/api/me');
+  assert.ok(local.ok); const cookie = local.headers.get('set-cookie').split(';')[0];
   const call = async (path, data, token) => { const r = await fetch(base + path, { method: data ? 'POST' : 'GET', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : { cookie }) }, body: data ? JSON.stringify(data) : undefined }); const out = await r.json(); assert.ok(r.ok, `${path}: ${JSON.stringify(out)}`); return out; };
   const room = await call('/api/rooms', { name: '真实 CLI 全链路验收', topic: '隔离验收，禁止演示代答', project: 'acceptance', directories: [repo], branch: 'main' });
   evidence.roomId = room.id;
@@ -50,7 +50,7 @@ try {
   assert.equal(task.status, 'in_review', '真实实现未交付到评审阶段');
   const modulePath = join(repo, 'src/normalize-title.mjs');
   const oracle = join(dir, 'oracle.mjs');
-  writeFileSync(oracle, `import assert from 'node:assert/strict';\nimport {normalizeTitle} from ${JSON.stringify(modulePath)};\nassert.equal(normalizeTitle('  hello\\t world\\n next  '),'hello world next');\nassert.equal(normalizeTitle('  昆仑   🤖 团队  '),'昆仑 🤖 团队');\nassert.equal(normalizeTitle('x'),'x');\nfor(const value of ['', ' \\n\\t ', null, undefined, 42, {}, []]) assert.throws(()=>normalizeTitle(value),TypeError);\nconsole.log('独立 oracle 全部通过');\n`);
+  writeFileSync(oracle, `import assert from 'node:assert/strict';\nimport {normalizeTitle} from ${JSON.stringify(modulePath)};\nassert.equal(normalizeTitle('  hello\\t world\\n next  '),'hello world next');\nassert.equal(normalizeTitle('  OPC OS   🤖 团队  '),'OPC OS 🤖 团队');\nassert.equal(normalizeTitle('x'),'x');\nfor(const value of ['', ' \\n\\t ', null, undefined, 42, {}, []]) assert.throws(()=>normalizeTitle(value),TypeError);\nconsole.log('独立 oracle 全部通过');\n`);
   await command(process.execPath, [oracle], {}, 'independent-oracle.log', repo);
   await command(process.execPath, ['--test'], {}, 'independent-node-tests.log', repo);
   evidence.checks.push('真实 Codex 实现、实际文件、独立 oracle 与 Node 测试通过'); save(); console.log('实际文件独立验证通过，开始真实 Claude 评审');

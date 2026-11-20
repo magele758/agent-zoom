@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>OPC OS产品设计 · 流程图</title>
+<style>
+:root{--paper:#faf8f2;--ink:#202d2a;--muted:#52605a;--line:#c8ccc1;--green:#175d50;--green-bg:#e7f0e9;--red:#923e24;--red-bg:#fbecdf;--serif:"STIX Two Text","Songti SC","Noto Serif CJK SC","SimSun",serif;--sans:"Source Sans 3","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--paper);font-family:var(--sans)}
+*{box-sizing:border-box}body{margin:0}a{color:inherit;text-underline-offset:.2em}a:focus-visible{outline:3px solid #235c94;outline-offset:4px}header,main{max-width:1200px;margin:auto;padding-inline:36px}
+.mast{height:62px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:15px}.brand strong{font:700 25px var(--serif);letter-spacing:.09em}.brand span{font-size:14px;border-left:1px solid var(--line);padding-left:15px;color:var(--muted)}.guide{font-size:14px}
+nav{display:flex;gap:29px;border-bottom:1px solid var(--line)}nav a{text-decoration:none;padding:17px 1px 14px;font-size:15px;border-bottom:3px solid transparent;color:var(--muted)}nav a[aria-current=page]{border-color:var(--green);color:var(--green);font-weight:700}
+.intro{padding:25px 0 20px}.intro h1{font:600 clamp(28px,4.2vw,50px)/1.22 var(--serif);letter-spacing:-.025em;margin:0}.intro p{color:var(--muted);line-height:1.65;font-size:15px;margin:9px 0 0;max-width:73ch}
+.figure{margin:0;border-top:2px solid var(--ink)}.tools{display:flex;gap:18px;align-items:center;justify-content:space-between;padding:11px 0 4px;font-size:13px;line-height:1.5;color:var(--muted)}.legend{display:flex;gap:17px;flex-wrap:wrap}.legend span{display:flex;align-items:center;gap:6px}.symbol{height:9px;width:9px;border:1.6px solid var(--ink);display:inline-block}.decision .symbol{border-color:var(--red);transform:rotate(45deg);background:var(--red-bg)}.record .symbol{border-color:var(--green);border-radius:50%;background:var(--green-bg)}
+.map{position:relative;aspect-ratio:1080/375;isolation:isolate}.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.wire{stroke:#546b60;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}.wire.alternate{stroke:var(--red);stroke-dasharray:5 4}.wire.return{stroke:var(--green);stroke-dasharray:3 4}.wire-label{font:12.5px var(--sans);fill:#344b40;paint-order:stroke;stroke:var(--paper);stroke-width:5;stroke-linejoin:round}.wire-label.alternate{fill:var(--red)}.row-label{position:absolute;left:1.85%;font-size:12px;color:var(--muted);font-weight:650;letter-spacing:.07em}
+.node{position:absolute;left:var(--x);top:var(--y);width:19.82%;height:16%;text-decoration:none;display:flex;align-items:center;gap:9px;padding:6px clamp(8px,1.15vw,17px);border:1px solid #a4afa5;border-radius:5px;background:#fcfbf7;color:var(--ink);scroll-margin-top:12px}.node.record{background:var(--green-bg);border-color:#84a298}.node.decision{background:var(--red-bg);border-color:#bf947d}.node:hover{border-color:var(--ink)}.node[aria-current=step]{outline:2px solid var(--ink);outline-offset:2px}.node:focus-visible{outline:3px solid #235c94;outline-offset:3px}.node .symbol{flex:none}.node-words{min-width:0}.node b,.node small{display:block}.node b{font:650 clamp(15px,1.65vw,21px)/1.3 var(--serif)}.node small{margin-top:3px;color:#4a5952;font-size:clamp(11px,1.02vw,13px);line-height:1.3}.mobile-next{display:none}
+.detail{border-top:2px solid var(--ink);border-bottom:1px solid var(--line);padding:17px 0 20px;display:grid;grid-template-columns:1.1fr 1.45fr 1.45fr;gap:26px;align-items:start}.detail h2{margin:0 0 4px;font:650 25px/1.3 var(--serif)}.detail dl{margin:0}.detail dt{color:var(--muted);font-size:13px;margin:0 0 4px}.detail dd{margin:0;font-size:15px;line-height:1.65}.who{font-size:13px;color:var(--green)}.jumps{grid-column:1/-1;display:flex;gap:8px 17px;flex-wrap:wrap;align-items:baseline;font-size:13px;margin-top:-10px}.jumps span{color:var(--muted)}.jumps a{color:var(--green);padding-block:4px}
+.foot{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;color:var(--muted);font-size:13px;padding:16px 0 28px}.foot a{color:var(--green)}.mobile-detail{display:none}.map-note{position:absolute;left:1.85%;top:81%;padding-left:13px;border-left:2px solid var(--green);display:grid;gap:5px;color:var(--muted);font-size:14px}.map-note b{color:var(--ink);font:600 17px var(--serif)}.skip{position:fixed;z-index:10;left:12px;top:-80px;color:#fff;background:var(--green);padding:11px}.skip:focus{top:12px}
+@media(min-width:851px) and (max-width:995px){.node{gap:7px;padding-inline:7px}.row-label{font-size:11px}.node small{font-size:10.5px}}
+@media(max-width:850px){header,main{padding-inline:clamp(16px,5vw,36px)}.mast{height:56px}.intro{padding:21px 0 17px}.intro p{font-size:14px}.tools{align-items:flex-start;flex-wrap:wrap;gap:5px;padding-block:9px}.legend{gap:12px}.hint{font-size:12px}.map{aspect-ratio:auto;display:block}.wires{display:none}.row-label{position:static;display:block;margin:21px 0 9px;color:var(--green);font-size:13px}.node{position:relative;left:auto;top:auto;width:100%;height:auto;min-height:46px;padding:8px 12px;gap:12px}.node b{font-size:18px}.node small{margin-top:2px;font-size:12px}.mobile-next{display:block;border-left:1px solid var(--line);font-size:12px;line-height:1.55;margin:1px 0 1px 17px;padding:4px 0 5px 12px;color:var(--muted)}.mobile-next a{color:var(--green);display:inline-block;padding:3px 7px 3px 0}.detail{grid-template-columns:1fr 1fr;gap:14px;padding:12px}.detail h2{font-size:20px}.detail>div:first-child{grid-column:1/-1}.detail dd{font-size:14px}.detail.mobile-detail{display:grid;background:#f1f2e9;border:0;border-left:2px solid var(--green);margin:4px 0}.detail .jumps{margin:0}.map+.detail{display:none}.foot{border-top:1px solid var(--line);margin-top:20px}.tail{display:block}}
+@media(max-width:440px){nav{justify-content:space-between;gap:6px}nav a{font-size:13px}.detail{grid-template-columns:1fr}.guide{font-size:13px}.tools{display:block}.legend{margin-bottom:3px}}
+</style>
+</head>
+<body>
+<a class="skip" href="#flow-heading" id="skip">跳到当前流程</a>
+<header><div class="mast"><div class="brand"><strong>OPC OS</strong><span>产品设计</span></div><a class="guide" href="../OPC_OS_PRODUCT_INTENT.md">返回设计导读 ↗</a></div></header>
+<main>
+<nav aria-label="选择流程图"><a href="#lines" data-map="lines">公司业务线</a><a href="#business" data-map="business">业务流转</a><a href="#reuse" data-map="reuse">原仓协作</a><a href="#navigation" data-map="navigation">页面跳转</a><a href="#delegation" data-map="delegation">全站委派</a><a href="#execution" data-map="execution">执行与返工</a><a href="#hub" data-map="hub">个人工作账</a></nav>
+<section class="intro"><h1 id="flow-heading" tabindex="-1">OPC OS流程图</h1><p id="summary"></p></section>
+<figure class="figure" aria-labelledby="flow-heading">
+<figcaption class="tools"><span class="legend"><span class="work"><i class="symbol"></i>工作步骤</span><span class="decision"><i class="symbol"></i>人工决定</span><span class="record"><i class="symbol"></i>资料与记录</span></span><span class="hint">点选节点，查看负责人和交接内容</span></figcaption>
+<div class="map" id="map"></div><section class="detail" id="detail" aria-label="所选节点详情"></section>
+</figure>
+<footer class="foot"><span>需求对齐稿 · 图内为目标流程</span><a id="live-hub" href="http://127.0.0.1:28790/#secBoard" hidden>打开本机 Agent Hub 看板 ↗</a><a id="read-more" href="lifecycle.md">阅读分册 ↗</a></footer>
+<noscript>请启用浏览器脚本以切换流程和节点，或从<a href="../OPC_OS_PRODUCT_INTENT.md">设计导读</a>阅读分册。</noscript>
+</main>
+<script>
+const maps = {
+  delegation: {
+    title:"谁处理，什么时候轮到你", doc:"navigation.md",
+    summary:"从业务页面把事项交给指定的 agent，沿箭头查看普通答复、人工审批和回执核对的去向。",
+    rows:["受理与执行","普通工作","需要你介入"],
+    nodes:[
+      ["source","打开原事项","消息、项目、业务线或仓库",0,0,"record","你或发起 agent","有出处的问题、目标或待决事项。","原对象与消息或版本的链接。"],
+      ["method","指定办理方法","单次选择或使用默认方式",1,0,"work","你","具名 coding agent 或 Home Bot，办理说明和范围。","一个稳定的委派工单。"],
+      ["worker","接手并核对","领取工单或由具名 Bot 接单",2,0,"work","指定的执行者","原事项、方法、限制和验收。","任务认领、执行进展与证据。"],
+      ["reply","回复原问题","附上答复或实际交付",2,1,"record","执行者与 OPC OS","普通咨询或可直接办理的事项。","答复回到发起处，委派台留存回执。"],
+      ["person","待我处理","查看依据并决定",1,2,"decision","你","版本审批、负责人决策或执行者反问。","决定回到原事项，后续工作才能继续。"],
+      ["check","核对原执行记录","查看原认领或 Bot 回执",3,0,"work","OPC OS 与原执行者","回执缺失或认领超时。","核实现场，保留原工单并记录结果。"]
+    ],
+    edges:[["source","method","指定","forward"],["method","worker","派发","forward"],["worker","reply","可办结","forward"],["worker","person","需要批准","return"],["worker","check","回执不明","return"]]
+  },
+  lines: {
+    title:"几条业务线怎样一起经营", doc:"operating-model.md",
+    summary:"上行是可交付的研发，下行是探索中的店铺实验。点节点看谁接手、要留下什么，再沿连线去下一步。",
+    rows:["工程交付","经营实验","公司复盘"],
+    nodes:[
+      ["signal","日记与项目线索","引用原文、需求或问题",0,0,"record","你或 coding agent","入选的日记摘录、Issue、版本说明。","保留出处，把候选归到具体项目。"],
+      ["pick","自动选下一项","按项目评估影响与投入",1,0,"work","OPC OS","已绑定工作区的项目开启自动选题。","一个在途计划。若上项未处理，其他候选继续排队。"],
+      ["confirm","计划审批","确定版本和执行者",2,0,"decision","你在 Zoom","依赖、执行者、验收条件。","批准本版后实施，修改意见回原任务。"],
+      ["deliver","实现与独立评审","保留差异、测试和结论",3,0,"record","Herdr 执行者与独立评审者","已批准的节点和工作树。","能复查的成果和最终验收。"],
+      ["trial","提出店铺实验","范围、指标、插件版本",0,1,"work","店铺线负责人","想验证的一步操作和可复用插件。","记录本轮可做什么，以及怎样算有效。"],
+      ["observe","登记观察或交易","每条凭据有出处",1,1,"record","店铺线执行者","抽查样例、实际收款、退款或费用凭据。","按业务线和币种核对结果；问题可连同依据形成研发候选。"],
+      ["review","实验复盘","继续、调整或暂停",2,1,"decision","你在 Zoom","这轮的假设、原定指标和实际结果。","意见回到原实验，可以另开下一轮。"],
+      ["company","公司总览","核对方向、投入、结果",2,2,"record","你","各业务线的原决定、工作投入和经营凭据。","继续现有业务线，或验证新的挣钱方向。"],
+      ["reuse","复用已验证资产","登记来源项目与版本",3,2,"work","采用方项目","插件、规则或其他项目交付的成果。","采用方记录用途和自己的验证。"]
+    ],
+    edges:[["signal","pick","入选","forward"],["pick","confirm","提交","forward"],["confirm","deliver","批准","forward"],
+      ["trial","observe","取证","forward"],["observe","review","送审","forward"],["observe","pick","提议特性","return"],
+      ["review","company","决定","forward"],["deliver","reuse","交付","forward"],["reuse","company","采用","forward"]]
+  },
+  reuse: {
+    title:"一个项目需要的能力，由谁交付",
+    summary:"上行是采用已有版本。遇到接口缺口就往下一行走，只有你同意，需求才交给维护项目。",
+    doc:"reuse.md", rows:["查找与采用","原仓需求","反馈与交付"],
+    nodes:[
+      ["need","项目提出需求","带上目标与使用场景",0,0,"work","采用方 coding agent、Bot 或你","公司产品下的具体项目和预期效果。","可用于检索的任务描述。"],
+      ["catalog","核对原仓能力","查接口、试样例、固定版本",1,0,"record","采用方","已登记的能力目录，以及原 GitHub 账号里的相关项目。","可回查的固定提交或发布标签、接口与验证凭据。"],
+      ["adopt","直接复用","记录哪个项目用什么版本",2,0,"work","采用方","能满足场景的原仓接口。","登记用途；需要接线时在采用项目提交集成计划。"],
+      ["verify","验证采用效果","呈现采用方自己的结果",3,0,"record","采用方项目","实际接口、使用场景以及本项目的验收条件。","来源与结果一起保存在项目档案，其他业务线可引用同一版本。"],
+      ["gap","写明缺口","影响谁、预期如何验收",1,1,"work","采用方","固定版本目前能做什么，需要补什么。","一份归属原仓、等待你批准的版本化需求。"],
+      ["decide","Zoom 审批","批准、要求修改或拒绝",2,1,"decision","你","受影响的项目、维护仓库和本版验收办法。","批准交维护方；其他决定与反馈回到原请求。"],
+      ["maintain","维护项目接单","确认工程计划与执行者",3,1,"work","原库维护方与你","已批准的具体需求。","在维护项目里排计划、执行、评审、验收。"],
+      ["respond","原任务收到反馈","退回后可提交新版",2,2,"record","需求提出者","你的决定和说明。","保留历史版本。按反馈修订后重新提交，或记录接受的限制并采用已有版本。"],
+      ["deliver","维护方交付","登记可用的固定版本",3,2,"record","原库维护方","经过独立评审的改动、测试和交付凭据。","回到原候选，把实际通过验证的固定版本与已批缺口关联，并留下测试结论与原仓出处。"]
+    ],
+    edges:[["need","catalog","查找","forward"],["catalog","adopt","可用","forward"],["adopt","verify","集成","forward"],
+      ["catalog","gap","有缺口","alternate"],["gap","decide","送审","forward"],["decide","maintain","批准","forward"],
+      ["decide","respond","反馈","alternate"],["respond","gap","修订","return"],["respond","adopt","采用原版","return"],["maintain","deliver","交付","forward"],["deliver","verify","新版","return"]]
+  },
+  business: {
+    title: "一条启发如何变成项目成果",
+    summary: "以 PageLens 的假设场景为例，从日记里的评测方法，一直追到发布后的使用反馈与下一次复用。",
+    doc: "lifecycle.md",
+    rows: ["选方向", "做验证与交付", "看结果"],
+    nodes: [
+      ["daily", "阅读日记", "选中已有材料", 0, 0, "record", "你", "daily-review-learning 的一篇日记或专题。", "选中条目的出处，以及它让你想到的问题。"],
+      ["idea", "记下想法", "写下值得验证的问题", 1, 0, "work", "你或发起 agent", "某条材料让你想到，失败的字段检查也许可用固定样例重放。", "一条可回到原文的想法，可以先观察，也能关联多个产品。"],
+      ["product", "关联产品", "允许一条想法多处验证", 2, 0, "work", "你", "想法与 Bot 找到的相关项目、已有尝试。", "选定一个或多个产品，分别判断是否投入。"],
+      ["project", "选定项目", "已有项目或新建", 3, 0, "decision", "你", "想法、产品和已有的研究或维护工作。", "这一次验证归到具体项目，带上目标、来源和验收条件。"],
+      ["research", "研究验证", "在原帖核对样例", 3, 1, "work", "指定的 coding agent 或 Agent Home Bot", "例如一条可复现的 Issue、日记出处和已有测试夹具。", "能否重放的结论、可复用样例和局限。可留存结论或转为正式任务。"],
+      ["plan", "确认计划", "只批准当前版本", 2, 1, "decision", "你在 Zoom 决定", "发起者列出的节点、依赖、执行者和预期证据。", "批准才可派工。要求修改则回到原任务，拒绝则结束该版。"],
+      ["build", "开发与评审", "差异和独立测试", 1, 1, "work", "OPC OS调度，Herdr 承载执行", "已批准的计划和实现所需的研究材料。", "实现差异、测试记录和独立评审意见。需要返工时回到原实现者。"],
+      ["release", "验收与发布", "单独确认发布授权", 0, 1, "decision", "你验收，发布执行者接手", "独立评审结论、发布候选与回退办法。", "取得发布授权后登记实际版本、验证结果及后续观察目标。"],
+      ["feedback", "核对反馈", "对到版本和来源", 0, 2, "record", "项目负责人或指定 Bot", "开源项目的 Issue 与复测反馈，或商业产品的渠道、激活和订单事件。", "实际采用、仍待复测或可核对的首单与复购证据，分别标明来源。"],
+      ["decide", "决定投入", "继续、调整或暂缓", 1, 2, "decision", "你在 Zoom 决定", "最初的预期、已有反馈、投入和仍缺的证据。", "下一轮决定、理由及负责人。需要新工作时回原项目提案。"],
+      ["origin", "回看原想法", "并排看各项目结论", 2, 2, "record", "OPC OS记录，你查阅", "同一想法在各项目中的版本、证据和投入决定。", "可从当初的判断追到结果，也能从结果点回日记出处。"],
+      ["reuse", "跨项目复用", "带走版本和适用条件", 3, 2, "work", "采用方项目", "例如 PageLens 已验证的测试夹具、研究方法或一套复测流程。", "新项目引用具体版本，再留下自己的验证。源项目可查看采用情况。"]
+    ],
+    edges: [
+      ["daily", "idea", "引用", "forward"], ["idea", "product", "关联", "forward"],
+      ["product", "project", "选定", "forward"], ["project", "research", "", "forward"],
+      ["research", "plan", "采纳", "forward"], ["plan", "build", "批准", "forward"],
+      ["build", "release", "送验", "forward"], ["release", "feedback", "", "forward"],
+      ["feedback", "decide", "复盘", "forward"], ["decide", "origin", "留据", "forward"],
+      ["origin", "reuse", "引用", "forward"]
+    ]
+  },
+  navigation: {
+    title: "从页面进入，再回到原处",
+    summary: "主动开工从公司总览进入。只处理消息时，从 Zoom 直接打开原问题或对应版本。",
+    doc: "navigation.md",
+    rows: ["主动开工", "只处理消息", "回看发布", "定位执行现场"],
+    nodes: [
+      ["overview", "公司总览", "可点进每个节点", 0, 0, "work", "你", "全公司的信息、想法、产品、项目与待决事项。", "从具体节点继续。返回总览时恢复上次的筛选。"],
+      ["catalog", "产品目录", "展开旗下项目", 1, 0, "record", "你", "所选产品及其关联的想法。", "按层级与领域查找项目，也可创建一个尚无仓库的新项目。"],
+      ["projectHome", "项目主页", "阶段与工作集中在此", 2, 0, "work", "你或 coding agent", "当前项目的目标、日记出处、仓库和阶段事项。", "可进入项目房间或选择阶段发起具体任务。"],
+      ["room", "项目房间", "点名既有 Home Bot", 3, 0, "work", "你、coding agent 与已选 Bot", "从房间成员中选入 Agent Home 的 Bot，点名提问或回复原帖。", "回答留在原帖。需要交付时将结论关联到已有任务，或转为新任务。"],
+      ["inbox", "待我处理", "点开一条 Zoom 消息", 0, 1, "work", "你", "各项目和各 agent 汇集过来的待回复问题或当前版计划。", "直接打开对应房间原帖或任务的待审版本。"],
+      ["sourceItem", "原帖或计划", "先看责任方与依据", 1, 1, "record", "你", "消息绑定的提问、接收者、证据或具体计划版本。", "确认谁在等你、这次答复送到哪里。旧版本可查看历史，或前往当前版。"],
+      ["answer", "答复或审批", "明确本次决定", 2, 1, "decision", "你", "问题可在原帖回答。计划可批准、要求修改或拒绝。", "回执显示已保存、已送达或待对账。已读与归档只改变消息整理状态。"],
+      ["returnList", "返回待办", "保留筛选和位置", 3, 1, "record", "你", "刚处理完的一条消息和它的送达状态。", "接着处理下一条，需要时仍能查原任务与决策历史。"],
+      ["releaseRecord", "发布记录", "选择具体版本", 0, 2, "record", "你", "项目里一次已记录的发布，以及它想解决的问题。", "点「看这版的效果」进入该次发布的复盘。"],
+      ["retrospective", "项目复盘", "对照预期与实际", 1, 2, "work", "项目负责人或指定 Bot", "原目标、预期使用者、相应版本和观察窗口。", "看到已有结果、尚缺的反馈。需要决定下一轮投入时进入 Zoom。"],
+      ["evidence", "查看证据", "查看 Issue 或订单来源", 2, 2, "record", "你", "复盘引用的采用、复测或渠道转化记录。", "核对原始来源，不能归到该版本的事件标明待核实。"],
+      ["originalIdea", "回到想法", "查看各项目的验证", 3, 2, "record", "你", "已核对的项目结果、发布依据与下一轮投入决定。", "比较同一想法在不同项目中的结果，或回到最初的日记条目。"],
+      ["phase", "项目阶段", "选择这次要看的工作", 0, 3, "work", "你", "从产品目录打开一个项目的开发或测试阶段。", "定位当次任务，并看清发起者、执行者、宿主和目前轮到谁。"],
+      ["run", "原任务", "打开特定尝试", 1, 3, "record", "OPC OS", "原任务、批准版本和尝试记录。", "看到该次实现或评审的差异、测试与执行者。"],
+      ["proof", "差异与测试", "按尝试核对交付", 2, 3, "record", "你或独立评审者", "这一轮交付的文件差异和测试证据。", "从证据回到本次尝试，或定位与它绑定的会话。"],
+      ["surface", "执行现场", "Herdr 或 Home", 3, 3, "work", "原执行者", "已绑定的 Herdr pane 或 Agent Home 任务。", "打开对应现场，返回同一任务和尝试。未绑定或会话已退出时，显示实际状态。"]
+    ],
+    edges: [
+      ["overview", "catalog", "选择", "forward"], ["catalog", "projectHome", "进入", "forward"],
+      ["projectHome", "room", "讨论", "forward"], ["inbox", "sourceItem", "打开", "forward"],
+      ["sourceItem", "answer", "处理", "forward"], ["answer", "returnList", "返回", "return"],
+      ["releaseRecord", "retrospective", "复盘", "forward"], ["retrospective", "evidence", "核对", "forward"],
+      ["evidence", "originalIdea", "回看", "return"],
+      ["phase", "run", "进入", "forward"], ["run", "proof", "核对", "forward"], ["proof", "surface", "定位", "forward"]
+    ]
+  },
+  hub: {
+    title: "今天做的工作，怎样归回项目",
+    summary: "Agent Hub 留着你自己的工作账。OPC OS引用你选中的条目来解释项目投入，待决定的事仍回 Zoom。",
+    doc: "navigation.md#personal-work",
+    rows: ["回顾今天做了什么", "在项目里复盘投入", "从卡点继续工作"],
+    nodes: [
+      ["board","个人工作看板","按天看各条主线",0,0,"record","Agent Hub","本机各 coding agent 的活动和 Git 线索。","在你已有的看板里找到当天的一件事，可查看它为什么被列为进行中或卡住。"],
+      ["item","选一件事","保留日期与出处",1,0,"work","你","例如某一天围绕 PageLens 失败样例的调研。这是设计示例。","选定一条可以引用的工作记录，日记与个人看板各自沿用原有来源。"],
+      ["match","关联项目","确认对应的业务任务",2,0,"decision","你","当天事项和可能相关的OPC OS项目或任务。","选定后保存来源关联。标题相近或同属一个仓库只能用来推荐。"],
+      ["worklog","项目工作记录","可回查原日和条目",3,0,"record","OPC OS","经过确认的来源、日期和项目归属。","同日快照更新后保留人工关联，可回查 Hub。源标识变动时先核对。"],
+      ["retro","项目复盘","打开要核对的投入",0,1,"work","你或指定 Bot","某个项目的目标、已交付版本和已关联的活动。","看到已有工作凭据、需要补证的项目和使用反馈。"],
+      ["time","工作与用量","查看来源和计量方式",1,1,"record","Agent Hub","专注时段、会话活动、模型用量，以及本机能核对的成本口径。","可查看工作投入和费用估算。会话跨度可能包含空闲，缺数据时保留缺项。"],
+      ["facts","回到原记录","核对版本和费用口径",2,1,"record","你","本机原看板、原日期和关联条目。","分清订阅摊销、平台超额以及按 API 价折算的金额。经营收入另查订单与退款。"],
+      ["next","决定下一轮","继续、调整或暂缓",3,1,"decision","你在 Zoom 决定","可归属的投入、具体交付和真实采用反馈。","决定和理由归回OPC OS项目。涉及正式入账时另附账单、订单或支付凭证。"],
+      ["block","发现卡点","Hub 提供活动线索",0,2,"record","Agent Hub","个人看板显示某条工作可能停滞。","你可核实是已经在OPC OS跟踪，还是值得另提一项工作。"],
+      ["link","定位原任务","确认后才新建",1,2,"work","你与OPC OS","卡点的来源记录及可能已有的原任务。","已有关联就打开原任务。需要新增工作时显式转为提案，再按版本审批。"],
+      ["zoom","在 Zoom 答复","只出现需要人的问题",2,2,"decision","你","已关联任务内明确的提问及目标会话。","把决定带回原任务，核对回复是否实际送达。"],
+      ["back","继续原任务","随时回查 Hub",3,2,"work","原执行者","已收到的决定、原执行尝试和所需证据。","OPC OS核对交付与独立评审。Hub 的自动分类只作活动线索。"]
+    ],
+    edges: [
+      ["board","item","选中","forward"],["item","match","定位","forward"],["match","worklog","引用","forward"],
+      ["retro","time","查看","forward"],["time","facts","核对","forward"],["facts","next","复盘","forward"],
+      ["block","link","查找","forward"],["link","zoom","提问","forward"],["zoom","back","送回","return"]
+    ]
+  },
+  execution: {
+    title: "一次任务怎样审批、返工与验收",
+    summary: "OPC OS保存计划、决定与证据。发起者、实现者及独立评审可以来自不同的会话。",
+    doc: "execution.md",
+    rows: ["提案与派工", "异常与评审", "验收与记录"],
+    nodes: [
+      ["submit", "提交任务", "发起者可只提交", 0, 0, "work", "任意可调本地 CLI 的 agent 或你", "目标、约束或结构化草案，以及项目、阶段和原会话。", "OPC OS保存原请求与任务标识，后续反馈可沿标识返回。"],
+      ["check", "校验计划", "核对版本和依赖", 1, 0, "work", "OPC OS", "发起者制定或修订的依赖计划及验收条件。", "可展示的待审版本。修订只调整尚未启动的下游，历史证据保留。"],
+      ["approve", "审批这一版", "在 Zoom 做决定", 2, 0, "decision", "你", "当前计划版本、拟派执行者、验收办法和原任务。", "批准后派发可执行节点。要求修改回发起者，拒绝则结束这版。"],
+      ["worker", "执行与交付", "按能力认领节点", 3, 0, "work", "OPC OS调度，选定的执行者工作", "批准版本里依赖已满足的节点，以及具名的执行者和现场。", "Herdr 中的 coding agent 可在隔离 worktree 实现；明确委托的 Home Bot 可回传交付。保留差异与测试凭据。"],
+      ["stop", "拒绝本版", "决定和理由入档", 0, 1, "decision", "你作决定，OPC OS记录", "明确拒绝的版本及其原因。", "该版没有执行许可。发起者可回看理由，再决定是否重新提案。"],
+      ["revise", "修改计划", "反馈回原发起者", 1, 1, "work", "原发起者", "你指出要调整的内容、具体版本及已有任务记录。", "提交新版本再次校验。旧版意见、已开始的节点与既有证据仍可核查。"],
+      ["reconcile", "对账与恢复", "核对不明回执", 2, 1, "work", "OPC OS与原执行方", "发送结果不明、连接中断或重启后的原认领、会话和回执。", "按原认领和回执核实是否已经执行。确认失败后，返工另记一次尝试，保留原证据。"],
+      ["review", "独立评审", "查看差异与测试", 3, 1, "work", "独立于实现者的评审", "对应尝试的差异、测试输出及验收条件。", "通过后送最终验收。返工意见与复现依据回原实现者，新的尝试再次评审。"],
+      ["close", "记录交付", "留存每次尝试", 2, 2, "record", "OPC OS", "最终验收决定、计划版本、执行回执和证据历史。", "任务可从项目、房间或 Zoom 回查。需要上线时另行取得发布授权。"],
+      ["accept", "最终验收", "明确是否接受交付", 3, 2, "decision", "你", "独立评审结论、可核验的交付物、返工历史及未解决问题。", "接受后形成该次交付的验收记录。终端空闲或退出只作为现场状态。"]
+    ],
+    edges: [
+      ["submit", "check", "提案", "forward"], ["check", "approve", "送审", "forward"],
+      ["approve", "worker", "批准", "forward"], ["worker", "review", "交付", "forward"],
+      ["review", "accept", "通过", "forward"], ["accept", "close", "接受", "forward"],
+      ["approve", "stop", "拒绝", "alternate"], ["approve", "revise", "修改", "alternate"],
+      ["revise", "check", "新版", "return"], ["worker", "reconcile", "不明", "alternate"],
+      ["review", "worker", "返工", "return"], ["reconcile", "review", "查得交付", "return"]
+    ]
+  }
+};
+
+// Coordinates use the same viewBox as the connector layer.
+const width = 1080, cardWidth = 214, cardHeight = 60;
+const mapHeight = map => 375 + (map.rows.length - 3) * 131;
+const left = col => 20 + col * 275;
+const topY = row => 38 + row * 131;
+const mapEl = document.querySelector('#map');
+const detail = document.querySelector('#detail');
+const narrow = matchMedia('(max-width:850px)');
+const svgNS = 'http://www.w3.org/2000/svg';
+
+function el(tag, text, cls) {
+  const elem = document.createElement(tag);
+  if (text !== undefined) elem.textContent = text;
+  if (cls) elem.className = cls;
+  return elem;
+}
+function svg(tag, attrs = {}) {
+  const elem = document.createElementNS(svgNS, tag);
+  for (const [key, value] of Object.entries(attrs)) elem.setAttribute(key, value);
+  return elem;
+}
+function goLink(key, id, title) {
+  const a = el('a', title);
+  a.href = '#' + key + '/' + id;
+  return a;
+}
+function geometry(source, target) {
+  const [, , , colA, rowA] = source, [, , , colB, rowB] = target;
+  const ax = left(colA), bx = left(colB), ay = topY(rowA), by = topY(rowB);
+  if (rowA === rowB) {
+    const right = colB > colA;
+    const start = right ? ax + cardWidth + 2 : ax - 2;
+    const end = right ? bx - 5 : bx + cardWidth + 5;
+    return ['M'+start+' '+(ay+30)+' H'+end, (start+end)/2, ay+21];
+  }
+  const down = rowB > rowA;
+  const start = down ? ay + cardHeight + 2 : ay - 2;
+  const end = down ? by - 5 : by + cardHeight + 5;
+  return ['M'+(ax+107)+' '+start+' V'+end, ax+129, (start+end)/2+4];
+}
+const branches = {
+  'approve-stop': ['M604 100 V140 H127 V164', 222, 133],
+  'approve-revise': ['M643 100 V119 H455 V164', 512, 112],
+  'revise-check': ['M375 167 V103', 354, 119],
+  'worker-reconcile': ['M871 100 V120 H723 V164', 779, 113],
+  'worker-review': ['M921 100 V164', 944, 143],
+  'review-worker': ['M999 167 V103', 1020, 130]
+};
+function renderWires(key, map, byId) {
+  const drawing = svg('svg', {class:'wires',viewBox:'0 0 1080 '+mapHeight(map),'aria-hidden':'true',focusable:'false'});
+  const defs = svg('defs');
+  for (const [kind,color] of Object.entries({forward:'#546b60',alternate:'#923e24',return:'#175d50'})) {
+    const marker = svg('marker', {id:'end-'+kind,viewBox:'0 0 6 8',refX:5,refY:4,markerWidth:6,markerHeight:8,orient:'auto',markerUnits:'userSpaceOnUse'});
+    marker.append(svg('path',{d:'M0 0 L6 4 L0 8 Z',fill:color})); defs.append(marker);
+  }
+  drawing.append(defs);
+  const labels = svg('g');
+  for (const [from,to,label,kind] of map.edges) {
+    const reuseBranches = {
+      'respond-gap': ['M568 330 H403 V233', 483, 323],
+      'deliver-verify': ['M1061 330 H1071 V68 H1061', 1053, 275]
+    };
+    const custom = (key === 'execution' && branches[from+'-'+to]) || (key === 'reuse' && reuseBranches[from+'-'+to]);
+    const [path,x,y] = custom || geometry(byId.get(from),byId.get(to));
+    drawing.append(svg('path',{d:path,stroke:'#faf8f2','stroke-width':6,fill:'none'}));
+    drawing.append(svg('path',{d:path,class:'wire '+kind,'marker-end':'url(#end-'+kind+')'}));
+    if (label) {
+      const caption = svg('text',{x,y,class:'wire-label '+kind,'text-anchor':'middle'});
+      caption.textContent=label;
+      labels.append(caption);
+    }
+  }
+  drawing.append(labels);
+  return drawing;
+}
+function describe(target, key, node, connections, byId) {
+  const [,title,,,,,owner,input,output] = node;
+  target.replaceChildren();
+  const head = el('div');
+  head.append(el('h2',title),el('div','负责 · '+owner,'who'));
+  target.append(head);
+  for (const [label,body] of [['带着什么来',input],['这一站留下什么',output]]) {
+    const dl = el('dl');
+    dl.append(el('dt',label),el('dd',body)); target.append(dl);
+  }
+  if (!connections.length) return;
+  const jumps = el('div',undefined,'jumps');
+  jumps.append(el('span','跟着流程走'));
+  for (const [,dest,label] of connections) {
+    const title = (label ? label+' → ' : '→ ') + byId.get(dest)[1];
+    jumps.append(goLink(key,dest,title));
+  }
+  target.append(jumps);
+}
+let lastKey = null;
+function render(moveFocus = false) {
+  const [requested,requestedNode] = location.hash.slice(1).split('/');
+  const key = Object.hasOwn(maps,requested) ? requested : 'business';
+  const map = maps[key];
+  const height = mapHeight(map);
+  mapEl.style.aspectRatio = narrow.matches ? "auto" : width + "/" + height;
+  document.querySelector("#live-hub").hidden = key !== "hub";
+  const byId = new Map(map.nodes.map(n => [n[0],n]));
+  const selected = byId.get(requestedNode) || map.nodes[0];
+  const heading = document.querySelector('#flow-heading');
+  heading.textContent=map.title;
+  document.title = 'OPC OS · '+map.title;
+  document.querySelector('#summary').textContent=map.summary;
+  const more=document.querySelector('#read-more');
+  more.href=map.doc;
+  more.textContent='阅读'+({lines:'业务线',reuse:'原仓协作',business:'业务流程',navigation:'页面跳转',execution:'执行规则',hub:'个人工作账联动'})[key]+'分册 ↗';
+  for (const tab of document.querySelectorAll('[data-map]')) {
+    if (tab.dataset.map === key) tab.setAttribute('aria-current','page');
+    else tab.removeAttribute('aria-current');
+  }
+  const connections=map.edges.filter(edge=>edge[0]===selected[0]);
+  describe(detail,key,selected,connections,byId);
+  mapEl.replaceChildren(renderWires(key,map,byId));
+  let selectedLink;
+  for (const [row,rowTitle] of map.rows.entries()) {
+    const groupLabel=el('div',rowTitle,'row-label');
+    groupLabel.style.top=(topY(row)-26)/height*100+'%';
+    mapEl.append(groupLabel);
+    for (const node of map.nodes.filter(n=>n[4]===row)) {
+      const [id,title,subtitle,col,,kind]=node;
+      const nodeLink=goLink(key,id,'');
+      nodeLink.className='node '+kind;
+      if (!narrow.matches) nodeLink.style.height = cardHeight / height * 100 + '%';
+      nodeLink.style.setProperty('--x',(left(col)/width)*100+'%');
+      nodeLink.style.setProperty('--y',(topY(row)/height)*100+'%');
+      const words=el('span',undefined,'node-words');
+      words.append(el('b',title),el('small',subtitle));
+      const emblem=el('i',undefined,'symbol');emblem.setAttribute('aria-hidden','true');
+      nodeLink.append(emblem,words);
+      if(id===selected[0]) {nodeLink.setAttribute('aria-current','step');selectedLink=nodeLink;}
+      mapEl.append(nodeLink);
+      if (!narrow.matches) continue;
+      const outgoing=map.edges.filter(edge=>edge[0]===id);
+      if(id===selected[0]) {
+        const inner=el('section',undefined,'detail mobile-detail');
+        inner.setAttribute('aria-label','所选节点详情');
+        describe(inner,key,node,outgoing,byId);
+        mapEl.append(inner);
+      } else if(outgoing.length) {
+        const line=el('div',undefined,'mobile-next');
+        for(const [,to,verb] of outgoing) {
+          line.append(goLink(key,to,(verb || '接着')+' → '+byId.get(to)[1]));
+        }
+        mapEl.append(line);
+      }
+    }
+  }
+  if (key==='execution' && !narrow.matches) {
+    const note=el('div',undefined,'map-note');
+    note.append(el('b','反馈回到谁？'),el('span','计划退回原发起者。实现返工交给原执行者。'));
+    mapEl.append(note);
+  }
+  if(!moveFocus && lastKey===null && requestedNode && narrow.matches && selectedLink) {
+    selectedLink.scrollIntoView({block:'start'});
+  } else if(moveFocus && lastKey===key && requestedNode && selectedLink) {
+    selectedLink.focus({preventScroll:true});
+    if(narrow.matches) selectedLink.scrollIntoView({block:'start'});
+  } else if(moveFocus && lastKey!==key) {
+    const tab=document.querySelector('[data-map="'+key+'"]');
+    tab.focus({preventScroll:true});
+    if(tab.getBoundingClientRect().bottom<0) tab.scrollIntoView({block:'start'});
+  }
+  lastKey=key;
+}
+window.addEventListener('hashchange',()=>render(true));
+narrow.addEventListener('change',()=>render());
+document.querySelector('#skip').addEventListener('click',event=>{
+  event.preventDefault();
+  document.querySelector('#flow-heading').focus();
+});
+render();
+</script>
+</body>
+</html>

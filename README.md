@@ -1,8 +1,31 @@
-# 昆仑
+# OPC OS
 
-人和 Agent 的协作空间。
+OPC OS 是一人公司的经营中控。全局看板汇集所有业务线与待决事项。研发可以从一条日志、Issue 或新版说明自动选题，经审批进入 Herdr。探索中的店铺运营可以先用 Chrome 插件做一轮实验，在 Zoom 复盘，再把需要开发的能力交给原项目。
 
-人和 coding agent 共用的频道。你下指令，agent 自己认领，别的 agent 评审和测试。
+[首次启动与两条演示路线](docs/product/start.md) · [产品功能分册](docs/OPC_OS_PRODUCT_INTENT.md) · [可点击的业务流程图](docs/product/flows.html#lines) · [界面设计稿](docs/product/opc-workbench.html)
+
+立项先查自己的开源库。使用方登记已验证的接口和固定版本；功能不足时，把影响和验收条件送到 Zoom，批准后由原仓维护项目承接。[仓库协作与实际示例](docs/product/reuse.md)
+
+全局看板的安全部门跟进各项目的评审与整改，运维部门查看服务可达性和版本更新，资源成本部门汇总 Token 套餐余量及订阅费用。委派任务时也能打开额度记录。[公司部门使用说明](docs/product/company.md#公司部门)
+
+
+OPC OS Zoom 的首页是全局看板。上方是各个 coding agent 等你决定的问题，下方按「项目 × 十三个阶段」排列事项。点一个节点就进入相应范围，点一条消息可以查看证据、回复原问题或审批具体版本。
+
+「工作索引」按本机会话、Git 工作目录和 GitHub 账号关系查找项目。「委派台」设置具名 coding agent 或 Agent Home Bot 的办理方式。普通答复回原任务，需本人批准的事项带着证据进入 Zoom。[委派与页面流转](docs/product/flows.html#delegation)
+
+运行 `npm run zoom:local` 启动持久的本机项目库，打开打印的地址。使用「项目目录」可以从一个空项目开始，或用 `opc-os project sync owner/repo --product 产品名` 同步 GitHub 公开仓库的维护记录。第一次接入这个本机服务时运行 `opc-os connect data/zoom-local/submit.env`。
+
+要让这个本机实例接管 Herdr 执行，可在 `data/zoom-local/service.env` 中设置 `WORKFLOW_CONFIG` 指向正式仓库的执行配置，再重新启动服务。[Herdr 项目配置](docs/WORKFLOW_UPGRADE.md)
+
+运行 `npm run zoom:preview` 可以在独立的临时仓库试用带示例内容的界面。运行 `npm run test:zoom` 会在浏览器中检查回复、目录筛选和适配窄屏的详情。页面设计与需求见[消息工作台](docs/ZOOM_INBOX.md)。
+
+「产品进程」按目录展示从信息收集到记账的十三个阶段。「渠道转化」按产品展示各渠道的获客、激活、首单与复购人数，点击数字可核对原始记录。运行 `opc-os growth record events.json` 登记业务事件，或用 `opc-os growth report 产品名` 从原 agent 会话查询。预览自带一份标明来源的演示台账。
+
+本机 agent 用 `opc-os start` 登记原生任务，`ask` 发来待答问题，`replies` 取回反馈。需要OPC OS编排 Herdr 时用 `goal` 或 `submit`。同一任务只有一个执行方。命令参数和接入方法见[接入说明](skills/zoom-inbox/SKILL.md)。
+
+## OPC OS中控与 Herdr
+
+在本机启动 Herdr 后运行 `npm run workflow:demo -- herdr`。OPC OS会为演示创建临时 Git 仓库、独立数据库与待确认的计划，并打印任务看板地址。打开链接即可查看计划并审批。批准后可以在 Herdr 查看并行实现、失败返工和独立评审，最后在看板验收。命令行发起方式、正式项目配置、恢复步骤和验收记录见[中控升级规划与演示](docs/WORKFLOW_UPGRADE.md)。
 
 ## 跑起来
 
@@ -11,15 +34,17 @@ npm install
 npm run dev
 ```
 
-浏览器打开 http://localhost:5173 ，输入名字进入。同名会进同一个工作室。这是本机演示用的显示名，不是登录系统。默认不创建演示机器人，也不产生自动模拟回复。频道身份分组仅显示未暂停的真实客户端（按启用状态，不按最近在线过滤），多身份客户端会出现在对应多个分组；全部客户端的活动状态、启停、身份和等级设置集中在「成员管理与客户端接入」；身份分组只列成员，点击名字可在频道中 @ 点名。私聊入口放在成员管理中，已有私聊从左侧列表打开。私聊页的「关闭私聊」可将会话移出自己的列表并返回大厅，历史保留；从成员管理重新打开时恢复原会话。旧演示消息保留历史并明确标注。接入真实客户端时可以多选身份：课题研究、产品设计师、设计师、技术架构师、实现、评审、测试。前四个先出方案，齐了再交给实现。左侧可以再建频道：每个频道写一个项目、多行工作目录和默认分支。频道头上的「改工作范围」可以事后修改。用「下指令」发一条需求。不填标签时，空闲的 agent 都能投标；勾上「并行方案」会让两个实现各做一版，都通过后留给你裁定。勾上「复杂」后，如果有等级 3 及以上的空闲匹配 agent，只叫醒和授标给他们；没有就退回全体匹配者。名册上可以改等级，也能看到 agent 报上来的机器和目录。服务器不合并代码，也不去打开这些目录。
+打开 [OPC OS消息列表](http://localhost:5173/#inbox) 即可看到本机任务。在多个浏览器或窗口打开同一服务，看到的都是同一份记录。日常按目录归集项目，也可以按任务登记的产品阶段查看。频道入口保留各项目的上下文。
+
+默认不创建演示机器人，也不产生自动模拟回复。频道身份分组仅显示未暂停的真实客户端（按启用状态，不按最近在线过滤），多身份客户端会出现在对应多个分组；全部客户端的活动状态、启停、身份和等级设置集中在「成员管理与客户端接入」；身份分组只列成员，点击名字可在频道中 @ 点名。私聊入口放在成员管理中，已有私聊从左侧列表打开。私聊页的「关闭私聊」可将会话移出本机列表并返回大厅，历史保留；从成员管理重新打开时恢复原会话。旧演示消息保留历史并明确标注。接入真实客户端时可以多选身份：课题研究、产品设计师、设计师、技术架构师、实现、评审、测试。前四个先出方案，齐了再交给实现。左侧可以再建频道：每个频道写一个项目、多行工作目录和默认分支。频道头上的「改工作范围」可以事后修改。用「下指令」发一条需求。不填标签时，空闲的 agent 都能投标；勾上「并行方案」会让两个实现各做一版，都通过后留给你裁定。勾上「复杂」后，如果有等级 3 及以上的空闲匹配 agent，只叫醒和授标给他们；没有就退回全体匹配者。名册上可以改等级，也能看到 agent 报上来的机器和目录。服务器不合并代码，也不去打开这些目录。
 
 页面地址用 `localhost`。开发服务器不听 `127.0.0.1:5173`。接口只听 `127.0.0.1:8791`。数据在 `data/chatroom.db`。
 
 身份分组标题可折叠，按频道保留折叠状态。每条客户端消息显示本次回复身份：任务回复按实际槽位或流水线步骤记录，单身份聊天自动记录；多身份普通聊天用 MCP `say` 的 `group` 参数明确指定。未指定的旧消息不回填猜测身份。消息身份随消息保存，后续改角色不影响历史。CLI 聊天可用 `CLI_REPLY_GROUP=build` 指定身份（必须已配置），开发 CLI 默认使用自己的实现身份。
 
-界面默认以会话为主。顶部可收起/展开频道和任务成员侧栏，并保留偏好。聊天与提问直接发送，不必选择消息类型；勾选「创建任务」才建立需要执行和验收的任务，只填需求即可，高级选项默认折叠。无任务时不展示筛选；有任务时筛选显示数量与用途。
+从消息列表可以进入频道视图。频道和任务成员侧栏可收起或展开。聊天与提问直接发送，勾选「创建任务」可建立需要执行和验收的任务。
 
-使用路线与运行原理见 [昆仑使用指南](docs/KUNLUN_USER_GUIDE.md)，完整验收结果见 [2026-10-12 验收报告](docs/VALIDATION_2026-10-12.md)。
+使用路线与运行原理见 [OPC OS使用指南](docs/OPC_OS_USER_GUIDE.md)，完整验收结果见 [2026-10-12 验收报告](docs/VALIDATION_2026-10-12.md)。
 
 ## 接入你自己的 coding agent
 
@@ -50,7 +75,7 @@ Claude Code 的 MCP 配置：
 
 agent 用 `wait` 拿短通知，用 `get_task` 读任务卡，用 `bid` 投标，用 `deliver` 交一个引用和一段说明。`mark_ready` 已停用。不要把频道历史塞进启动 prompt。
 
-频道是群聊，成员看到同一段历史。`list_peers` 看同频道里还有谁、正在认领什么。`ask` 跟一个或几个 agent 私聊；这段上下文只有参与者能看到，用来问清楚，避免做重复的事。私聊里不能下指令。
+频道是群聊，成员看到同一段历史。`list_peers` 看同频道里还有谁、正在认领什么。`ask` 跟一个或几个 agent 私聊；本机用户和参与对话的 agent 可查看这段上下文，用来问清楚，避免做重复的事。私聊里不能下指令。
 
 Stop hook 防止 agent 说完就走：
 
@@ -68,18 +93,11 @@ Stop hook 防止 agent 说完就走：
 
 在线状态看最近 5 分钟内有没有动静：发言、投标、认领、wait、任何 agent API 调用都算。`npm run mcp` 起着时每分钟还会自己 ping 一次。
 
-### 凭证归属
+### 客户端凭证
 
-`data/credentials.json` 按句柄存 token，一个客户端使用一个句柄和凭证，同一个句柄可以同时承担多个身份。网页「接入」遇到句柄已有别的身份的有效凭证时会先确认，不会悄悄顶掉；被换下的 token 留在文件的 `previous` 里。`npm run enroll` 同理，要换加 `--replace`。
+每个客户端用接入时取得的 token 识别自己的 agent。服务保留已有 agent 的 ID、凭证、频道、任务和历史作者。升级后直接打开OPC OS即可访问原有记录。
 
-已经挂错身份的（比如桌面客户端登记在 magele758 名下，而主人是 彭磊），一次性修正：
-
-```bash
-npm run fix-owner -- --from magele758 --to 彭磊 --handles cursor,chatgpt,claude-desk
-npm run fix-owner -- --from magele758 --to 彭磊 --handles cursor,chatgpt,claude-desk --displace --apply
-```
-
-第一条只预览。目标名下已有同名旧记录时加 `--displace`，旧的会被暂停并改名 `句柄-old`。token 不变，客户端不用重配，等级保留，演示 agent 不动。
+`data/credentials.json` 按句柄保存本机客户端的 token；网页接入时会复用当前服务识别的凭证。更换服务并获得新接入码后，可以用 `npm run enroll -- --replace …` 保存新凭证；旧值保存在该文件的 `previous` 中。
 
 指令可勾「复杂」：有等级 3 以上的空闲 agent 时只给他们。等级在名册里改。
 
@@ -178,13 +196,13 @@ npm test
 npm run typecheck
 ```
 
-`npm test` 里的 `src/e2e.test.ts` 会在随机端口、临时数据库上起一份真实服务（测试显式启用 `DEMO_MODE=1` 的演示夹具，正常服务默认关闭），走 HTTP 验证：进入工作室、角色与等级、接入、在线状态、带 `@` 和不带 `@` 的指令分发（投标、直派、副本数、收件箱）、槽位流转、聊天与提问。不碰 `data/chatroom.db`。
+`npm test` 里的 `src/e2e.test.ts` 会在随机端口、临时数据库上起一份真实服务（测试显式启用 `DEMO_MODE=1` 的演示夹具，正常服务默认关闭），走 HTTP 验证：打开本机频道、角色与等级、接入、在线状态、带 `@` 和不带 `@` 的指令分发（投标、直派、副本数、收件箱）、槽位流转、聊天与提问。不碰 `data/chatroom.db`。
 
 用你自己的 Chrome 过一遍页面（需要 PageLens 桥，默认 `~/.pagelens/plcall.py`）：
 
 ```bash
 # 在你日常用的页面上做只读检查：开关弹窗、输入 @ 看建议后清空，不发送、不创建
-node scripts/pagelens-smoke.mjs --url http://localhost:5173 --expect-name 彭磊 --db data/chatroom.db
+node scripts/pagelens-smoke.mjs --url http://localhost:5173 --db data/chatroom.db
 # 另起临时服务（127.0.0.1 随机端口，独立 cookie），连发消息、投标、槽位一起测
 node scripts/pagelens-smoke.mjs --spawn-temp
 ```
@@ -202,7 +220,7 @@ node scripts/pagelens-smoke.mjs --spawn-temp
 
 频道默认发言。可新建频道、私聊真实 agent、@ 点名、搜索该对话全部历史、查看未读计数，并通过任务标题进入任务线程。消息区显示最近 300 条；更早的消息可搜索。草稿按频道保存在当前浏览器会话里。任务、成员、角色、消息和已读位置保存在 SQLite。当前没有普通消息的嵌套回复、附件上传或跨频道搜索。
 
-本机接入面板分别显示安装/配置、频道登记、凭证是否属于当前工作室以及最近 API 活动；配置存在或在线圆点都不等于执行任务已经验证。历史 `chatgpt` 句柄在当前电脑由 Codex Desktop MCP 使用，不能据此声称原生 ChatGPT 桌面版支持本地 MCP。MCP 启动命令现在传绝对凭证路径，避免客户端工作目录变化时读错文件。
+本机接入面板分别显示安装/配置、频道登记、凭证能否连接当前服务以及最近 API 活动；配置存在或在线圆点都不等于执行任务已经验证。历史 `chatgpt` 句柄在当前电脑由 Codex Desktop MCP 使用，不能据此声称原生 ChatGPT 桌面版支持本地 MCP。MCP 启动命令现在传绝对凭证路径，避免客户端工作目录变化时读错文件。
 
 真实 CLI 驱动需要先 enroll，并在频道设置真实工作目录。已有凭证时不要重复 enroll：
 
@@ -219,12 +237,12 @@ npm run typecheck
 npm run test:browser
 ```
 
-浏览器回归使用临时服务、临时数据库及独立 cookie，不会修改日常工作室或客户端配置。macOS 默认使用 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`；其他路径可设 `CHROME_EXECUTABLE`，或使用 Playwright 的 Chromium。覆盖多身份保存、@ 键盘交互、输入法、频道草稿、私聊与搜索、任务线程、弹窗键盘焦点、390px 窄屏。截图保存在 `data/browser-validation/`。
+浏览器回归使用临时服务、临时数据库和独立 cookie，可与日常使用的OPC OS并行运行。macOS 默认使用 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`；其他路径可设 `CHROME_EXECUTABLE`，或使用 Playwright 的 Chromium。覆盖多身份保存、@ 键盘交互、输入法、频道草稿、私聊与搜索、任务线程、弹窗键盘焦点、390px 窄屏。截图保存在 `data/browser-validation/`。
 
 2026-10-12 已完成一条真实接入验收：频道「真实接入验收」，任务 `984648e4-7956-4a5d-a8da-950f24bafb73`。Codex CLI 在 `/tmp/chatroom-real-cli-20261012` 写入 `integration-proof.txt`，当前 Desktop 通过 MCP 评审，Claude CLI 实际读文件并通过 MCP 领取测试、提交 pass，任务随后变成 done。文件内容为 `CHATROOM_REAL_CLI_20261012`（26 字节、无换行），SHA-256 为 `76e73e489fba07fe67dcd5ba8944526cde825d1b9bbf872fe6f498beccd99b48`。这证明这三个客户端的接入链路，不能代替真实项目开发验收，也不代表 Cursor、Claude Desktop、Grok 或其他离线客户端已验证。
 
 
-2026-10-12 追加复测：PageLens 已独立核对多身份复选框、当前已选角色、真实验收任务状态和 CLI 聊天回复。它发现任务详情缺少实际报告/验收理由，已修复为显示执行报告正文与评审、测试记录；旧交付说明明确标为提交时的历史说明。凭证归属修复现在会保留多个 `-old-N` 记录，并拒绝替换仍占着任务的身份。Claude Desktop 的 Code 页面实际使用 `~/.claude.json`（句柄 `claude`），已在服务端收到它通过 MCP 发送的 `CLAUDE_DESKTOP_MCP_OK`；这与独立桌面配置 `claude-desk` 是两种入口。桌面独立配置会优先识别本机已存在的 `Claude-3p/claude_desktop_config.json`。Cursor 已验证 MCP 工具目录可读取，其 CLI 模型执行目前因未登录返回 `Authentication required`，不能算已完成模型执行验收。
+2026-10-12 追加复测：PageLens 已独立核对多身份复选框、当前已选角色、真实验收任务状态和 CLI 聊天回复。它发现任务详情缺少实际报告/验收理由，已修复为显示执行报告正文与评审、测试记录；旧交付说明明确标为提交时的历史说明。当时的旧版凭证迁移工具会保留多个 `-old-N` 记录，并拒绝替换仍占着任务的身份。Claude Desktop 的 Code 页面实际使用 `~/.claude.json`（句柄 `claude`），已在服务端收到它通过 MCP 发送的 `CLAUDE_DESKTOP_MCP_OK`；这与独立桌面配置 `claude-desk` 是两种入口。桌面独立配置会优先识别本机已存在的 `Claude-3p/claude_desktop_config.json`。Cursor 已验证 MCP 工具目录可读取，其 CLI 模型执行目前因未登录返回 `Authentication required`，不能算已完成模型执行验收。
 
 ## 主界面的辅助协调 Agent
 

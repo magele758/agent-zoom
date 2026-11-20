@@ -1,0 +1,320 @@
+import assert from 'node:assert/strict';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { once } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { chromium, expect } from '@playwright/test';
+import { createJournalFixture, checkCompanyIdeas } from './company-ideas-check.mjs';
+import { checkChannelReply } from './zoom-channel-check.mjs';
+import { createHubFixture, checkWorklog } from './worklog-check.mjs';
+import { checkRepoCapabilities } from './repo-capabilities-check.mjs';
+import { growthDemoEvents } from './zoom-growth-demo.mjs';
+
+const root = resolve(import.meta.dirname, '..');
+const check = process.argv.includes('--check');
+const keep = process.argv.includes('--keep');
+const directory = mkdtempSync(join(tmpdir(), 'kunlun-zoom-preview-'));
+const repo = join(directory, 'example');
+execFileSync('git', ['init', '-q', repo]);
+writeFileSync(join(repo, 'README.md'), '# OPC OS Zoom 界面预览\n');
+writeFileSync(join(repo, 'greeting.txt'), 'Hello\n');
+writeFileSync(join(repo, 'greeting.test.mjs'), `import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+test('首次启动显示OPC OS问候语', () => assert.equal(readFileSync('greeting.txt', 'utf8').trim(), 'Hello, OPC OS!'));
+`);
+execFileSync('git', ['add', '.'], { cwd: repo });
+execFileSync('git', ['-c', 'user.name=Zoom Preview', '-c', 'user.email=preview@example.invalid', 'commit', '-qm', 'Preview fixture'], { cwd: repo });
+const listener = createServer().listen(0, '127.0.0.1');
+await once(listener, 'listening');
+const port = listener.address().port;
+await new Promise(resolve => listener.close(resolve));
+const origin = `http://127.0.0.1:${port}`;
+const config = join(directory, 'workflow.json');
+writeFileSync(config, JSON.stringify({ workspace: repo, backend: 'local-demo', planner: 'local' }));
+const env = { ...process.env, OPC_HUB_DAILY_DIR: createHubFixture(directory), ...(check ? {OPC_DAILY_REVIEW_DIR:createJournalFixture(directory)} : {}), PORT: String(port), KUNLUN_URL: origin, DATA_PATH: join(directory, 'preview.db'),
+  OPC_HUB_QUOTA_DB: join(directory, 'preview-quota.db'),
+  DEMO_MODE: '0', KUNLUN_PREVIEW: '1', WORKFLOW_CONFIG: config, WORKFLOW_SUBMIT_TOKEN: randomBytes(24).toString('hex'),
+  KUNLUN_SESSION_COOKIE: 'zoom_preview_' + port };
+for (const key of ['KUNLUN_WORKFLOW_WORKER', 'HFLOW_WORKER']) delete env[key];
+const execute = promisify(execFile);
+const cli = async (...args) => JSON.parse((await execute(process.execPath, [join(root, 'scripts/zoom.mjs'), ...args], { cwd: repo, env })).stdout);
+let server, browser;
+const stop = async () => {
+  if (!server || server.exitCode !== null || server.signalCode) return;
+  const closed = once(server, 'close');
+  server.kill();
+  await closed;
+};
+const start = async () => {
+  server = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts'], { cwd: root, env, stdio: ['ignore', 'ignore', 'inherit'] });
+  for (let i = 0; i < 100; i++) {
+    if (server.exitCode !== null) throw new Error('预览服务没有启动');
+    if (await fetch(origin + '/api/health').then(r => r.ok, () => false)) return;
+    await delay(100);
+  }
+  throw new Error('预览服务启动超时');
+};
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { await stop(); process.exit(); });
+try {
+  if (!check) {
+    const keys = ['OPC_HUB_DAILY_DIR', 'OPC_HUB_QUOTA_DB', 'PORT', 'KUNLUN_URL', 'DATA_PATH', 'DEMO_MODE', 'KUNLUN_PREVIEW', 'WORKFLOW_CONFIG', 'WORKFLOW_SUBMIT_TOKEN', 'KUNLUN_SESSION_COOKIE'];
+    writeFileSync(join(directory, 'service.env'), keys.map(key => key + '=' + JSON.stringify(env[key])).join('\n') + '\n',
+      { mode: 0o600, flag: 'wx' });
+  }
+  await start();
+  for (const name of ['OPC OS', 'PageLens']) await cli('project', 'add', name);
+  const docs = await cli('start', '更新命令行接入示例', '--source', 'Claude Code', '--task', 'docs-014', '--folder', '开发工具/接入文档', '--stage', 'release');
+  await cli('done', docs.id, '已在空目录验证登记、提问和取回反馈的三个命令。', '--id', 'verified');
+  const layout = await cli('start', '调整小屏幕的时间轴布局', '--source', 'Cursor', '--task', 'replay-layout', '--folder', 'PageLens/浏览器回放', '--stage', 'design');
+  await cli('update', layout.id, '390px 宽度下已能完整阅读时间轴，正在复查长请求地址的换行。', '--id', 'mobile');
+  const research = await cli('start', '整理首次接入反馈', '--source', 'Claude Code', '--task', 'onboarding-study', '--folder', 'OPC OS/用户研究', '--stage', 'research');
+  const findings = await cli('update', research.id, '已汇总三个接入问题，最常见的是找不到待审批的计划。', '--id', 'findings');
+  const campaign = await cli('start', '比较两个试用入口的注册转化', '--source', 'Cursor', '--task', 'trial-entries', '--folder', 'OPC OS/增长', '--stage', 'acquisition');
+  await cli('update', campaign.id, '已核对渠道登记和订单来源，剩余一笔订单待补客户的接入记录。', '--id', 'weekly');
+  const worker = await cli('start', '保留独立评审的测试输出', '--source', 'Codex', '--task', 'runner-18', '--folder', 'OPC OS/执行器', '--stage', 'testing');
+  await cli('done', worker.id, '已在独立工作树复测；两次尝试的差异和测试输出均可回查。', '--id', 'review');
+  const trace = await cli('start', '保留回放中的失败请求', '--source', 'Codex', '--task', 'session-42', '--folder', 'PageLens/浏览器回放', '--stage', 'trace');
+  await cli('update', trace.id, '新增断网重连用例，回放记录已保留原请求与重试结果。', '--id', 'reconnect');
+  await cli('ask', trace.id, '导出的回放记录需要包含响应正文，还是只保留状态码和耗时？', '--id', 'export');
+  const execution = await cli('goal', '更新 CLI 首次启动的问候语', '--source', 'Antigravity', '--request-id', 'preview-plan', '--folder', 'OPC OS/命令行', '--stage', 'development', '--constraint', '启动问候语为 Hello, OPC OS!，在独立工作树复测。');
+  const startDraft = ['start', '离线时保留回复草稿', '--source', 'Grok', '--task', 'session-42', '--context', '草稿恢复 · 会话 42', '--folder', 'OPC OS/消息工作台', '--stage', 'prd'];
+  const draft = await cli(...startDraft);
+  await cli('update', draft.id, '已复现断网后返回列表丢失草稿，正在确认保留范围。', '--id', 'reproduced');
+  const choices = ['保存在这台设备', '仅本次会话保留'];
+  const ask = ['ask', draft.id, '网络中断后，未发送的回复要保留多久？\n\n两种方式都能在重新联网后继续编辑。保存在设备上，关闭浏览器也能找回；仅本次会话保留，关闭窗口就会清除。', '--id', 'draft-retention', '--choice', choices[0], '--choice', choices[1]];
+  const question = await cli(...ask);
+  const growthFile = join(directory, 'growth-examples.json');
+  writeFileSync(growthFile, JSON.stringify(growthDemoEvents));
+  const imported = await cli('growth', 'record', growthFile);
+  assert.equal(imported.results.length, growthDemoEvents.length);
+  assert.ok(imported.results.every(row => row.created));
+  // Give the script-generated examples a readable timeline in this fresh preview database.
+  const fixture = new DatabaseSync(env.DATA_PATH);
+  try {
+    const events = fixture.prepare('SELECT seq FROM zoom_messages ORDER BY seq').all();
+    const stamp = fixture.prepare('UPDATE zoom_messages SET created_at = ? WHERE seq = ?');
+    const end = Date.now();
+    for (const [index, event] of events.entries()) {
+      stamp.run(new Date(end - 240000 * (events.length - index - 1)).toISOString(), event.seq);
+    }
+  } finally { fixture.close(); }
+  console.log(`全局看板预览 ${origin}/\n消息列表 ${origin}/#inbox\n独立示例库 ${directory}`);
+  if (!check) {
+    console.log('打开页面即可体验。渠道转化使用独立示例订单，审批只作用于临时仓库。Ctrl+C 可停止。');
+    const serviceEnv = join(directory, 'service.env').replaceAll("'", "'\\''");
+    console.log(`在项目目录恢复此预览：node --env-file='${serviceEnv}' --import tsx src/server/index.ts`);
+    await once(server, 'exit');
+  } else {
+    assert.equal((await cli(...startDraft)).id, draft.id);
+    assert.equal((await cli(...ask)).id, question.id);
+    const replayed = await cli('growth', 'record', growthFile);
+    assert.equal(replayed.results.length, growthDemoEvents.length);
+    assert.ok(replayed.results.every(row => row.created === false));
+    const growthReport = await cli('growth', 'report', 'OPC OS');
+    assert.equal(growthReport.eventCount, growthDemoEvents.length);
+    assert.deepEqual(growthReport.total, { acquired: 5, activated: 4, firstOrder: 3, repeatOrder: 1 });
+    assert.equal(growthReport.excluded.length, 1);
+    assert.equal(growthReport.excluded[0].event.orderId, 'DEMO-1099');
+    const chrome = process.env.CHROME_EXECUTABLE ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    browser = await chromium.launch({ headless: true, ...(existsSync(chrome) ? { executablePath: chrome } : {}) });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    const errors = [];
+    page.on('pageerror', err => errors.push(err.message));
+    await page.goto(origin + '/#inbox');
+    const row = page.getByTestId('zoom-message-' + question.id);
+    await expect(row).toBeVisible();
+    await expect(page.getByRole('radio', { name: choices[0] })).toBeVisible();
+    const folder = page.getByRole('button', { name: 'OPC OS', exact: true });
+    const visibleStatus = async () => (await (await page.request.get(origin + '/api/zoom/messages')).json()).messages;
+    const initial = await visibleStatus();
+    assert.equal(initial.filter(item => item.pending).length, 3);
+    const output = join(root, 'data/zoom-validation');
+    mkdirSync(output, { recursive: true });
+    const home = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    await home.goto(origin);
+    await expect(home.getByRole('heading', { name: '全局看板', exact: true })).toBeVisible();
+    const matrix = home.getByRole('table', { name: '各产品十三个阶段的任务数' });
+    await expect(matrix).toContainText('OPC OS');
+    await expect(matrix.getByRole('rowheader', {name:'开发工具', exact:true})).toHaveCount(0);
+    await expect(home.getByRole('region', { name: '等待你决定的事项' }).getByRole('heading')).toContainText('3');
+    await home.screenshot({ path: join(output, 'overview.png') });
+    await home.getByRole('link', { name: 'OPC OS · 信息收集 · 1 项任务', exact: true }).click();
+    await expect(home.getByTestId('zoom-message-' + findings.id)).toBeVisible();
+    await home.reload();
+    await expect(home.getByRole('heading', { name: 'OPC OS · 信息收集', exact: true })).toBeVisible();
+    await home.goBack();
+    const questionLink = home.getByRole('region', { name: '等待你决定的事项' }).locator('a').filter({ hasText: '网络中断' });
+    await questionLink.click();
+    await expect(home.getByRole('radio', { name: choices[0] })).toBeVisible();
+    await home.goBack();
+    await home.setViewportSize({ width: 390, height: 844 });
+    await home.getByLabel('看板产品').selectOption('OPC OS');
+    await home.locator('.overview-narrow').getByRole('link', { name: '记账 0' }).click();
+    await expect(home.getByRole('heading', { name: 'OPC OS · 记账', exact: true })).toBeVisible();
+    await home.goBack();
+    await expect(home.getByLabel('看板产品')).toHaveValue('OPC OS');
+    await home.close();
+    await page.getByRole('radio', { name: choices[0] }).check();
+    await page.screenshot({ path: join(output, 'desktop.png') });
+    await page.getByRole('button', { name: '渠道转化', exact: true }).click();
+    await expect(page).toHaveURL(/#growth$/);
+    await expect(page.getByRole('heading', { name: '增长报告', exact: true })).toBeVisible();
+    await page.getByLabel('选择增长报告产品').selectOption('OPC OS');
+    const channelTable = page.getByRole('table', { name: '各渠道转化人数与转化率' });
+    await expect(channelTable).toBeVisible();
+    await expect(channelTable.getByRole('button', { name: '社群活动 复购 1人', exact: true })).toContainText('50%');
+    await expect(channelTable.getByRole('button', { name: '产品周报 首单 0人', exact: true })).toContainText('—');
+    await page.screenshot({ path: join(output, 'growth.png') });
+    await channelTable.getByRole('button', { name: '社群活动 复购 1人', exact: true }).click();
+    const records = page.getByRole('region', { name: '原始记录', exact: true });
+    await expect(records).toContainText('DEMO-1002');
+    await expect(records).toContainText('示例台账/payment-02');
+    await page.screenshot({ path: join(output, 'growth-evidence.png') });
+    await channelTable.getByRole('button', { name: '伙伴推荐', exact: true }).click();
+    await expect(records).toContainText('示例台账/payment-04');
+    await expect(records).not.toContainText('DEMO-1002');
+    await page.getByRole('button', { name: /未计入漏斗/ }).click();
+    await expect(records).toContainText('DEMO-1099');
+    await expect(records).toContainText('示例台账/unmatched-payment');
+    await page.getByLabel('选择增长报告产品').selectOption('PageLens');
+    await expect(page.getByRole('heading', { name: '暂无增长事件' })).toBeVisible();
+    await expect(records).toHaveCount(0);
+    await page.getByLabel('选择增长报告产品').selectOption('OPC OS');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(channelTable).toBeVisible();
+    await channelTable.getByRole('button', { name: '合计 首单 3人', exact: true }).click();
+    await expect(records).toContainText('DEMO-1004');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const directGrowth = await browser.newPage();
+    await directGrowth.route(/\/api\/zoom\/growth(?:\?|$)/, route => route.fulfill({
+      status: 500, contentType: 'application/json', body: JSON.stringify({ message: '读取渠道记录暂时失败' }),
+    }), { times: 1 });
+    await directGrowth.goto(origin + '/#growth');
+    await expect(directGrowth.getByRole('alert')).toContainText('读取渠道记录暂时失败');
+    await directGrowth.getByRole('button', { name: '重试', exact: true }).click();
+    await expect(directGrowth.getByRole('button', { name: '合计 复购 1人', exact: true })).toBeVisible();
+    await expect(directGrowth).toHaveURL(/#growth$/);
+    await directGrowth.close();
+    await page.getByRole('button', { name: '产品进程', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '产品进程', exact: true })).toBeVisible();
+    const product = page.getByLabel('产品目录', { exact: true });
+    await product.selectOption('PageLens');
+    await expect(page.getByTestId('zoom-stage-research')).toContainText('1 项任务');
+    await expect(page.getByTestId('zoom-stage-trace')).toContainText('1 待处理');
+    await product.selectOption('OPC OS');
+    await expect(page.getByTestId(/^zoom-stage-/)).toHaveCount(13);
+    await expect(page.getByTestId('zoom-stage-prd')).toContainText('1 项任务');
+    await expect(page.getByTestId('zoom-stage-research')).toContainText('1 项任务');
+    await page.screenshot({ path: join(output, 'product.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const accounting = page.getByTestId('zoom-stage-accounting');
+    await accounting.scrollIntoViewIfNeeded();
+    await expect(accounting).toBeInViewport();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId('zoom-stage-research').click();
+    await expect(page).toHaveURL(/#stage\?step=research/);
+    await page.getByTestId('stage-open-messages').click();
+    await expect(page.getByTestId('zoom-message-' + findings.id)).toBeVisible();
+    await expect(row).toHaveCount(0);
+    await page.reload();
+    await folder.click();
+    await expect(page.getByTestId('zoom-message-' + initial.find(m => m.taskId === trace.id && m.pending).id)).toHaveCount(0);
+    await expect(row).toBeVisible();
+    const decision = initial.find(m => m.taskId === execution.id && m.pending);
+    await page.getByTestId('zoom-message-' + decision.id).click();
+    await expect(page.getByRole('button', { name: '要求修改', exact: true })).toBeVisible();
+    await page.screenshot({ path: join(output, 'plan.png') });
+    const status = async () => cli('status', execution.id);
+    assert.equal((await status()).attempts.length, 0);
+    await page.getByLabel('发回原请求的反馈').fill('请把首次启动的验收条件写进计划。');
+    await page.getByRole('button', { name: '要求修改', exact: true }).click();
+    await expect.poll(async () => (await status()).cards[0].status).toBe('changes');
+    assert.equal((await status()).attempts.length, 0);
+    await row.click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    if (await row.isVisible()) await row.click();
+    await expect(page.getByRole('button', { name: '返回列表' })).toBeVisible();
+    await page.screenshot({ path: join(output, 'mobile-detail.png') });
+    await page.getByRole('button', { name: '返回列表' }).click();
+    await expect(row).toBeVisible();
+    await page.screenshot({ path: join(output, 'mobile-list.png') });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await row.click();
+    const waiting = cli('replies', draft.id, '--question', question.id, '--wait', '--timeout', '15');
+    await page.getByRole('radio', { name: choices[0] }).check();
+    await page.getByLabel('回复原任务').fill('恢复网络后由用户确认发送。');
+    await page.getByRole('button', { name: '发送回复', exact: true }).click();
+    const feedback = await waiting;
+    assert.equal(feedback.events.length, 1);
+    assert.equal(feedback.events[0].choice, choices[0]);
+    assert.equal(feedback.events[0].body, '恢复网络后由用户确认发送。');
+    assert.equal(feedback.context, '草稿恢复 · 会话 42');
+    assert.equal((await cli('replies', trace.id)).events.length, 0);
+    await stop(); await start();
+    assert.deepEqual(await cli('growth', 'report', 'OPC OS'), growthReport);
+    assert.equal((await cli('replies', draft.id, String(feedback.cursor))).events.length, 0);
+    assert.equal((await cli('replies', draft.id)).events.length, 1);
+    assert.equal((await visibleStatus()).find(item => item.id === question.id).pending, false);
+    await cli('done', draft.id, '按确认的保留策略完成实现。');
+    await checkChannelReply(page, origin);
+    const plan = (await status()).revisions[0].plan;
+    plan.nodes[0].instruction += ' 验收时读取 greeting.txt，核对完整问候语。';
+    const revisionFile = join(directory, 'revision.json');
+    writeFileSync(revisionFile, JSON.stringify({ baseRevision: 1, reason: '补充问候语的验收条件', plan }));
+    const revised = await cli('revise', execution.id, revisionFile);
+    const revisedCard = revised.cards.find(card => card.status === 'open' && card.revision === 2);
+    assert.ok(revisedCard);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId('zoom-message-workflow:card:' + revisedCard.id).click();
+    await page.getByRole('button', { name: '批准', exact: true }).click();
+    await expect.poll(async () => (await status()).cards.some(card => card.kind === 'final' && card.status === 'open'),
+      { timeout: 20000 }).toBe(true);
+    const finished = await status();
+    const finalCard = finished.cards.find(card => card.kind === 'final' && card.status === 'open');
+    assert.equal(finished.attempts.length, 2);
+    assert.ok(finished.attempts.every(attempt => attempt.evidence?.checks.every(test => test.exitCode === 0)));
+    assert.equal(new Set(finished.attempts.map(attempt => attempt.worktree)).size, 2);
+    await page.getByTestId('zoom-message-workflow:card:' + finalCard.id).click();
+    await page.getByRole('button', { name: '批准', exact: true }).click();
+    await expect.poll(async () => (await status()).cards.find(card => card.id === finalCard.id).status).toBe('approve');
+
+    const longTitle = '跨项目变更回放与验收 · '.repeat(15);
+    const longTask = await cli('start', longTitle, '--source', '测试 CLI', '--task', 'long-heading', '--folder', '验收/长消息');
+    const longQuestion = await cli('ask', longTask.id, longTitle + '是否保留历史记录？\n\n' + 'long_file_name/'.repeat(50), '--id', 'long');
+    for (const viewport of [{ width: 1440, height: 450 }, { width: 390, height: 500 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto(origin + '/#inbox');
+      await page.reload();
+      await page.getByTestId('zoom-message-' + longQuestion.id).click();
+      await expect(page.getByLabel('回复原任务')).toBeEditable();
+      await page.getByLabel('回复原任务').fill('已查看完整上下文');
+      const send = page.getByRole('button', { name: '发送回复', exact: true });
+      await send.scrollIntoViewIfNeeded();
+      await send.click({ trial: true });
+      const dimensions = await page.evaluate(() => ({
+        page: document.documentElement.scrollWidth, width: innerWidth,
+        panel: document.querySelector('.zo-paper').scrollWidth, panelWidth: document.querySelector('.zo-paper').clientWidth,
+      }));
+      assert.ok(dimensions.page <= dimensions.width && dimensions.panel <= dimensions.panelWidth + 1, '长任务标题或正文横向溢出');
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await checkWorklog(page, origin);
+    await checkCompanyIdeas(page, origin);
+    await checkRepoCapabilities(page, origin, env.WORKFLOW_SUBMIT_TOKEN);
+    assert.deepEqual(errors, []);
+    console.log(`通过桌面与手机、两个浏览器直接访问、13 阶段工作单、Agent Hub 合成日报与项目归属、渠道转化与原始订单核对、导入去重、原生与频道答复、重启回放和最终验收。截图 ${output}`);
+  }
+} finally {
+  await browser?.close();
+  await stop();
+  if (check && !keep) rmSync(directory, { recursive: true, force: true });
+}

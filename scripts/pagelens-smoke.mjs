@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 // Feature smoke for 工位 driven through the owner's real Chrome via the PageLens bridge.
 //
-//   node scripts/pagelens-smoke.mjs --url http://localhost:5173 --expect-name 彭磊 --db data/chatroom.db
+//   node scripts/pagelens-smoke.mjs --url http://localhost:5173 --db data/chatroom.db
 //       Live pass. Read-only: opens/closes the 这台电脑 dialog, types "@" in the composer and clears it,
 //       toggles the 下指令/发言/提问 radio, reads panels. It never sends, creates, invites, connects, stops, or leaves.
 //
 //   node scripts/pagelens-smoke.mjs --spawn-temp
-//       Starts a throwaway API + Vite on 127.0.0.1 (random ports, temp DB), enters as --name (default 彭磊) in a
-//       fresh tab, and also exercises posting. Writes only to that temp DB. Cookies are per host, so the
-//       127.0.0.1 origin never touches the localhost:5173 session.
+//       Starts a throwaway API + Vite with a separate database and cookie name. A fresh tab opens directly
+//       on the shared channels and exercises posting against that temporary database.
 //
 // Needs the PageLens helper (default ~/.pagelens/plcall.py). Exit code 1 when any check FAILs.
 import { execFile, spawn } from "node:child_process";
@@ -28,8 +27,7 @@ const PRESENCE_MS = 5 * 60 * 1000;
 const args = parseArgs(process.argv.slice(2));
 const plcall = args["plcall"] ?? join(homedir(), ".pagelens/plcall.py");
 const spawnTemp = args["spawn-temp"] === true;
-const expectName = typeof args["expect-name"] === "string" ? args["expect-name"] : "";
-const tempName = typeof args["name"] === "string" ? args["name"] : "彭磊";
+const legacyOwner = typeof args["expect-name"] === "string" ? args["expect-name"] : "";
 const expectAgents = typeof args["expect-agents"] === "string" ? args["expect-agents"].split(",").filter(Boolean) : [];
 const dbArg = typeof args["db"] === "string" ? args["db"] : "";
 let baseUrl = typeof args["url"] === "string" ? args["url"].replace(/\/$/, "") : "http://localhost:5173";
@@ -127,7 +125,7 @@ async function startTemp() {
   const quiet = { cwd: ROOT, stdio: "ignore", detached: true };
   temp.api = spawn(join(ROOT, "node_modules/.bin/tsx"), ["src/server/index.ts"], {
     ...quiet,
-    env: { ...process.env, PORT: String(apiPort), DATA_PATH: temp.dbPath, AGENT_CHATROOM_CREDENTIALS: join(temp.dir, "credentials.json") },
+    env: { ...process.env, PORT: String(apiPort), DATA_PATH: temp.dbPath, KUNLUN_SESSION_COOKIE: "pagelens_" + apiPort, AGENT_CHATROOM_CREDENTIALS: join(temp.dir, "credentials.json") },
   });
   temp.web = spawn(join(ROOT, "node_modules/.bin/vite"), ["--host", "127.0.0.1", "--port", String(webPort), "--strictPort"], {
     ...quiet,
@@ -189,11 +187,10 @@ function assertSafeTarget(url, write) {
 
 async function readOnlyChecks() {
   await check("page-load", async () => {
-    await js("await until(() => $('.shell') || tid('name-input'), 15000); return 1;");
     const r = await js(`
-      return { title: document.title, gate: !!tid('name-input'), shell: !!$('.shell'), mark: text($('.brand .mark')), org: text($('.brand .org')) };`);
-    if (r.gate) return { ok: false, detail: "the gate is showing (no session in this browser)" };
-    return { ok: r.title === "工位" && r.shell && r.mark === "工位" && !!r.org, detail: `title=${r.title} org=${r.org}` };
+      const shell = await until(() => $('.shell'), 15000);
+      return { title: document.title, shell: !!shell, namePrompt: !!tid('name-input') };`);
+    return { ok: r.shell && !r.namePrompt, detail: `title=${r.title} channels=${r.shell}` };
   });
 
   await check("lobby-channels", async () => {
@@ -206,44 +203,20 @@ async function readOnlyChecks() {
     return { ok, detail: `channels=[${r.buttons.map((b) => b.name + (b.active ? "*" : "")).join(",")}] hall.general=${r.general} 新建频道按钮=${r.plus}` };
   });
 
-  await check("identity-header", async () => {
+  await check("shared-local-access", async () => {
     const r = await js(`
-      const me = await api('/api/me');
-      const you = text($('.channel-head .you'));
-      return { you, name: me.user && me.user.name, rosterHasSelf: $$('.roster .person-head strong').some((e) => text(e) === (me.user && me.user.name)) };`);
-    const shown = r.you.replace(/^你是\s*/, "");
-    if (!expectName) return { ok: shown === r.name && r.rosterHasSelf, detail: `页面「${r.you}」, /api/me=${r.name}, 在场里有自己=${r.rosterHasSelf}` };
-    return {
-      ok: shown === expectName && r.name === expectName,
-      detail: `页面「${r.you}」, /api/me=${r.name}, 期望 ${expectName}${shown !== expectName ? "（这个浏览器的 ac_session 属于另一个名字，需要手动离开后用该名字重新进入）" : ""}`,
-    };
+      const { me, room, snap } = await roomSnap();
+      return { local: !!me.user?.id, room: room.id, loaded: snap.room.id, namePrompt: !!tid('name-input') };`);
+    return { ok: r.local && r.room === r.loaded && !r.namePrompt, detail: `可直接访问频道 ${r.room}` };
   });
 
-  await check("presence-grouping", async () => {
+  await check("active-agent-roster", async () => {
     const r = await js(`
       const { snap } = await roomSnap();
-      const groups = $$('.roster > .person').map((li) => ({
-        name: text(li.querySelector('.person-head strong')),
-        meta: text(li.querySelector('.person-head em')),
-        headDot: li.querySelector('.person-head .dot').classList.contains('on'),
-        agents: $$('.person-agents > li', li).map((a) => ({ handle: text(a.querySelector('.handle strong')), dotOn: a.querySelector('.dot').classList.contains('on') })),
-      }));
-      const apiOwners = {};
-      for (const a of snap.members.agents) (apiOwners[a.ownerName || '未署名'] ||= []).push(a.handle);
-      return { groups, apiOwners, users: snap.members.users.map((u) => u.name) };`);
-    const problems = [];
-    const uiHandles = r.groups.flatMap((g) => g.agents.map((a) => a.handle)).sort();
-    const apiHandles = Object.values(r.apiOwners).flat().sort();
-    if (JSON.stringify(uiHandles) !== JSON.stringify(apiHandles)) problems.push(`handles ui=${uiHandles} api=${apiHandles}`);
-    for (const g of r.groups) {
-      const expected = r.apiOwners[g.name] ?? [];
-      if (g.agents.length !== expected.length) problems.push(`${g.name}: ${g.agents.length} vs api ${expected.length}`);
-      const person = r.users.includes(g.name);
-      const want = person ? (g.agents.length ? `人 · ${g.agents.length} 个 agent` : "人") : `${g.agents.length} 个 agent`;
-      if (g.meta !== want) problems.push(`${g.name} meta「${g.meta}」应为「${want}」`);
-    }
-    if (!r.groups.length) problems.push("no groups");
-    return { ok: problems.length === 0, detail: problems.join("; ") || r.groups.map((g) => `${g.name}[${g.meta}]`).join(" ") };
+      const handles = [...new Set($$('.roster .handle strong').map(text))].sort();
+      const active = snap.members.agents.filter(a => !a.demo && !a.paused).map(a => a.handle).sort();
+      return { handles, active };`);
+    return { ok: JSON.stringify(r.handles) === JSON.stringify(r.active), detail: `UI ${r.handles.join(' / ')}; API ${r.active.join(' / ')}` };
   });
 
   await check("roles-and-levels", async () => {
@@ -412,8 +385,8 @@ async function ownerMigrationCheck() {
     const db = new DatabaseSync(resolve(ROOT, dbArg), { readOnly: true });
     try {
       const rows = db
-        .prepare("SELECT a.handle, a.level, a.paused, a.demo, u.name AS owner FROM agents a JOIN users u ON u.id = a.owner_user_id WHERE u.name = ?")
-        .all(expectName || "彭磊");
+        .prepare("SELECT a.handle, a.level, a.paused, a.demo, u.name AS owner FROM agents a JOIN users u ON u.id = a.owner_user_id WHERE ? = '' OR u.name = ?")
+        .all(legacyOwner, legacyOwner);
       const by = Object.fromEntries(rows.map((r) => [r.handle, r]));
       const want = expectAgents.length ? expectAgents : ["cursor", "chatgpt", "claude-desk"];
       const problems = [];
@@ -424,7 +397,7 @@ async function ownerMigrationCheck() {
       }
       const old = rows.filter((r) => r.handle.endsWith("-old"));
       if (old.some((r) => !r.paused)) problems.push("an -old agent is not paused");
-      return { ok: problems.length === 0, detail: problems.join("; ") || `${want.join("/")} 属于 ${expectName || "彭磊"} 且 Lv1；旧的 ${old.map((r) => `${r.handle}(Lv${r.level},已暂停)`).join(" ") || "无"}` };
+      return { ok: problems.length === 0, detail: problems.join("; ") || `${want.join("/")} 的原始记录仍可读，级别 Lv1；旧的 ${old.map((r) => `${r.handle}(Lv${r.level},已暂停)`).join(" ") || "无"}` };
     } finally {
       db.close();
     }
@@ -434,22 +407,16 @@ async function ownerMigrationCheck() {
 // ---------------------------------------------------------------- temp-only write checks
 
 async function tempWriteChecks() {
-  const cookieHeader = (await tempApi("/api/session", { body: { name: tempName } })).headers.get("set-cookie");
-  temp.cookie = cookieHeader.split(";")[0];
-  const me = (await tempApi("/api/me")).data;
+  const { data: me, headers } = await tempApi("/api/me");
+  temp.cookie = headers.get("set-cookie").split(";")[0];
   const hall = me.rooms.find((room) => room.general);
 
-  await check("gate-enter (temp)", async () => {
+  await check("direct-channel-entry (temp)", async () => {
     const r = await js(`
-      const gate = await until(() => tid('name-input'), 8000);
-      if (!gate) return { gate: false, shell: !!$('.shell') };
-      setValue(gate, ${JSON.stringify(tempName)});
-      await sleep(200);
-      tid('enter').click();
-      const shell = await until(() => $('.shell'), 10000);
-      await until(() => $('.channel-head .you'), 8000);
-      return { gate: true, shell: !!shell, you: text($('.channel-head .you')), demoGroup: text($('.roster .person-head em')) };`);
-    return { ok: r.gate && r.shell && r.you === `你是 ${tempName}` && /人 · 4 个 agent/.test(r.demoGroup), detail: `「${r.you}」在场「${r.demoGroup}」` };
+      await until(() => $('.shell'), 10000);
+      const me = await api('/api/me');
+      return { shell: !!$('.shell'), localId: me.user?.id, rooms: me.rooms.map(room => room.id) };`);
+    return { ok: r.shell && r.localId === me.user.id && r.rooms.includes(hall.id), detail: `已打开公共频道 ${hall.name}` };
   });
 
   const enroll = async (handle, tags) => {
@@ -464,16 +431,14 @@ async function tempWriteChecks() {
     await tempApi(`/api/agents/${a.id}`, { method: "PATCH", body: { paused: true } });
   }
 
-  await check("identity-roster-agents (temp)", async () => {
-    const r = await js(`
-      const ok = await until(() => $$('.person-agents > li').some((a) => text(a.querySelector('.handle strong')) === 'cursor'), 12000);
-      const g = $$('.roster > .person').map((li) => ({ name: text(li.querySelector('.person-head strong')), meta: text(li.querySelector('.person-head em')), handles: $$('.person-agents .handle strong', li).map(text) }));
-      return { ok, g };`);
-    const self = r.g.find((g) => g.name === tempName);
-    return { ok: r.ok && r.g.length === 1 && self?.handles.includes("cursor") && self.handles.length === 9, detail: `${self?.name}「${self?.meta}」${self?.handles.join(" ")}` };
+  await check("active-roster-agents (temp)", async () => {
+    const handles = await js(`
+      await until(() => tid('roster-cursor'), 12000);
+      return [...new Set($$('.roster .handle strong').map(text))];`);
+    return { ok: Object.keys(tokens).every(handle => handles.includes(handle)), detail: handles.join(' / ') };
   });
 
-  const onlineOf = (handle) => `(() => { const a = $$('.person-agents > li').find((x) => text(x.querySelector('.handle strong')) === '${handle}'); return a ? a.querySelector('.dot').classList.contains('on') : null; })()`;
+  const onlineOf = (handle) => `(() => { const item = tid('manage-' + ${JSON.stringify(handle)}); return item ? text(item).includes('最近有客户端活动') : null; })()`;
   await check("presence-ping (temp)", async () => {
     const before = await js(`return ${onlineOf("cursor")};`);
     await tempApi("/api/agent/ping", { body: {}, token: tokens.cursor });
@@ -602,7 +567,7 @@ async function main() {
   }
   console.log(`target ${baseUrl}  mode ${spawnTemp ? "temp (writes allowed, temp DB only)" : "live (read-only)"}`);
 
-  const opened = await bridge("open_tab", { url: baseUrl + "/", active: false });
+  const opened = await bridge("open_tab", { url: new URL("/#channels", baseUrl).href, active: false });
   tabId = opened.tabId;
   try {
     await sleep(1500);

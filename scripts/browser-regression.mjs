@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, existsSync } from 'node:fs';
+import { once } from 'node:events';
+import { mkdtempSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -22,9 +23,53 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   page.on('pageerror', (error) => failures.push(error.message));
-  await page.goto(base);
-  await page.getByTestId('name-input').fill('浏览器验收');
-  await page.getByTestId('enter').click();
+  await page.goto(base + "/#channels");
+  await expect(page.getByTestId('composer')).toBeVisible();
+  await expect(page.getByTestId('name-input')).toHaveCount(0);
+  const missingInbox = await context.newPage();
+  missingInbox.on('pageerror', error => failures.push(error.message));
+  const inboxApi = '**/api/zoom/messages';
+  await missingInbox.route(inboxApi, route => route.fulfill({ status: 500, json: { message: '消息读取失败' } }));
+  await missingInbox.goto(base + '/#inbox');
+  await expect(missingInbox.getByRole('alert')).toContainText('消息读取失败');
+  await missingInbox.unroute(inboxApi);
+  await missingInbox.route(inboxApi, route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html></html>' }));
+  await missingInbox.getByRole('button', { name: '重新加载' }).click();
+  await expect(missingInbox).toHaveURL(/#channels$/);
+  await expect(missingInbox.getByTestId('composer')).toBeVisible();
+  await missingInbox.unroute(inboxApi);
+  let expiredRequests = 0;
+  await missingInbox.route(inboxApi, route => {
+    expiredRequests++;
+    return expiredRequests === 1 ? route.fulfill({ status: 401, json: { message: '会话已结束' } }) : route.continue();
+  });
+  await missingInbox.goto(base + '/#inbox');
+  await expect(missingInbox.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
+  await expect.poll(() => expiredRequests).toBeGreaterThanOrEqual(2);
+  await expect(missingInbox.getByTestId('name-input')).toHaveCount(0);
+  await expect(missingInbox).toHaveURL(/#inbox$/);
+  await missingInbox.close();
+  checks.push('旧服务返回 HTML 时回到频道，消息服务失败可重试，会话失效后在原页面自动恢复');
+  const legacyContext = await browser.newContext();
+  try {
+    const legacy = await legacyContext.newPage();
+    let fallbackCalls = 0;
+    await legacy.route('**/api/me', route => fallbackCalls
+      ? route.continue() : route.fulfill({ status: 401, json: { error: 'auth' } }));
+    await legacy.route('**/api/health', route => route.fulfill({ json: { ok: true } }));
+    await legacy.route('**/api/session', route => {
+      fallbackCalls++;
+      assert.equal(route.request().postDataJSON().name, '本机');
+      return route.continue();
+    });
+    await legacy.goto(base + '/#channels');
+    await expect(legacy.getByTestId('composer')).toBeVisible();
+    await expect(legacy.getByTestId('name-input')).toHaveCount(0);
+    assert.equal(fallbackCalls, 1);
+  } finally {
+    await legacyContext.close();
+  }
+  checks.push('旧版服务首次返回 401，新浏览器自动使用兼容入口一次');
   await expect(page.getByTestId('composer')).toBeVisible();
   await expect(page.locator('.side')).not.toBeVisible();
   await expect(page.getByRole('radiogroup', { name: '消息类型' })).toHaveCount(0);
@@ -45,7 +90,7 @@ try {
   const me = await call('/api/me');
   const room = me.rooms[0];
   const snap = await call(`/api/rooms/${room.id}`);
-  assert.equal(snap.members.agents.filter(a => a.demo).length, 0, '默认新工作室不应创建演示客户端');
+  assert.equal(snap.members.agents.filter(a => a.demo).length, 0, '新数据库不创建演示客户端');
   for (const a of snap.members.agents.filter(a => a.demo)) await call(`/api/agents/${a.id}`, { paused: true }, 'PATCH');
   const code = await call(`/api/rooms/${room.id}/join-codes`, {});
   const worker = await call('/api/enroll', { code: code.code, handle: 'cli-test', runtime: 'test-fixture', tags: 'build' });
@@ -289,7 +334,7 @@ try {
   await page.mouse.wheel(0, -2000);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await expect(page.locator('.brand')).toBeInViewport();
-  await expect(page.getByRole('button', { name: '离开', exact: true })).toBeInViewport();
+  await expect(page.getByRole('button', { name: '离开', exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 900 });
   checks.push('频道列表局部滚动，短窗口及滚动到顶/底均不带动整页');
   await page.screenshot({ path: join(output, 'desktop.png'), fullPage: true });
@@ -310,5 +355,11 @@ try {
   for (const check of checks) console.log('PASS ' + check);
   console.log(`PASS 浏览器无运行时异常；截图 ${output}`);
 } finally {
-  await browser?.close(); server.kill('SIGTERM');
+  await browser?.close();
+  if (server.exitCode === null && server.signalCode === null) {
+    const exited = once(server, 'exit');
+    server.kill('SIGTERM');
+    await exited;
+  }
+  rmSync(dir, { recursive: true, force: true });
 }

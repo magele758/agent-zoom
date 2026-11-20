@@ -15,8 +15,9 @@ const evidence = { status: 'running', startedAt: new Date().toISOString(), check
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(base + '/api/health')).ok) break; } catch {} await sleep(100); }
-  const enter = await fetch(base + '/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '真实协调模型验收' }) });
-  const cookie = enter.headers.get('set-cookie').split(';')[0];
+  const local = await fetch(base + '/api/me');
+  assert.ok(local.ok);
+  const cookie = local.headers.get('set-cookie').split(';')[0];
   const call = async (path, data) => { const r = await fetch(base + path, { method: data ? 'POST' : 'GET', headers: { cookie, 'content-type': 'application/json' }, body: data ? JSON.stringify(data) : undefined }); const out = await r.json(); assert.ok(r.ok, JSON.stringify(out)); return out; };
   const room = (await call('/api/me')).rooms[0];
   const code = await call(`/api/rooms/${room.id}/join-codes`, {});
