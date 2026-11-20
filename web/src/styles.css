@@ -65,77 +65,20 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border: 0;
 }
 
-.gate {
-  position: relative;
-  min-height: 100%;
+.connection-status {
+  min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 10vh 8vw 8vh;
-  overflow: hidden;
+  padding: 24px;
+  color: var(--muted);
 }
-.gate::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 18vw;
-  width: 1px;
-  height: 22vh;
-  background: linear-gradient(var(--brass-2), transparent);
-  pointer-events: none;
-}
-.gate > p { color: var(--muted); letter-spacing: 0.12em; }
-.gate form {
-  width: min(1080px, 100%);
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 380px);
-  gap: 88px;
-  align-items: end;
-}
-.eyebrow {
-  margin: 0 0 22px;
-  color: var(--brass);
-  font-family: var(--latin);
-  font-size: 18px;
-  font-weight: 500;
-  letter-spacing: 0.42em;
-  text-transform: uppercase;
-}
-.gate h1, .mark {
+.connection-status button { margin-top: 12px; }
+.mark {
   font-family: var(--display);
   font-weight: 500;
   letter-spacing: 0.18em;
 }
-.gate h1 {
-  margin: 0;
-  font-size: clamp(80px, 11vw, 140px);
-  line-height: 0.92;
-  font-weight: 500;
-}
-.gate h1::after {
-  content: "";
-  display: block;
-  width: 48px;
-  height: 1px;
-  margin-top: 22px;
-  background: var(--brass);
-}
-.lede {
-  max-width: 28ch;
-  margin: 28px 0 0;
-  color: var(--muted);
-  font-size: 17px;
-  line-height: 1.85;
-}
-.gate-plate {
-  background: transparent;
-  border: 0;
-  border-top: 1px solid var(--line-strong);
-  border-radius: 0;
-  padding: 28px 0 0;
-  box-shadow: none;
-}
-.gate label { display: block; font-size: 13px; color: var(--brass); letter-spacing: 0.22em; margin-bottom: 12px; }
-.gate input, .stack-form input, .stack-form textarea, .scope-form input, .scope-form textarea, .inline input, .composer textarea, .composer-extra input[type="text"] {
+.stack-form input, .stack-form textarea, .scope-form input, .scope-form textarea, .composer textarea, .composer-extra input[type="text"] {
   width: 100%;
   appearance: none;
   border: 0;
@@ -146,10 +89,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   min-height: 48px;
   box-shadow: none;
 }
-.gate input::placeholder, .stack-form input::placeholder, .inline input::placeholder, .composer textarea::placeholder, .composer-extra input::placeholder {
+.stack-form input::placeholder, .composer textarea::placeholder, .composer-extra input::placeholder {
   color: #6f685c;
 }
-.gate button, .composer-bar button, .stack-form button, .scope-form button[type="submit"], .inline button, .task-actions button {
+.connection-status button, .composer-bar button, .stack-form button, .scope-form button[type="submit"], .task-actions button {
   min-height: 44px;
   border: 1px solid var(--brass);
   border-radius: 0;
@@ -161,22 +104,15 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   letter-spacing: 0.14em;
   box-shadow: none;
 }
-.gate button {
-  background: #e4c98a;
-  border-color: #e4c98a;
-  color: var(--brass-ink);
-}
-.gate button:hover, .composer-bar button:hover, .stack-form button:hover, .scope-form button[type="submit"]:hover, .inline button:hover, .task-actions button:hover {
+.connection-status button:hover, .composer-bar button:hover, .stack-form button:hover, .scope-form button[type="submit"]:hover, .task-actions button:hover {
   background: rgba(243, 230, 196, 0.14);
   filter: none;
 }
-.gate button:hover { background: #fff8ea; }
-.gate button:disabled, .composer-bar button:disabled, .stack-form button:disabled, .inline button:disabled {
+.composer-bar button:disabled, .stack-form button:disabled {
   opacity: 0.38;
   cursor: not-allowed;
   filter: none;
 }
-.gate button { width: 100%; margin-top: 22px; }
 
 .shell {
   position: fixed;
@@ -210,14 +146,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   margin-top: 14px;
   background: var(--brass);
 }
-.org {
-  display: block;
-  margin-top: 10px;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.16em;
-}
 .rooms { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
 .rooms h2, .side h2 {
   margin: 0;
@@ -227,7 +155,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   font-weight: 500;
   letter-spacing: 0.14em;
 }
-.section-row, .composer-bar, .inline, .task-actions, .msg-meta, .channel-head, .task header {
+.section-row, .composer-bar, .task-actions, .msg-meta, .channel-head, .task header {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -286,20 +214,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   color: var(--brass);
 }
 .icon-button:hover { background: transparent; color: var(--brass-2); }
-.stack-form, .inline { display: grid; gap: 8px; padding: 0 8px 12px; }
-.inline { grid-template-columns: 1fr auto; padding: 0; }
-.leave {
-  flex-shrink: 0;
-  margin-top: auto;
-  color: var(--muted);
-  min-height: 44px;
-  text-align: left;
-  padding: 0 8px;
-  background: transparent;
-  border: 0;
-  letter-spacing: 0.18em;
-}
-.leave:hover { color: var(--brass-2); }
+.stack-form { display: grid; gap: 8px; padding: 0 8px 12px; }
 
 .stage {
   overflow: hidden;
@@ -332,17 +247,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .scope-actions { display: flex; gap: 8px; align-items: center; }
 .stack-form textarea { min-height: 72px; resize: vertical; }
 .roster li.with-level em { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.you {
-  font-family: var(--latin);
-  font-size: 16px;
-  font-style: italic;
-  color: var(--brass-2);
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  letter-spacing: 0.06em;
-  white-space: nowrap;
-}
 .transcript { flex: 1; min-height: 0; overflow: auto; padding: 18px 36px 20px; }
 .empty {
   color: var(--muted);
@@ -783,7 +687,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   color: var(--muted);
   cursor: default;
 }
-.invite-block { margin: 32px 0; }
 .text-button {
   color: var(--brass);
   min-height: 36px;
@@ -864,10 +767,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .mobile-nav { display: none; }
 
 @media (max-width: 860px) {
-  .gate { place-items: start; padding: 56px 22px 32px; }
-  .gate::before { left: 22px; height: 14vh; }
-  .gate form { grid-template-columns: 1fr; gap: 36px; }
-  .gate h1 { font-size: 76px; letter-spacing: 0.12em; }
   .shell { grid-template-columns: 1fr; grid-template-rows: 1fr auto; height: 100vh; }
   .sidebar, .stage, .side { display: none; }
   .sidebar.on, .stage.on { display: flex; }
@@ -875,11 +774,12 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .side.on { display: block; }
   .mobile-nav {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     border-top: 1px solid var(--line);
     background: rgba(7, 6, 10, 0.94);
   }
-  .mobile-nav button {
+  .mobile-nav a { display: grid; place-items: center; text-decoration: none; }
+  .mobile-nav button, .mobile-nav a {
     min-height: 52px;
     border: 0;
     background: transparent;
@@ -892,7 +792,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
     box-shadow: inset 0 1px 0 var(--brass-2);
   }
   .channel-head, .transcript, .composer, .banner { padding-left: 18px; padding-right: 18px; }
-  .you { display: none; }
   .local-agents li { grid-template-columns: minmax(0, 1fr); align-items: start; }
   .local-agents strong, .local-agents .handle-name { white-space: nowrap; }
   .local-actions { justify-content: flex-start; }
@@ -927,10 +826,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 
 /* Keep tasks and decisions visible; disclose configuration on demand. */
 :root { --display: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.55; }
-.identity { display: block; color: var(--muted); font-size: 12px; }
 .brand { flex-wrap: wrap; }
-.identity { width: 100%; }
-.brand-description { display: block; width: 100%; color: var(--muted); font-size: 12px; line-height: 1.6; letter-spacing: 0; }
 .task-filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
 .task-filters button { padding: 6px 10px; background: transparent; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
 .task-filters button[aria-pressed="true"] { background: var(--brass); color: var(--brass-ink); }
@@ -963,7 +859,6 @@ fieldset.task-actions { border: 0; padding: 0; min-width: 0; margin: 12px 0 0; }
 .message-toolbar input { flex: 1; min-width: 140px; padding: 8px 10px; }
 .message-toolbar span { font-size: 12px; color: var(--muted); }
 .dm-button { grid-column: 2; justify-self: start; }
-.human-members { margin: 12px 0; color: var(--muted); font-size: 13px; }
 .roster .person { margin: 16px 0; }
 .roster .person-head { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .roster .person-agents .handle em { white-space: normal; overflow: visible; text-overflow: clip; }
@@ -1039,3 +934,67 @@ html:has(.shell), body:has(.shell) { overflow: hidden; overscroll-behavior: none
 .desktop-bridge-panel { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .desktop-bridge-panel h3 { margin: 0 0 8px; font-size: 1rem; }
 .desktop-bridge-panel button { margin: 8px 0; }
+
+.workflow-board {
+  width: min(100% - 32px, 1120px);
+  margin: auto;
+  padding: 28px 0 48px;
+}
+.workflow-header, .workflow-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.workflow-header { margin-bottom: 20px; border-bottom: 1px solid var(--line-strong); }
+.workflow-header h1 { margin: 6px 0 20px; font-size: clamp(26px, 4vw, 40px); font-weight: 500; }
+.workflow-board a { color: inherit; }
+.workflow-board button {
+  padding: 6px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  background: var(--raise);
+}
+.workflow-board button:hover:enabled { border-color: var(--brass); }
+.workflow-board button:disabled { opacity: .55; }
+.workflow-board button[aria-pressed=true], .workflow-actions button:first-child {
+  color: var(--brass-ink); background: var(--brass-2);
+}
+.workflow-file-actions, .workflow-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.workflow-filters { margin: 16px 0 24px; }
+.workflow-file-actions { justify-content: flex-end; font-size: 13px; }
+.workflow-lanes h2 span { color: var(--muted); margin-left: 5px; }
+.workflow-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 198px), 1fr)); gap: 14px; }
+.workflow-lanes > section { min-width: 0; border-top: 2px solid var(--line-strong); }
+.workflow-lanes > section:first-child { border-color: var(--brass); }
+.workflow-lanes h2 { font-size: 15px; }
+.workflow-card {
+  border: 1px solid var(--line, #d3d7db);
+  border-radius: 10px;
+  margin: 12px 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+.workflow-card h2, .workflow-card h3 { margin: 0 0 12px; }
+.workflow-link { display: grid; gap: 8px; text-decoration: none; }
+.workflow-link:hover { text-decoration: underline; }
+.workflow-unread { font-size: 12px; color: var(--brass-2); }
+.workflow-blocked { color: var(--warn); }
+.workflow-card small, .workflow-history time { color: var(--muted); }
+.workflow-state { display: flex; gap: 32px; margin: 0 0 12px; }
+.workflow-state dt { color: var(--muted); font-size: 12px; }
+.workflow-state dd { margin: 0; color: var(--brass-2); }
+.workflow-decision { border-color: var(--brass); background: var(--raise); }
+.workflow-card label { display: grid; gap: 5px; margin-bottom: 8px; }
+.workflow-card input, .workflow-card textarea {
+  width: 100%; padding: 8px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--inset);
+}
+.workflow-card textarea { resize: vertical; }
+.workflow-actions { justify-content: flex-start; flex-wrap: wrap; }
+.workflow-attempt { border-top: 1px solid var(--line, #d3d7db); padding: 12px 0; }
+.workflow-attempt p, .workflow-history p { margin: 4px 0 8px; white-space: pre-wrap; }
+.workflow-history li { padding: 4px 0; }
+.workflow-history time { display: block; font-size: 12px; }
+.workflow-card pre { overflow: auto; max-height: 320px; white-space: pre-wrap; }
+.workflow-error { color: var(--danger, #b02b32); }

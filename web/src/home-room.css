@@ -1,0 +1,168 @@
+.hr-body {
+  width: min(100%, 62rem);
+  margin: 0;
+  padding: 1.15rem clamp(18px, 4.5vw, 78px) 4rem;
+}
+.hr-intro {
+  line-height: 1.75;
+  color: #54554e;
+}
+.hr-body a {
+  text-decoration: underline;
+}
+.hr-toolbar,
+.hr-discussion > header {
+  display: flex;
+  align-items: end;
+  gap: 1rem;
+  justify-content: space-between;
+}
+.hr-toolbar {
+  flex-wrap: wrap;
+  border-bottom: 2px solid currentColor;
+  padding: 1rem 0 1.4rem;
+}
+.hr-body label {
+  display: grid;
+  gap: 0.4rem;
+  color: #4e514b;
+  font-size: 0.84rem;
+}
+.hr-body select,
+.hr-body textarea,
+.hr-body button {
+  font: inherit;
+  border: 1px solid #9c9b8c;
+  color: #222720;
+  padding: 0.55rem 0.8rem;
+  border-radius: 2px;
+  background: #fbfaf5;
+}
+.hr-body select {
+  max-width: 100%;
+}
+.hr-body button:not(:disabled) {
+  cursor: pointer;
+}
+.hr-body .hr-primary {
+  background: #883e2b;
+  color: #fff;
+  border-color: #883e2b;
+}
+.hr-body button:disabled {
+  opacity: 0.55;
+}
+.hr-bind {
+  border-bottom: 1px solid #b2afa2;
+  padding: 1.1rem 0;
+}
+.hr-bind fieldset {
+  display: grid;
+  gap: 0.9rem;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.hr-bind legend {
+  font:
+    1.3rem Georgia,
+    serif;
+  margin-bottom: 0.8rem;
+}
+.hr-bind button,
+.hr-compose button {
+  justify-self: start;
+}
+.hr-discussion {
+  padding-top: 1.45rem;
+}
+.hr-discussion h2 {
+  font-size: 1.7rem;
+  margin: 0.35rem 0 0;
+}
+.hr-posts {
+  padding: 0;
+  margin: 1rem 0;
+  list-style: none;
+}
+.hr-posts li {
+  border-top: 1px solid #c8c7bb;
+  padding: 1rem 0;
+  overflow-wrap: anywhere;
+}
+.hr-posts li > div {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+}
+.hr-posts time,
+.hr-posts small {
+  font-size: 0.78rem;
+  color: #60635a;
+}
+.hr-posts p {
+  margin: 0.65rem 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+.hr-posts li button {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.55rem;
+}
+.hr-posts li[data-highlighted="true"] {
+  background: #f3eedf;
+  padding-inline: 0.75rem;
+  box-shadow: inset 3px 0 #883e2b;
+}
+.hr-post-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.85rem;
+  margin-top: 0.45rem;
+}
+.hr-stage-link {
+  font-size: 0.8rem;
+  color: #883e2b;
+}
+.hr-idea-cite {
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #c8c7bb;
+  background: #f5f2e8;
+}
+.hr-idea-cite > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+.hr-idea-cite button {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.55rem;
+}
+.hr-body blockquote {
+  margin: 0.6rem 0;
+  padding-left: 0.65rem;
+  border-left: 2px solid #9b988b;
+  color: #64675c;
+}
+.hr-compose {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1.2rem;
+}
+.hr-compose textarea {
+  width: 100%;
+  resize: vertical;
+}
+@media (max-width: 640px) {
+  .hr-toolbar,
+  .hr-discussion > header {
+    align-items: start;
+    flex-direction: column;
+  }
+  .hr-toolbar label {
+    max-width: 100%;
+  }
+}

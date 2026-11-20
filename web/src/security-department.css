@@ -1,0 +1,41 @@
+.security-body {
+  max-width: 1140px;
+  padding: 0 clamp(18px, 4.5vw, 78px) 48px;
+  overflow-wrap: anywhere;
+}
+.security-body > section { border-top: 2px solid var(--ink); padding-block: 16px 26px; }
+.security-page .security-intro { margin: 0 0 23px; color: var(--muted); }
+.security-body h2 { font: 600 clamp(21px, 2vw, 29px)/1.5 var(--serif); }
+.security-body h2 small, .security-body time, .security-review summary small { color: var(--muted); font: 13px/1.5 var(--sans); }
+.security-body a { color: #305945; text-underline-offset: 3px; }
+.security-body [role="alert"] { color: var(--danger); }
+.security-body [role="status"] { margin-block: 8px; color: #305945; }
+.security-form { display: grid; gap: 10px; max-width: 720px; align-items: start; margin-top: 12px; }
+.security-form label, .security-list-head label { display: grid; gap: 4px; font: 13px/1.5 var(--sans); }
+.security-form :is(input, textarea, select), .security-list-head select {
+  min-width: 0; width: 100%; box-sizing: border-box; border: 1px solid var(--line-strong);
+  background: var(--inset); color: var(--ink); padding: 6px 9px; font: 14px/1.5 var(--sans);
+}
+.security-form textarea { resize: vertical; }
+.security-page .security-primary { justify-self: start; background: #285640; color: white; padding: 7px 17px; border-radius: 2px; }
+.security-page .security-primary:disabled { opacity: .5; }
+.security-list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding-bottom: 10px; }
+.security-list-head h2 { margin-right: auto; }
+.security-list-head > button { border: 1px solid var(--line); padding: 4px 9px; }
+.security-review { border-top: 1px solid var(--line); }
+.security-review summary { cursor: pointer; padding: 12px 0; }
+.security-review summary strong { font: 600 17px/1.5 var(--sans); }
+.security-review summary span { margin-left: 12px; font-size: 13px; color: var(--accent); }
+.security-review summary [data-status="passed"] { color: #285640; }
+.security-review summary small { display: block; }
+.security-detail { padding: 0 0 18px; }
+.security-detail > p { font-size: 13px; color: var(--muted); }
+.security-detail ol { max-width: 720px; padding-left: 20px; }
+.security-detail li { padding: 5px 0; }
+.security-detail li p { white-space: pre-wrap; }
+.security-detail time { margin-left: 12px; }
+@media (max-width: 550px) {
+  .security-list-head { align-items: end; }
+  .security-list-head h2 { width: 100%; }
+  .security-list-head label { flex: 1; min-width: 0; }
+}

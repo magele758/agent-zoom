@@ -1,0 +1,353 @@
+.overview-index {
+  margin: 24px 0 20px;
+  padding: 8px 0 10px;
+  border-top: 2px solid var(--ink);
+}
+.overview-index header,
+.idx-content header,
+.idx-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+.overview-index header > a,
+.idx-content header > a,
+.idx-heading > button {
+  margin-left: auto;
+}
+.idx-overview-totals {
+  display: flex;
+  gap: 12px 32px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+}
+.idx-overview-totals a {
+  display: inline-flex;
+  gap: 7px;
+  align-items: baseline;
+  color: var(--muted);
+}
+.idx-overview-totals strong {
+  color: var(--ink);
+  font: 600 25px/1 var(--digits);
+}
+.overview-index li {
+  border-top: 1px solid var(--line);
+}
+.overview-index li a {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) minmax(80px, auto);
+  gap: 12px;
+  align-items: baseline;
+  padding: 7px 0;
+}
+.overview-index li small,
+.overview-index li span {
+  overflow-wrap: anywhere;
+}
+.overview-index li small,
+.idx-muted,
+.idx-timing,
+.idx-count {
+  color: var(--muted);
+}
+.idx-state {
+  display: inline-block;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.idx-state[data-state="working"] {
+  color: #356443;
+  font-weight: 650;
+}
+.idx-state[data-state="waiting"] {
+  color: #954e22;
+  font-weight: 650;
+}
+.idx-sources {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.idx-sources summary,
+.idx-filetree summary,
+.idx-paths summary {
+  cursor: pointer;
+}
+.idx-sources > div {
+  border-top: 1px solid var(--line);
+  padding: 6px 0;
+}
+.idx-sources strong {
+  color: var(--ink);
+  margin-right: 10px;
+}
+.idx-sources summary span {
+  color: var(--accent);
+}
+.idx-warning,
+.idx-warning button {
+  color: var(--accent);
+}
+.idx-page {
+  padding: clamp(18px, 3.5vw, 56px);
+  overflow-wrap: anywhere;
+}
+.idx-page h1 {
+  font: 700 clamp(32px, 4.4vw, 64px) / 1.15 var(--serif);
+}
+.idx-page h2 {
+  font: 650 clamp(25px, 3.1vw, 44px) / 1.2 var(--serif);
+}
+.idx-page h3 {
+  font: 600 20px/1.4 var(--serif);
+}
+.idx-page a {
+  color: #375a45;
+  text-underline-offset: 3px;
+}
+.idx-page .idx-heading button,
+.idx-pager button,
+.idx-code-search button {
+  border: 1px solid var(--line-strong);
+  padding: 5px 12px;
+  background: var(--inset);
+  white-space: nowrap;
+}
+.idx-page button:disabled {
+  opacity: 0.55;
+}
+.idx-tabs {
+  margin-top: 20px;
+  display: flex;
+  gap: 22px;
+  align-items: stretch;
+  border-bottom: 2px solid var(--ink);
+}
+.idx-tabs a {
+  padding: 8px 2px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.idx-tabs a[aria-current="page"] {
+  color: var(--ink);
+  box-shadow: inset 0 -3px var(--accent);
+}
+.idx-tabs b {
+  font: 500 13px var(--digits);
+}
+.idx-page .idx-timing {
+  margin: 12px 0;
+  font-size: 13px;
+}
+.idx-search,
+.idx-code-search {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+}
+.idx-search {
+  max-width: 850px;
+}
+.idx-page label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.idx-page input,
+.idx-page select {
+  border: 1px solid var(--line-strong);
+  background: var(--inset);
+  font: 14px var(--sans);
+  color: var(--ink);
+  padding: 7px 9px;
+  min-width: 0;
+  max-width: 100%;
+}
+.idx-search label:first-child,
+.idx-code-search label {
+  flex: 1 1 180px;
+}
+.idx-page .idx-count {
+  margin: 12px 0 5px;
+  font-size: 12px;
+}
+.idx-pager {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  margin: 18px 0;
+}
+.idx-results,
+.idx-filetree ul,
+.idx-code-results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.idx-results > li {
+  display: grid;
+  align-items: start;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.idx-agentrow {
+  grid-template-columns: 62px minmax(125px, 1fr) minmax(155px, 1fr) auto;
+}
+.idx-reporow {
+  grid-template-columns: minmax(0, 2fr) minmax(125px, 1fr);
+}
+.idx-col {
+  min-width: 0;
+  display: flex;
+  flex-flow: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.idx-col span,
+.idx-col small,
+.idx-col code,
+.idx-results time,
+.idx-filetree li span,
+.idx-repodetail > p {
+  color: var(--muted);
+  font-size: 12px;
+}
+.idx-col p {
+  font-size: 13px;
+}
+.idx-state[data-state="working"]::before {
+  content: "";
+  display: inline-block;
+  border-radius: 50%;
+  background: currentColor;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+}
+.idx-repo-name {
+  font-weight: 650;
+}
+.idx-manage {
+  display: inline-block;
+  margin-right: 8px;
+}
+.idx-page .idx-scope,
+.idx-return {
+  margin: 12px 0;
+}
+.idx-return {
+  display: inline-block;
+}
+.idx-repodetail > p,
+.idx-paths {
+  margin: 8px 0;
+}
+.idx-paths code {
+  display: block;
+  margin: 3px 0;
+  font-size: 12px;
+}
+.idx-content {
+  margin: 20px 0;
+  padding-top: 12px;
+  border-top: 2px solid var(--ink);
+}
+.idx-code-search {
+  margin: 12px 0;
+  max-width: 750px;
+}
+.idx-content-meta {
+  margin-block: 12px 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.idx-filelinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.idx-filetree {
+  margin-block: 12px;
+}
+.idx-filetree li {
+  margin: 4px 0;
+}
+.idx-filetree li span {
+  display: inline-block;
+  width: 40px;
+}
+.idx-readme {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.idx-readme pre {
+  max-height: 36rem;
+  overflow: auto;
+  padding: 12px;
+  background: var(--raise);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 13px/1.55 var(--digits);
+}
+.idx-code-results {
+  margin: 12px 0;
+  padding: 10px;
+  background: var(--raise);
+}
+@media (max-width: 760px) {
+  .idx-agentrow {
+    grid-template-columns: 58px 1fr;
+  }
+  .idx-agentrow > .idx-col:nth-child(3),
+  .idx-agentrow > small {
+    grid-column: 2;
+  }
+  .idx-results > li {
+    gap: 3px 8px;
+  }
+  .idx-overview-totals {
+    gap: 8px 14px;
+  }
+  .idx-overview-totals strong {
+    font-size: 22px;
+  }
+  .idx-timing {
+    font-size: 12px;
+  }
+  .overview-index li a {
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 2px 8px;
+  }
+  .overview-index li small {
+    grid-column: 2;
+  }
+}
+@media (max-width: 520px) {
+  .idx-heading {
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .idx-heading h1 {
+    font-size: 31px;
+  }
+  .idx-heading > button:last-child {
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+  .idx-reporow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .idx-page {
+    padding: 18px;
+  }
+}
+
+.idx-agentrow > .del-inline { grid-column: 1 / -1; }

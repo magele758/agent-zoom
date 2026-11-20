@@ -1,0 +1,31 @@
+.rc-page { padding-bottom: 36px; }
+.rc-page .zo-product-head { align-items: center; }
+.rc-page .zo-product-head a, .rc-page small, .rc-body p, .rc-form label { color: var(--muted); font: 13px/1.6 var(--sans); }
+.rc-body { max-width: 1260px; padding-inline: clamp(18px,4.5vw,78px); }
+.rc-body section, .rc-fees { border-top: 2px solid var(--ink); padding: 16px 0 22px; }
+.rc-body section > header, .rc-plan header, .rc-window > div, .rc-fees li { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.rc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.rc-body h2, .rc-fees summary { font: 650 clamp(21px,2vw,28px)/1.5 var(--serif); }
+.rc-body h3 { font: 600 18px/1.55 var(--serif); }
+.rc-body button { font: 14px/1.5 var(--sans); padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 2px; }
+.rc-body button:disabled { opacity: .55; }
+.rc-body .rc-primary { background: #285640; color: white; border-color: #285640; }
+.rc-body [role=alert] { color: var(--danger); }
+.rc-tools { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); column-gap: 24px; }
+.rc-tools article, .rc-plan { border-top: 1px solid var(--line); padding: 12px 0; margin-top: 12px; overflow-wrap: anywhere; }
+.rc-window { margin-top: 10px; border-left: 2px solid var(--line); padding-left: 10px; }
+.rc-window > small, .rc-fees small { display: block; }
+.rc-reading { display: grid; gap: 2px; text-align: right; }
+.rc-reading strong, .rc-fees li > span { font: 600 15px/1.4 var(--digits),var(--sans); }
+.rc-plan header > div:first-child { flex: 1; }
+.rc-plan p, .rc-body section > p, .rc-fees p { margin-top: 8px; }
+.rc-form { margin-top: 14px; background: var(--raise); padding: 14px; }
+.rc-form fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.rc-form legend { font: 600 17px/1.6 var(--serif); }
+.rc-form fieldset > div { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,180px),1fr)); gap: 8px 14px; }
+.rc-form label { display: grid; gap: 4px; }
+.rc-form input, .rc-form select { min-width: 0; width: 100%; border: 1px solid var(--line-strong); border-radius: 2px; background: var(--inset); color: var(--ink); padding: 6px; font: 14px var(--sans); }
+.rc-form footer { display: flex; gap: 8px; margin-top: 12px; }
+.rc-fees summary { cursor: pointer; }
+.rc-fees ul { padding: 0; list-style: none; }
+.rc-fees li { border-bottom: 1px solid var(--line); padding: 8px 0; }

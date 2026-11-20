@@ -1,3 +1,5 @@
+import { DelegateWork, DelegationProvider } from "./Delegation";
+import { ZoomInbox } from "./ZoomInbox";
 import { DesktopBridgePanel } from "./DesktopBridgePanel";
 import { CoordinatorPanel } from "./CoordinatorPanel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -159,8 +161,20 @@ function MentionMenu({
 }
 
 export function App() {
+  const [hash, setHash] = useState(location.hash);
+  const [workflowEnabled, setWorkflowEnabled] = useState<boolean | null>(null);
+  const workflowRoute = /^#workflows(?:\/([a-f0-9-]{36}))?$/.exec(hash);
+  const viewingBoard = Boolean(workflowRoute && workflowEnabled !== false);
+  const viewingChannels = hash.split("?")[0] === "#channels";
+  const channelParams = new URLSearchParams(viewingChannels ? hash.split("?")[1] : "");
+  const targetRoom=channelParams.get("room"), targetTask=channelParams.get("task");
+  useEffect(() => {
+    const sync = () => setHash(location.hash);
+    window.addEventListener("hashchange", sync);
+    void api.workflowEnabled().then(result => setWorkflowEnabled(result.enabled)).catch(() => setWorkflowEnabled(false));
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
   const [me, setMe] = useState<Me | null>(null);
-  const [booting, setBooting] = useState(true);
   const [bootError, setBootError] = useState("");
   const [roomId, setRoomId] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -184,22 +198,34 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    let active = true;
     api.me().then((next) => {
+      if (!active) return;
       setMe(next);
       setRoomId(next.rooms.find((room) => room.id === sessionStorage.getItem("agent-room-selected"))?.id ?? next.rooms[0]?.id ?? null);
-    }).catch((reason) => {
-      setMe(null);
-      if (reason.status !== 401) setBootError("无法连接昆仑服务。请确认本地服务仍在运行，再重试。");
-    }).finally(() => setBooting(false));
+    }).catch(() => {
+      if (active) setBootError("无法连接OPC OS服务。请确认本地服务仍在运行，再重试。");
+    });
+    return () => { active = false; };
   }, []);
 
+  useEffect(()=>{
+    if(targetRoom && me?.rooms.some(r=>r.id===targetRoom))setRoomId(targetRoom);
+  },[targetRoom,me?.user.id]);
+  const openedTask=useRef("");
+  useEffect(()=>{
+    if(!targetRoom || !targetTask){openedTask.current="";return;}
+    if(snap?.room.id!==targetRoom || !snap.tasks.some(t=>t.id===targetTask) || openedTask.current===hash) return;
+    openedTask.current=hash;
+    window.dispatchEvent(new CustomEvent("show-task",{detail:targetTask}));
+  },[hash,targetRoom,targetTask,snap]);
   const activeRoom = useRef(roomId);
-  activeRoom.current = roomId;
+  activeRoom.current = viewingChannels ? roomId : null;
   useEffect(() => { if (roomId) sessionStorage.setItem("agent-room-selected", roomId); }, [roomId]);
 
   const snapshotRequest = useRef(0);
   const refresh = useCallback(async () => {
-    if (!roomId) return;
+    if (!roomId || !viewingChannels) return;
     const requestId = ++snapshotRequest.current;
     try {
       const next = await api.snapshot(roomId);
@@ -211,7 +237,7 @@ export function App() {
     } catch (reason) {
       if (activeRoom.current === roomId) setError(reason instanceof Error ? reason.message : "加载失败");
     }
-  }, [roomId]);
+  }, [roomId, viewingChannels]);
 
   useEffect(() => {
     if (!snap) return;
@@ -251,7 +277,7 @@ export function App() {
   }, [snap]);
 
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !viewingChannels) return;
     void refresh();
     const timer = setInterval(() => {
       void refresh();
@@ -260,10 +286,10 @@ export function App() {
     const visible = () => { if (document.visibilityState === "visible") void refresh(); };
     document.addEventListener("visibilitychange", visible);
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
-  }, [roomId, refresh, loadMe]);
+  }, [roomId, viewingChannels, refresh, loadMe]);
 
   useEffect(() => {
-    if (!me || !roomId) return;
+    if (!me || !roomId || !viewingChannels) return;
     let socket: WebSocket | null = null;
     let closed = false;
     let retry: ReturnType<typeof setTimeout>;
@@ -282,25 +308,24 @@ export function App() {
       clearTimeout(retry);
       socket?.close();
     };
-  }, [me?.user.id, roomId, refresh]);
+  }, [me?.user.id, roomId, viewingChannels, refresh]);
 
-  if (booting) return <main className="gate"><p>正在打开昆仑…</p></main>;
-  if (bootError) return <main className="gate"><div><p role="alert">{bootError}</p><button type="button" onClick={() => location.reload()}>重新连接</button></div></main>;
-  if (!me) return <Gate onEnter={async (name) => { await api.enter(name); await loadMe(); }} />;
+  if (bootError) return <main className="connection-status"><div><p role="alert">{bootError}</p><button type="button" onClick={() => location.reload()}>重新连接</button></div></main>;
+  if (!me || (viewingBoard && workflowEnabled === null)) return <main className="connection-status"><p role="status">正在打开OPC OS…</p></main>;
+
+  if (!viewingChannels) return <ZoomInbox workflowEnabled={Boolean(workflowEnabled)} workflowId={viewingBoard && workflowRoute ? workflowRoute[1] ?? "" : undefined} />;
 
   return (
-    <div className={`shell ${channelsOpen ? "" : "channels-collapsed"} ${toolsOpen ? "" : "tools-collapsed"}`}>
+    <DelegationProvider messages={[]} refreshMessages={refresh}><div className={`shell ${channelsOpen ? "" : "channels-collapsed"} ${toolsOpen ? "" : "tools-collapsed"}`}>
       <div className={`sidebar ${mobile === "rooms" ? "on" : ""}`}>
         <div className="brand">
-          <span className="mark">昆仑</span>
-          <span className="brand-description">人和 Agent 的协作空间</span>
-          <span className="org">{me.orgs[0]?.name ?? "工作室"}</span>
-          <small className="identity">当前身份：{me.user.name}</small>
+          <span className="mark">OPC OS</span>
         </div>
         <RoomList
           rooms={me.rooms}
           active={roomId}
           onPick={(id) => {
+            if(targetRoom)location.hash="channels";
             setRoomId(id);
             setMobile("chat");
           }}
@@ -310,19 +335,18 @@ export function App() {
             setMobile("chat");
           }}
         />
-        <button className="text-button leave" type="button" onClick={() => api.logout().then(() => location.reload())}>
-          离开
-        </button>
       </div>
       <main className={`stage ${mobile === "chat" ? "on" : ""}`}>
         <div className="view-toolbar">
+          <a href="#inbox">消息列表</a>
+          <a href="#delegations">委派台</a>
+          {workflowEnabled && <a href="#workflows">工作流决策</a>}
           <button type="button" data-testid="toggle-channels" aria-expanded={channelsOpen} onClick={() => setChannelsOpen(!channelsOpen)}>{channelsOpen ? "收起频道" : "展开频道"}</button>
           <button type="button" data-testid="toggle-tools" aria-expanded={toolsOpen} onClick={() => setToolsOpen(!toolsOpen)}>{toolsOpen ? "收起任务与成员" : "任务与成员"}</button>
         </div>
         <Channel
           key={roomId}
           roomId={roomId}
-          meName={me.user.name}
           snap={snap?.room.id === roomId ? snap : null}
           error={error}
           onPosted={() => void refresh()}
@@ -358,47 +382,12 @@ export function App() {
         )}
       </aside>
       <nav className="mobile-nav" aria-label="面板">
+        <a href="#inbox">消息列表</a>
         <button type="button" className={mobile === "rooms" ? "active" : ""} onClick={() => setMobile("rooms")}>频道</button>
         <button type="button" className={mobile === "chat" ? "active" : ""} onClick={() => setMobile("chat")}>消息</button>
         <button type="button" className={mobile === "tasks" ? "active" : ""} onClick={() => setMobile("tasks")}>任务</button>
       </nav>
-    </div>
-  );
-}
-
-function Gate({ onEnter }: { onEnter: (name: string) => Promise<void> }) {
-  const [name, setName] = useState("");
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
-  return (
-    <main className="gate">
-      <form
-        onSubmit={async (event) => {
-          event.preventDefault();
-          setPending(true);
-          setError("");
-          try {
-            await onEnter(name);
-          } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "进不去");
-          } finally {
-            setPending(false);
-          }
-        }}
-      >
-        <div className="gate-copy">
-          <p className="eyebrow">人和 Agent 的协作空间</p>
-          <h1>昆仑</h1>
-          <p className="lede">在同一个空间交流、分工，让不同身份的 Agent 一起完成工作。</p>
-        </div>
-        <div className="gate-plate">
-          <label htmlFor="name">你的名字</label>
-          <input id="name" data-testid="name-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="比如 彭磊" autoFocus />
-          {error ? <p className="error">{error}</p> : null}
-          <button data-testid="enter" type="submit" disabled={pending || !name.trim()}>进入工作室</button>
-        </div>
-      </form>
-    </main>
+    </div></DelegationProvider>
   );
 }
 
@@ -513,7 +502,6 @@ function RoomList({
 
 function Channel({
   roomId,
-  meName,
   snap,
   error,
   onPosted,
@@ -521,7 +509,6 @@ function Channel({
   onClose,
 }: {
   roomId: string | null;
-  meName: string;
   snap: Snapshot | null;
   error: string;
   onPosted: () => void;
@@ -764,7 +751,6 @@ function Channel({
           ) : null}
           </details>
         </div>
-        <span className="you">你是 {meName}</span>
       </header>
       <div className="message-toolbar">
         <input type="search" aria-label="搜索频道消息" data-testid="message-search" placeholder="搜索此对话的全部历史…" value={search} onChange={(event) => setSearch(event.target.value)} />
@@ -798,6 +784,7 @@ function Channel({
                     {message.taskTitle}
                   </button>
                 ) : null}
+                {message.authorType==="agent" && (message.kind==="question" || message.kind==="blocked") && <a href={"#inbox?"+new URLSearchParams({message:"channel:"+message.id})}>到原消息处理 ↗</a>}
                 <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
               </div>
               <FoldedBody
@@ -1037,10 +1024,9 @@ function rosterGroups(snap: Snapshot) {
 
 function holderText(claim: Claim, agents: Agent[]) {
   const agent = agents.find((item) => item.id === claim.agentId);
-  const who = claim.ownerName ? `${claim.ownerName} / ${claim.handle}` : claim.handle;
   const identity = agent ? groupLabel(agent.tags) : "";
   const level = agent && agent.level != null ? `Lv${agent.level}` : "";
-  return [who, identity, level].filter(Boolean).join(" · ");
+  return [claim.handle, identity, level].filter(Boolean).join(" · ");
 }
 
 function labelList(ids: string[]) {
@@ -1271,7 +1257,7 @@ function LocalAgents({
                                     const code = (reason as { code?: string }).code;
                                     if (code !== "credential_other_owner") throw reason;
                                     const message = reason instanceof Error ? reason.message : "";
-                                    if (!window.confirm(`${message}\n\n确定换成当前身份？`)) throw new Error("已取消，没有改动凭证");
+                                    if (!window.confirm(`${message}\n\n将此客户端连接到当前OPC OS服务？`)) throw new Error("已取消，没有改动凭证");
                                     return api.connectLocalAgent(roomId, agent.id, level, group, true);
                                   });
                                   setNote(result.note);
@@ -1334,7 +1320,6 @@ function SidePanel({
     window.addEventListener("show-task", show);
     return () => window.removeEventListener("show-task", show);
   }, []);
-  const [invite, setInvite] = useState("");
   const [code, setCode] = useState("");
   const tasks = useMemo(() => [...snap.tasks].reverse().filter((task) => !task.pipelineId || !snap.tasks.some((parent) => parent.id === task.pipelineId)), [snap.tasks]);
   const matchesFilter = (task: Task, value: typeof filter) => value === "all" || (value === "results" ? ["done", "canceled"].includes(task.status) : value === "attention" ? ["blocked", "dispute", "failed"].includes(task.status) || Boolean(task.designPending?.length) : !["done", "canceled"].includes(task.status));
@@ -1356,7 +1341,7 @@ function SidePanel({
         <div data-testid="task-list">
           {tasks.length > 0 && visibleTasks.length === 0 ? <p className="fine">没有{filterLabels[filter]}的任务。<button type="button" className="text-button" onClick={() => setFilter("all")}>查看全部任务</button></p> : null}
           {visibleTasks.map((task) => (
-            <TaskCard key={task.id} reveal={focused.id === task.id || snap.tasks.some((child) => child.id === focused.id && child.pipelineId === task.id) ? focused.version : 0} focusId={focused.id} task={task} all={snap.tasks} agents={snap.members.agents} onChanged={onChanged} onError={onError} />
+            <TaskCard roomId={snap.room.id} key={task.id} reveal={focused.id === task.id || snap.tasks.some((child) => child.id === focused.id && (child.pipelineId === task.id || child.parentId === task.id)) ? focused.version : 0} focusId={focused.id} task={task} all={snap.tasks} agents={snap.members.agents} onChanged={onChanged} onError={onError} />
           ))}
         </div>
         {snap.locks.length > 0 ? (
@@ -1384,7 +1369,7 @@ function SidePanel({
               <i className={agent.online && !agent.paused ? "dot on" : "dot"} aria-hidden="true" />
               <div className="managed-client">
                 <strong>{agent.handle}</strong>
-                <em>{agent.ownerName} · {agent.runtime}</em>
+                <em>{agent.runtime}</em>
                 <em>{agent.paused ? "已停用" : agent.online ? "已启用 · 最近有客户端活动" : "已启用 · 未检测到最近活动"}</em>
                 <em>{groupLabel(agent.tags) || "未分配身份"}</em>
               </div>
@@ -1438,7 +1423,6 @@ function SidePanel({
         </div>
         <p className="fine">按身份显示你已启用的客户端。点击名字在频道中 @ 点名。</p>
 
-        <div className="human-members">成员：{snap.members.users.map((user) => user.name).join("、")}</div>
         <ul className="roster" data-testid="roster">
           {rosterGroups(snap).map((group) => (
             <li key={group.key} className="person" data-testid={`role-group-${group.key}`}>
@@ -1469,7 +1453,7 @@ function SidePanel({
                           onClick={() => onMention(agent.handle)}
                         >
                           <strong>{agent.handle}</strong>
-                          <em>{agent.ownerName} · {agent.runtime}</em>
+                          <em>{agent.runtime}</em>
                           {dutyParts(agent.id, snap.tasks).length > 0 ? <em className="agent-duty">{dutyParts(agent.id, snap.tasks).join("、")}</em> : null}
                         </button>
                       </li>
@@ -1483,25 +1467,8 @@ function SidePanel({
         </ul>
         <p className="fine">身份、等级、启停与活动状态在成员管理中查看和修改。</p>
       </section>
-      <details className="invite-block setup-panel">
-        <summary>邀请成员与手动接入</summary>
-        <h2>成员和 agent</h2>
-        <form
-          className="inline"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            try {
-              await api.invite(snap.room.id, invite);
-              setInvite("");
-              onChanged();
-            } catch (reason) {
-              onError(reason instanceof Error ? reason.message : "邀请失败");
-            }
-          }}
-        >
-          <input aria-label="邀请成员的名字" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="邀请成员的名字" />
-          <button type="submit" disabled={!invite.trim()}>邀请</button>
-        </form>
+      <details className="setup-panel">
+        <summary>手动接入 agent</summary>
         <button
           type="button"
           className="secondary"
@@ -1530,7 +1497,7 @@ function SidePanel({
 }
 
 function TaskCard({
-  task,
+  roomId,task,
   all = [],
   agents,
   onChanged,
@@ -1540,6 +1507,7 @@ function TaskCard({
   reveal = 0,
   focusId = "",
 }: {
+  roomId:string;
   task: Task;
   all?: Task[];
   agents: Agent[];
@@ -1583,6 +1551,13 @@ function TaskCard({
       {task.deliverableRef ? <p className="note">结果：<code>{task.deliverableRef}</code></p> : null}
       <button type="button" className="text-button task-detail-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起详情" : "查看详情与操作"}</button>
       {expanded ? <div className="task-detail">
+      {!closed && <DelegateWork label="委派核对这项任务" operation={{
+        key:"channel-task:"+roomId+":"+task.id, title:"核对频道任务 · "+task.title,
+        href:"#channels?"+new URLSearchParams({room:roomId,task:task.id}),
+        detail:["核对进展和已有评审、测试证据，列出需要原负责人决定的问题。","房间 "+roomId+" / 任务 "+task.id,
+          task.title,task.body,task.acceptance,task.direction,task.deliverableRef,task.deliverableSummary,
+          ...(task.evidence??[]).map(e=>e.kind+" · "+e.handle+" · "+e.body)].filter(Boolean).join("\n"),
+      }}/>}
       <FoldedBody body={task.body} known={new Set(agents.map((agent) => agent.handle))} fold={task.body.length > 500} />
       {task.designPending?.length ? (
         <p className="note">先出方案：{labelList(task.designPending)}。他们不改代码。方案齐了再交给实现。</p>
@@ -1644,7 +1619,7 @@ function TaskCard({
           </ol>
         </div>
       ) : null}
-      {parent ? stepsOf(task.id, all).map((child) => <TaskCard key={child.id} reveal={child.id === focusId ? reveal : 0} task={child} all={all} agents={agents} nested onChanged={onChanged} onError={onError} />) : null}
+      {parent ? stepsOf(task.id, all).map((child) => <TaskCard roomId={roomId} key={child.id} reveal={child.id === focusId ? reveal : 0} task={child} all={all} agents={agents} nested onChanged={onChanged} onError={onError} />) : null}
       {step ? (
         <ul className="slots pipeline-slots" data-testid="pipeline-slots">
           {stepSlots(task, siblings).map((slot) => (
@@ -1676,6 +1651,8 @@ function TaskCard({
           {lanes.map((lane) => (
             <TaskCard
               key={lane.id}
+              roomId={roomId}
+              reveal={lane.id===focusId ? reveal : 0}
               task={lane}
               agents={agents}
               nested

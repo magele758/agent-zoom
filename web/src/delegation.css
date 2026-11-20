@@ -1,0 +1,171 @@
+.del-page {
+  width: 100%;
+  padding: clamp(1.3rem, 4vw, 4rem);
+  color: #1e302d;
+  background: #faf8ef;
+  overflow: auto;
+}
+.del-page > header,
+.del-settings > header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.del-page > header {
+  border-bottom: 2px solid currentColor;
+  padding-bottom: 1.1rem;
+}
+.del-page h1,
+.del-page h2,
+.del-page h3 {
+  font-family: Georgia, "Songti SC", serif;
+  margin: 0;
+}
+.del-page h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+}
+.del-page > section {
+  max-width: 58rem;
+  margin: 2rem 0;
+}
+.del-settings,
+.del-ledger > ul > li {
+  border-bottom: 1px solid #cdc9bc;
+  padding-bottom: 1.4rem;
+}
+.del-ledger > ul {
+  list-style: none;
+  padding: 0;
+}
+.del-ledger > ul > li {
+  padding: 1rem 0;
+}
+.del-inline {
+  margin: 0.8rem 0 1.2rem;
+  padding: 0 !important;
+}
+.del-inline h4 {
+  margin: 0.6rem 0;
+}
+.del-trigger,
+.del-page a,
+.del-receipt a {
+  color: #883e2a;
+}
+.del-trigger,
+.del-page button,
+.del-form button {
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid #aca99d;
+  padding: 0.35rem 0.7rem;
+  border-radius: 2px;
+}
+.del-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+  gap: 0.7rem 1rem;
+  padding: 0.65rem 0;
+  max-width: 48rem;
+}
+.del-form label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+}
+.del-form select,
+.del-form textarea,
+.del-form input:not([type="checkbox"]) {
+  width: 100%;
+  color: inherit;
+  background: #fffdf7;
+  border: 1px solid #aaa99c;
+  font: inherit;
+  padding: 0.48rem;
+}
+.del-form .del-auto {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.del-form .del-auto input {
+  width: auto;
+}
+.del-full,
+.del-auto,
+.del-actions,
+.del-form p {
+  grid-column: 1/-1;
+}
+.del-help,
+.del-form p {
+  font-size: 0.86rem;
+  color: #545c55;
+  margin: 0;
+}
+.del-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.del-form button[type="submit"] {
+  background: #23473e;
+  color: #fff;
+  border-color: #23473e;
+}
+.del-form button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.del-receipt p,
+.del-receipt li {
+  margin: 0.3rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.del-receipt summary {
+  cursor: pointer;
+}
+
+.del-delivery {
+  grid-column: 1/-1;
+}
+.del-delivery p {
+  margin: 0 0 0.3rem;
+}
+.del-delivery a {
+  margin-left: 0.4rem;
+}
+.del-delivery code {
+  display: block;
+  padding: 0.3rem 0;
+  overflow-wrap: anywhere;
+}
+.del-next-task {
+  display: grid;
+  gap: 0.3rem;
+}
+.del-next-task input {
+  max-width: 48rem;
+  border: 1px solid #aaa99c;
+  padding: 0.5rem;
+  background: #fffdf7;
+}
+.del-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+.del-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.85rem 0 0.4rem;
+}
+.del-filters button[aria-pressed="true"] {
+  background: #1e302d;
+  color: #faf8ef;
+  border-color: #1e302d;
+}

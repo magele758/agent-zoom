@@ -1,0 +1,35 @@
+.ops-dept { overflow-wrap: anywhere; }
+.ops-dept .zo-product-head { padding-bottom: 26px; }
+.ops-main { max-width: 1200px; padding: 0 clamp(22px,4.5vw,78px) 70px; }
+.ops-block { border-top: 2px solid var(--ink); margin-bottom: 32px; }
+.ops-block > header, .ops-service > header, .ops-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ops-block > header, .ops-service > header { justify-content: space-between; margin: 14px 0 8px; }
+.ops-block h2 { font: 650 clamp(22px,2.3vw,31px)/1.3 var(--serif); }
+.ops-service h3 { font: 650 21px/1.35 var(--serif); }
+.ops-block > p, .ops-service p { line-height: 1.65; margin-block: 10px; }
+.ops-dept .ops-meta, .ops-service small, .ops-service details, .ops-probes small { font-size: 13px; color: var(--muted); }
+.ops-dept a { color: var(--accent); text-underline-offset: 3px; }
+.zoom .ops-main button { font: 550 13px var(--sans); border: 1px solid var(--line-strong); padding: 6px 12px; border-radius: 2px; }
+.zoom .ops-main button:disabled { opacity: .6; }
+.ops-main [role=alert], .ops-main [data-tone=warn] { color: #9a4425; }
+.ops-main [data-tone=good] { color: #356747; }
+.ops-probes { margin: 12px 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); column-gap: 28px; list-style: none; padding: 0; }
+.ops-probes li { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
+.ops-probes li > span { grid-column: 1/-1; font-weight: 550; font-size: 14px; }
+.zoom .ops-probes button { color: var(--accent); border: none; padding: 5px 0; }
+.ops-dept select, .ops-dept input, .ops-dept textarea { background: var(--paper); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 2px; font: 14px/1.5 var(--sans); padding: 6px 8px; min-width: 0; }
+.ops-filter { display: flex; gap: 10px; align-items: center; font-size: 13px; margin: 16px 0; }
+.ops-filter select { max-width: 70%; }
+.ops-form { max-width: 650px; margin: 12px 0 16px; }
+.ops-form fieldset { border: none; border-left: 3px solid var(--line-strong); padding: 4px 0 4px 15px; margin: 0; min-inline-size: 0; display: grid; gap: 8px; }
+.ops-form label { display: grid; gap: 4px; font-size: 13px; }
+.ops-form textarea { resize: vertical; }
+.zoom .ops-form button[type=submit] { background: var(--accent); border-color: var(--accent); color: white; }
+.ops-service { border-top: 1px solid var(--line); padding: 0 0 15px; }
+.ops-service .ops-actions { font-size: 13px; margin: 10px 0; }
+.ops-service li small, .ops-service p small { display: block; }
+.ops-service details ul { padding-left: 19px; }
+.ops-service details h4 { margin: 10px 0 2px; font-size: 14px; }
+.ops-service details li { margin: 6px 0; }
+.ops-service summary { width: fit-content; cursor: pointer; }
+@media(max-width:700px) { .ops-probes { grid-template-columns: minmax(0,1fr); } }

@@ -1,0 +1,271 @@
+.ci-page {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ci-page .ci-head {
+  flex: 0 0 auto;
+  max-width: none;
+  margin: 0;
+  padding: clamp(20px, 3.8vh, 52px) clamp(20px, 4vw, 57px) 17px;
+  border-bottom: 1px solid var(--line);
+}
+.ci-page .ci-head h1 { font-size: clamp(29px, 3.3vw, 47px); }
+.ci-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: clamp(204px, 22vw, 293px) minmax(0, 1fr);
+}
+.ci-index,
+.ci-reader {
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ci-index {
+  border-right: 1px solid var(--line);
+  background: var(--raise);
+}
+.ci-index-tools {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--raise);
+  padding: 13px 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.ci-index-tools nav {
+  display: flex;
+  gap: 13px;
+}
+.ci-index-tools nav button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ci-index-tools nav button[aria-pressed=true] {
+  border-color: var(--accent);
+  color: var(--ink);
+  font-weight: 700;
+}
+.ci-find {
+  padding: 6px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ci-find input {
+  width: 100%;
+  margin-top: 7px;
+}
+.ci-layout summary { cursor: pointer; }
+.ci-list-heading {
+  padding: 12px 16px 7px;
+  font: 600 17px/1.45 var(--serif);
+}
+.ci-list-item {
+  display: block;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  text-decoration: none;
+  color: var(--ink);
+}
+.ci-list-item:hover { background: var(--paper); }
+.ci-list-item[aria-current] {
+  background: var(--paper);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.ci-list-item strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font: 600 15px/1.55 var(--serif);
+  overflow-wrap: anywhere;
+}
+.ci-list-item small { display: block; margin-top: 3px; }
+.ci-quiet,
+.ci-layout small,
+.ci-layout cite { color: var(--muted); font-size: 12px; }
+.ci-index p { margin: 10px 16px; }
+.ci-layout .ci-more {
+  margin: 12px 16px;
+  border-color: transparent;
+  padding: 5px 0;
+  color: var(--accent);
+}
+.ci-reader-inner {
+  max-width: 910px;
+  padding: clamp(20px, 3.5vw, 50px) clamp(20px, 4.4vw, 61px) 65px;
+}
+.ci-reader h2 {
+  font: 700 clamp(24px, 3.4vw, 39px)/1.22 var(--serif);
+  text-wrap: balance;
+}
+.ci-reader h3 { font: 650 clamp(17px, 2vw, 23px)/1.4 var(--serif); }
+.ci-reader p, .ci-reader h2, .ci-reader h3, .ci-reader a { overflow-wrap: anywhere; }
+.ci-reader a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+.ci-reader p[role=alert] { color: var(--danger); }
+.ci-kicker {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ci-reading-tools {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 15px 0 12px;
+  padding: 8px 0;
+  border-block: 1px solid var(--line);
+  background: var(--paper);
+}
+.ci-actions, .ci-lesson-result, .ci-detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+}
+.ci-reading-section {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ci-reading-section a { margin-left: 4px; }
+.ci-draft, .ci-dispatch {
+  margin: 18px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  background: var(--raise);
+}
+.ci-layout :is(input, select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink);
+  background: var(--inset);
+  font: inherit;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 6px 8px;
+}
+.ci-layout label { display: block; font-size: 13px; font-weight: 550; }
+.ci-layout label > :is(input,select,textarea) {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+}
+.ci-layout textarea { resize: vertical; }
+.ci-layout button {
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.ci-layout button:disabled { cursor: default; opacity: .55; }
+.ci-layout button.ci-main {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.ci-draft .ci-actions { margin-top: 12px; }
+.ci-draft .ci-quiet button { margin-left: 5px; padding: 2px 7px; font-size: 11px; }
+.ci-lesson-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 7px;
+}
+.ci-lesson-form p {
+  width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+.ci-lesson-form label { min-width: min(210px, 100%); }
+.ci-lesson-result { align-items: center; font-size: 13px; }
+.ci-toc {
+  margin: 11px 0 21px;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  background: var(--raise);
+  font-size: 13px;
+}
+.ci-toc nav { max-height: 237px; overflow: auto; padding-block: 5px; }
+.ci-toc nav a { display: block; padding: 3px 0; text-decoration: none; }
+.ci-toc nav a:is(:hover,[aria-current]) { text-decoration: underline; }
+.ci-toc a[data-depth="3"] { margin-left: 14px; }
+.ci-toc a[data-depth="4"] { margin-left: 28px; }
+.ci-article-body { font-size: 15px; line-height: 1.8; overflow-wrap: anywhere; }
+.ci-article-body > :is(h2,h3,h4,h5,h6) { margin: 1.1em 0 .55em; scroll-margin-top: 112px; }
+.ci-article-body h2 { font-size: clamp(25px, 3vw, 34px); }
+.ci-article-body :is(h4,h5,h6) { font: 650 17px/1.5 var(--serif); }
+.ci-article-body pre,
+.ci-article-body blockquote { margin: 1em 0; padding: 8px 12px; background: var(--raise); }
+.ci-article-body pre { overflow-x: auto; }
+.ci-article-body code { background: var(--raise); }
+.ci-article-body blockquote { border-left: 2px solid var(--line-strong); }
+.ci-article-body :is(ol,ul) { padding-left: 1.45em; }
+.ci-article-body li { margin: .28em 0; }
+.ci-article-body hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
+.ci-table { overflow: auto; }
+.ci-table table { width: 100%; border-collapse: collapse; background: var(--inset); font-size: 13px; }
+.ci-table th, .ci-table td { border: 1px solid var(--line); padding: 5px 9px; }
+.ci-article-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.ci-detail .ci-reason { white-space: pre-wrap; font-size: 16px; line-height: 1.7; }
+.ci-detail-links { margin: 14px 0; font-size: 13px; }
+.ci-fieldrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  margin: 12px 0;
+}
+.ci-fieldrow label { flex: 1 1 140px; min-width: 0; }
+.ci-fieldrow button { min-height: 32px; }
+.ci-project-options { margin-top: 16px; padding-top: 11px; border-top: 1px solid var(--line); font-size: 13px; }
+.ci-referrals, .ci-room-refs, .ci-learning-shelf ul { margin: 12px 0; padding: 0; list-style: none; }
+.ci-referrals li, .ci-room-refs li, .ci-learning-shelf li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 5px 10px;
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+}
+.ci-room-refs p { margin: 0; width: 100%; color: var(--muted); font-size: 13px; }
+.ci-quote { margin: 12px 0; padding-left: 14px; border-left: 2px solid var(--line-strong); }
+.ci-quote cite { font-style: normal; }
+.ci-quote p { white-space: pre-wrap; margin: 4px 0; }
+.ci-learning-shelf h3 { margin-top: 17px; }
+.ci-layout .ci-mobile-back { display: none; }
+@media (max-width: 720px) {
+  .ci-layout { display: block; overflow: hidden; }
+  .ci-reader, .ci-index { height: 100%; }
+  .ci-layout[data-open=false] .ci-reader, .ci-layout[data-open=true] .ci-index { display: none; }
+  .ci-index { border-right: 0; }
+  .ci-reader-inner { padding: 16px 18px 42px; }
+  .ci-layout .ci-mobile-back { display: block; margin: 0 0 14px; padding: 3px 0; color: var(--accent); border: 0; }
+  .ci-index-tools { padding-inline: 18px; }
+  .ci-list-item, .ci-list-heading { padding-inline: 18px; }
+}
+.ci-project-links { width: 100%; color: var(--muted); font-size: 12px; }
+.ci-project-links > div { display: flex; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
+.ci-article-body .ci-plain { white-space: pre-wrap; }
+.ci-toc { scroll-margin-top: 115px; }
+.ci-date-nav { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 12px; }
+.ci-date-nav nav { display: flex; gap: 12px; font-size: 12px; }
