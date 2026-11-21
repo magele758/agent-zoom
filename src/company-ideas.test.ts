@@ -5,8 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { openDatabase } from "./server/db.ts";
 import { ProjectStore } from "./server/projects.ts";
-import { CompanyStore } from "./server/company.ts";
+import { addCompanyRoutes, CompanyStore } from "./server/company.ts";
 import { OpportunityStore } from "./server/autonomy.ts";
+import { Hono } from "hono";
 import { journalExcerpts, listJournalDays, readJournalDay } from "./server/company-journal.ts";
 
 test("日记读取限于库内日期原件；同一摘录插入新行后仍能认出，引用只保存选中的一条", async t => {
@@ -71,4 +72,76 @@ test("通用来源不能冒用公司想法或经营实验，长凭据通过回�
   assert.throws(()=>queue.import({items:[draft]}),/原记录/);
   assert.equal(company.index().trials[0].evidence[0].reference,reference);
   assert.equal(queue.list().opportunities[0].title,transfer.title);
+});
+
+test("信息与想法的日读文章支持按用户持久化已读/未读切换与批量标为已读", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "opc-journal-read-"));
+  const prevDir = process.env.OPC_DAILY_REVIEW_DIR;
+  process.env.OPC_DAILY_REVIEW_DIR = dir;
+  t.after(async () => {
+    if (prevDir === undefined) delete process.env.OPC_DAILY_REVIEW_DIR;
+    else process.env.OPC_DAILY_REVIEW_DIR = prevDir;
+    await rm(dir, { force: true, recursive: true });
+  });
+  await writeFile(join(dir, "2026-11-21.md"), "# 2026-11-21\n最新文章");
+  await writeFile(join(dir, "2026-11-20.md"), "# 2026-11-20\n前一天文章");
+
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const queue = new OpportunityStore(db);
+  const app = new Hono();
+  app.onError((err, c) => {
+    const status = (err as { status?: number }).status ?? 500;
+    return c.json({ error: err.message }, status as 400 | 500);
+  });
+  let currentUser = { type: "user", id: "founder-1", name: "Founder" };
+  addCompanyRoutes(app, db, undefined, () => currentUser, queue);
+
+  const initialRes = await app.request("/api/zoom/company/journal");
+  const initial = await initialRes.json() as { days: string[]; readDays: string[] };
+  assert.deepEqual(initial.days, ["2026-11-21", "2026-11-20"]);
+  assert.deepEqual(initial.readDays, []);
+
+  // Mark one day read
+  const markRes = await app.request("/api/zoom/company/journal/2026-11-21/read", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ read: true }),
+  });
+  assert.equal(markRes.status, 200);
+  const marked = await markRes.json() as { day: string; read: boolean; readDays: string[] };
+  assert.equal(marked.read, true);
+  assert.deepEqual(marked.readDays, ["2026-11-21"]);
+
+  // Toggle back to unread
+  const unreadRes = await app.request("/api/zoom/company/journal/2026-11-21/read", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ read: false }),
+  });
+  assert.equal(unreadRes.status, 200);
+  assert.deepEqual((await unreadRes.json() as { readDays: string[] }).readDays, []);
+
+  // Mark all read
+  const allRes = await app.request("/api/zoom/company/journal/read-all", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ days: ["2026-11-21", "2026-11-20"] }),
+  });
+  assert.equal(allRes.status, 200);
+  assert.deepEqual((await allRes.json() as { readDays: string[] }).readDays, ["2026-11-21", "2026-11-20"]);
+
+  // Invalid date rejected
+  const badRes = await app.request("/api/zoom/company/journal/not-a-date/read", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ read: true }),
+  });
+  assert.equal(badRes.status, 400);
+
+  // Separate user has independent read state
+  currentUser = { type: "user", id: "founder-2", name: "Other" };
+  const otherRes = await app.request("/api/zoom/company/journal");
+  const other = await otherRes.json() as { readDays: string[] };
+  assert.deepEqual(other.readDays, []);
 });

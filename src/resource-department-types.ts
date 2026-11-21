@@ -17,6 +17,19 @@ export type ManualPlanInput = QuotaReading & {
 
 export type ManualPlan = ManualPlanInput & { id: string; revision: number };
 
+export type HubDiagnostic = "auth_expired" | "local_server_offline" | "quota_error";
+
+export type HubToolUsage = {
+  sessions7d: number;
+  calls7d: number;
+  tokens7d: number;
+  cycleCalls: number | null;
+  cycleStartAt: string | null;
+  cycleResetAt: string | null;
+  monthlyUsd: number | null;
+  lastCycleUsedUsd: number | null;
+};
+
 export type HubQuotaTool = {
   tool: string;
   name: string;
@@ -24,6 +37,9 @@ export type HubQuotaTool = {
   applicable: boolean;
   windows: (QuotaReading & { name: string; live: boolean })[];
   balances: (QuotaReading & { name: string; unit: "credits" | "次" })[];
+  fromHistory?: boolean;
+  diagnostic?: HubDiagnostic;
+  usage?: HubToolUsage;
 };
 
 export type SubscriptionFee = {
