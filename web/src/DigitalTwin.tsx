@@ -9,7 +9,7 @@ import type { OperationsIndex } from "../../src/operations-department-types";
 import type { ResourceDepartmentIndex } from "../../src/resource-department-types";
 import { api, request, type Agent, type Room } from "./api";
 import { taskKey } from "./zoom-view";
-import { inboxLink } from "./zoom-routes";
+import { chatRoomLink, decisionTarget } from "./zoom-routes";
 import type { useActivityIndex } from "./ActivityIndex";
 import "./digital-twin.css";
 
@@ -334,7 +334,10 @@ export function DigitalTwin({
       href: "#overview",
       x: 40, y: 46, w: 208, h: 74,
       status: "ok",
-      chips: [{ label: "打开全局看板 ↗", href: "#overview" }],
+      chips: [
+        { label: "打开全局看板 ↗", href: "#overview" },
+        { label: "总裁办 · Bot 架构 ↗", href: "#executive" },
+      ],
     },
     {
       id: "pending",
@@ -344,25 +347,26 @@ export function DigitalTwin({
       svgSub: "创始人拍板与审批放行",
       subtitle: "需创始人拍板、答复或放行的高优事项闸门",
       metric: `${pending.length} 待裁决`,
-      href: inboxLink({ filter: "pending" }),
+      href: pending[0] ? decisionTarget(pending[0]) : "#home-room",
       x: 268, y: 46, w: 208, h: 74,
       status: pending.length > 0 ? "alert" : "ok",
-      chips: pending.slice(0, 2).map(m => ({ label: m.taskTitle.slice(0, 14), href: inboxLink({ message: m.id }) })),
+      chips: pending.slice(0, 2).map(m => ({ label: m.taskTitle.slice(0, 14), href: decisionTarget(m) })),
     },
     {
       id: "inbox",
-      zone: "脑枢 · 信息总线",
+      zone: "脑枢 · 协作总线",
       circuit: "decision",
-      title: "全部消息",
-      svgSub: "全公司 Agent 汇报总流",
-      subtitle: "全公司 Agent 汇报、提问、进展与回执统一收件箱",
+      title: "Agent Home 群聊",
+      svgSub: "多 Bot 群聊与待决提醒总线",
+      subtitle: "Agent Home 群聊工作台，集中讨论需求、跟进待决提醒与续聊",
       metric: `${messages.length} 条信号`,
-      href: "#inbox",
+      href: "#home-room",
       x: 496, y: 46, w: 208, h: 74,
       status: messages.length > 0 ? "active" : "idle",
       chips: [
-        { label: "全部消息 ↗", href: "#inbox" },
-        { label: "未标注阶段 ↗", href: inboxLink({ stage: "unfiled" }) },
+        { label: "打开群聊 ↗", href: "#home-room" },
+        { label: "总裁办 · Bot 架构 ↗", href: "#executive" },
+        { label: "工作流看板 ↗", href: "#workflows" },
       ],
     },
     {
@@ -373,7 +377,7 @@ export function DigitalTwin({
       svgSub: "已审批与闭环历史归档",
       subtitle: "已完成审批、回复与交付验收的历史记录归档",
       metric: `${handled.length} 已归档`,
-      href: inboxLink({ filter: "handled" }),
+      href: "#workflows",
       x: 724, y: 46, w: 208, h: 74,
       status: "ok",
     },
@@ -396,24 +400,32 @@ export function DigitalTwin({
       zone: "产研左翼 · 认知源头",
       circuit: "rd",
       title: "信息与想法",
-      svgSub: "技术复盘日记与立项孵化",
-      subtitle: "技术复盘日记、外部情报摘录与新产品想法孵化",
+      svgSub: "复盘日记、无界画布与信息代谢",
+      subtitle: "技术复盘日记、无界知识画布语义共振、每日简报清洗与新产品想法孵化",
       metric: `${remote.ideaCount} 条笔记/想法`,
       href: "#ideas",
       x: 40, y: 190, w: 254, h: 76,
       status: remote.ideaCount > 0 ? "active" : "ok",
+      chips: [
+        { label: "无界知识画布 ↗", href: "#canvas" },
+        { label: "每日简报代谢 ↗", href: "#metabolism" },
+      ],
     },
     {
       id: "opportunities",
       zone: "产研左翼 · 候选池",
       circuit: "rd",
       title: "研发选题",
-      svgSub: "价值评估排序与自动派发",
-      subtitle: "按影响力 × 信心 × 成本评估候选特性并衔接自动化流水线",
+      svgSub: "PM 自动立项与人机混合看板",
+      subtitle: "按影响力 × 信心 × 成本评估候选特性，联动 PM Agent 双维评分自动拆解任务树",
       metric: `${remote.opportunityCount} 个候选特性`,
       href: "#opportunities",
       x: 316, y: 190, w: 254, h: 76,
       status: remote.opportunityCount > 0 ? "active" : "ok",
+      chips: [
+        { label: "PM Agent 自动立项 ↗", href: "#metabolism?tab=pm" },
+        { label: "人机 Kanban 看板 ↗", href: "#planning" },
+      ],
     },
     {
       id: "business",
@@ -441,6 +453,7 @@ export function DigitalTwin({
       status: "active",
       chips: [
         { label: "1号商业试点 ↗", href: "#commercial" },
+        { label: "盈亏热力图 · 熔断 ↗", href: "#metabolism?tab=commercial" },
         { label: "产品门面 ↗", href: "https://magele758.github.io/products/" },
       ],
     },
@@ -526,12 +539,16 @@ export function DigitalTwin({
       zone: "执行场 · 自治流水线",
       circuit: "rd",
       title: "工作流看板",
-      svgSub: "计划审批与证据包",
-      subtitle: "自治编码 DAG 计划审批、Runner 路由与执行证据验收",
+      svgSub: "计划审批与暗工厂引擎",
+      subtitle: "自治编码 DAG 计划审批、暗工厂并发队列、实时终端与四重熔断保护",
       metric: workflowEnabled ? `${remote.activeWorkflowCount} 运行 / ${remote.workflowCount}` : "按需启用",
-      href: workflowEnabled ? "#workflows" : "#delegations",
+      href: workflowEnabled ? "#workflows" : "#dark-factory",
       x: 221, y: 438, w: 168, h: 76,
       status: remote.activeWorkflowCount > 0 ? "active" : "ok",
+      chips: [
+        { label: "Agent 暗工厂 ↗", href: "#dark-factory" },
+        { label: "巡检卫士 ↗", href: "#planning?tab=patrol" },
+      ],
     },
     {
       id: "homeroom",
@@ -592,12 +609,16 @@ export function DigitalTwin({
       zone: "底座 · 时间能量账本",
       circuit: "runtime",
       title: "工作投入",
-      svgSub: "按日期与业务线归集创始人及数字员工投入",
-      subtitle: "按天与业务线绑定复盘创始人及数字员工在各项目的真实投入",
+      svgSub: "按日期、番茄精力与 ROI 归集投入产出",
+      subtitle: "按天与业务线绑定复盘创始人及数字员工在各项目的真实投入与 16 周热力图",
       metric: `${remote.worklogEntries} 条投入绑定`,
       href: "#worklog",
       x: 422, y: 582, w: 356, h: 80,
       status: "ok",
+      chips: [
+        { label: "ROI · 16周热力图 ↗", href: "#planning?tab=roi" },
+        { label: "Provider 健康中心 ↗", href: "#metabolism?tab=providers" },
+      ],
     },
     {
       id: "substrate",
@@ -761,10 +782,10 @@ export function DigitalTwin({
 
       {/* Organization Vital Signs Strip */}
       <nav className="dt-vitals" aria-label="组织实时生命体征">
-        <a className="dt-vital" href={inboxLink({ filter: "pending" })} data-alert={pending.length > 0}>
+        <a className="dt-vital" href={pending[0] ? decisionTarget(pending[0]) : "#home-room"} data-alert={pending.length > 0}>
           <span className="dt-vital-label">待裁决闸门 <em>↗</em></span>
           <strong>{pending.length}</strong>
-          <small>{ messages.length } 条总消息 · { handled.length } 已归档</small>
+          <small>{ messages.length } 条总记录 · { handled.length } 已处理</small>
         </a>
         <a className="dt-vital" href="#delegations">
           <span className="dt-vital-label">自治委派与流水线 <em>↗</em></span>
@@ -1230,9 +1251,9 @@ export function DigitalTwin({
             <ul className="dt-portal-list">
               {folders.filter(f => f.depth === 0).slice(0, 3).map(folder => (
                 <li key={folder.path}>
-                  <a href={inboxLink({ folder: folder.path })}>
+                  <a href={chatRoomLink({ project: folder.path })}>
                     <span>📁 {folder.label}</span>
-                    <small>{folder.count} 条消息 ↗</small>
+                    <small>{folder.count} 条动态 · 进群聊 ↗</small>
                   </a>
                 </li>
               ))}

@@ -4,7 +4,7 @@ import type { ZoomMessage } from "../../src/zoom-types";
 import type { BusinessLineSummary } from "../../src/business-types";
 import { request } from "./api";
 import { messageText, taskKey } from "./zoom-view";
-import { companyDepartments, inboxLink } from "./zoom-routes";
+import { chatRoomLink, companyDepartments, decisionTarget, stageLink } from "./zoom-routes";
 import { ActivitySummary, type useActivityIndex } from "./ActivityIndex";
 import "./overview.css";
 
@@ -63,25 +63,28 @@ export function Overview({ activityIndex, nav, products, messages, pending, read
         </a>
       )}</div>
     </section>
-    <nav className="overview-journal" aria-label="快捷入口"><a href="#digital-twin">组织数字孪生 ↗</a><a href="#delegations">委派台与默认办理方式 ↗</a><a href="#ideas">从信息到想法 ↗</a><a href="#capabilities">开源能力 ↗</a><a href="#worklog">查看个人工作投入 ↗</a><a href="#home-room">项目讨论室 ↗</a></nav>
+    <nav className="overview-journal" aria-label="快捷入口"><a href="#executive">总裁办 · Bot 架构 ↗</a><a href="#digital-twin">组织数字孪生 ↗</a><a href="#canvas">无界知识画布 ↗</a><a href="#metabolism">信息代谢 · PM 自动立项 ↗</a><a href="#planning">人机看板 · 番茄 · ROI ↗</a><a href="#dark-factory">Agent 暗工厂 ↗</a><a href="#home-room">Agent Home 群聊 ↗</a><a href="#delegations">委派台与默认办理方式 ↗</a><a href="#ideas">从信息到想法 ↗</a><a href="#capabilities">开源能力 ↗</a><a href="#worklog">查看个人工作投入 ↗</a></nav>
     {error && <p role="alert" className="overview-warning">{error} <button onClick={onRetry}>重试</button></p>}
-    {!ready && !error && <p role="status">正在读取项目和消息…</p>}
+    {!ready && !error && <p role="status">正在读取项目与待办…</p>}
     {ready && <>
       <section className="overview-decisions" aria-label="等待你决定的事项">
-        <header><h2>待我处理 <small>{pending.length}</small></h2><a href={inboxLink({ filter: "pending" })}>打开待办 ↗</a></header>
-        {pending.length ? <ul>{pending.slice(0, 3).map(item => <li key={item.id}>
-          <a href={inboxLink({ message: item.id })}><span>{item.folder.split("/")[0]}</span><strong>{messageText(item).title}</strong><small>{item.source} ↗</small></a>
-        </li>)}</ul> : <p>当前没有需要你答复或审批的事项。</p>}
+        <header><h2>待我处理 <small>{pending.length}</small></h2><a href="#home-room">打开 Agent Home 群聊 ↗</a></header>
+        {pending.length ? <>
+          <p>数字员工遇到需你拍板的计划、实验复盘或异常卡点时会汇总在此——点击条目即可进入对应页面批准、打回修改或一键关闭。</p>
+          <ul>{pending.slice(0, 5).map(item => <li key={item.id}>
+            <a href={decisionTarget(item)}><span>{item.folder.split("/")[0]}</span><strong>{messageText(item).title}</strong><small>{item.source} · 去处理 ↗</small></a>
+          </li>)}</ul>
+        </> : <p>当前没有需要你答复或审批的事项（数字员工推进任务遇到需拍板的分叉或计划确认时会自动出现在这里）。</p>}
       </section>
       <section aria-label="产品与阶段" className="overview-matrix">
         <header><h2>产品与阶段</h2><a href="#projects">打开项目目录 ↗</a></header>
         <div className="overview-wide">
           <table aria-label="各产品十三个阶段的任务数">
             <thead><tr><th rowSpan={2} scope="col">产品</th>{groups.map(group => <th scope="colgroup" key={group.label} colSpan={group.size}>{group.label}</th>)}</tr>
-              <tr>{productStages.map(stage => <th key={stage.id} scope="col"><a href={inboxLink({ stage: stage.id })}>{stage.label}</a></th>)}</tr></thead>
-            <tbody>{["", ...products].map(name => <tr key={name}><th scope="row"><a href={inboxLink({ folder: name })}>{name || "全公司"}</a></th>
+              <tr>{productStages.map(stage => <th key={stage.id} scope="col"><a href={stageLink(stage.id)}>{stage.label}</a></th>)}</tr></thead>
+            <tbody>{["", ...products].map(name => <tr key={name}><th scope="row"><a href={name ? "#projects?" + new URLSearchParams({ product: name }) : "#projects"}>{name || "全公司"}</a></th>
               {productStages.map(stage => { const n = count(name, stage.id); return <td key={stage.id}>
-                <a data-active={n > 0} aria-label={`${name || "全公司"} · ${stage.label} · ${n} 项任务`} href={inboxLink({ folder: name, stage: stage.id })}>{n || "—"}</a>
+                <a data-active={n > 0} aria-label={`${name || "全公司"} · ${stage.label} · ${n} 项任务`} href={stageLink(stage.id, name)}>{n || "—"}</a>
               </td>; })}</tr>)}</tbody>
           </table>
         </div>
@@ -91,14 +94,14 @@ export function Overview({ activityIndex, nav, products, messages, pending, read
           }}>
             <option value="">全公司</option>{products.map(name => <option key={name}>{name}</option>)}
           </select>
-          <ol>{productStages.map(stage => <li key={stage.id}><a href={inboxLink({ folder: current, stage: stage.id })}>
+          <ol>{productStages.map(stage => <li key={stage.id}><a href={stageLink(stage.id, current)}>
             <span>{stage.label}</span><b>{count(current, stage.id)}</b></a></li>)}</ol>
         </div>
-        <footer>数字为各阶段的任务数。{unfiled > 0 && <a href={inboxLink({ stage: "unfiled" })}>另有 {unfiled} 项未标注阶段 ↗</a>}</footer>
+        <footer>数字为各阶段的任务数。{unfiled > 0 && <a href={chatRoomLink()}>另有 {unfiled} 项未标注阶段（在群聊讨论） ↗</a>}</footer>
       </section>
       {maintenance.length > 0 && <section className="overview-maintenance" aria-label="最近仓库维护">
-        <header><h2>最近仓库维护</h2><a href={inboxLink({ stage: "operations" })}>查看运维 ↗</a></header>
-        <ul>{maintenance.slice(0, 4).map(item => <li key={item.id}><a href={inboxLink({ folder: item.folder, message: item.id })}>
+        <header><h2>最近仓库维护</h2><a href="#operations-department">查看运维部门 ↗</a></header>
+        <ul>{maintenance.slice(0, 4).map(item => <li key={item.id}><a href={"#activity-index?" + new URLSearchParams({ view: "repos", repo: item.repository!.fullName })}>
           <span>{item.folder.split("/")[0]}</span><strong>{item.repository!.fullName}</strong>
           <small>{item.repository!.openIssues} Issue · {item.repository!.openPullRequests} PR · 快照 {new Date(item.repository!.syncedAt).toLocaleDateString("zh-CN")} ↗</small>
         </a></li>)}</ul>
