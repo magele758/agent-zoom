@@ -6,9 +6,10 @@ import { productStages, type ProductStageId } from "../../src/product-stages";
 import { stageGuides, type StageDraft } from "../../src/stage-guides";
 import type { StageHomeBot, StageHomeReceipt } from "../../src/stage-home-types";
 import type { StageWork, StageWorkTarget } from "../../src/stage-work-types";
-import { request } from "./api";
+import type { ZoomMessage } from "../../src/zoom-types";
+import { api, request } from "./api";
 import { StageGuide } from "./StageGuide";
-import { inboxLink } from "./zoom-routes";
+import { chatRoomLink } from "./zoom-routes";
 import "./stage-guide.css";
 
 const endpoint = "/api/zoom/stage-work";
@@ -22,6 +23,104 @@ const stages = {
 };
 const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const post = (data: unknown) => ({ method: "POST", body: JSON.stringify(data) });
+
+function StageWorkThread({ work, changed }: { work: StageWork; changed: () => void }) {
+  const [messages, setMessages] = useState<ZoomMessage[] | null>(null);
+  const [choice, setChoice] = useState("");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    const control = new AbortController();
+    request<{ work: StageWork; messages: ZoomMessage[] }>(endpoint + "/" + encodeURIComponent(work.id), {
+      signal: control.signal,
+    })
+      .then((res) => {
+        if (!control.signal.aborted) setMessages(res.messages);
+      })
+      .catch((err) => {
+        if (!control.signal.aborted) setError(describe(err));
+      });
+    return () => control.abort();
+  }, [work.id, work.status, tick]);
+
+  const pending = messages?.find((m) => m.pending && m.kind === "question");
+
+  const reply = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!pending || busy || (!choice && !body.trim())) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.zoomReply(work.id, {
+        questionId: pending.id,
+        choice: choice || undefined,
+        body: body.trim() || undefined,
+      });
+      setBody("");
+      setChoice("");
+      setTick((n) => n + 1);
+      changed();
+    } catch (err) {
+      setError(describe(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="sd-thread">
+      {error && <p role="alert">{error}</p>}
+      {!messages && !error && <p role="status">正在读取进展与问题…</p>}
+      {messages && (
+        <ol>
+          {messages.slice(-6).map((m) => (
+            <li key={m.id}>
+              <strong>{m.actor || m.source}</strong> · <small>{m.kind}</small>
+              <p>{m.body}</p>
+            </li>
+          ))}
+        </ol>
+      )}
+      {pending && (
+        <form onSubmit={(e) => void reply(e)}>
+          {pending.choices && (
+            <div>
+              {pending.choices.map((opt) => (
+                <label key={opt} style={{ marginRight: "0.8rem" }}>
+                  <input
+                    type="radio"
+                    name={"stage-reply-" + pending.id}
+                    value={opt}
+                    checked={choice === opt}
+                    onChange={() => setChoice(opt)}
+                  />{" "}
+                  {opt}
+                </label>
+              ))}
+            </div>
+          )}
+          <label>
+            答复执行者
+            <textarea
+              rows={2}
+              maxLength={8000}
+              value={body}
+              disabled={busy}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="写下答复或决策…"
+            />
+          </label>
+          <button type="submit" disabled={busy || (!choice && !body.trim())}>
+            {busy ? "发送中…" : "发送答复"}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
 
 function HomeDispatch({ id, changed }: { id: string; changed: () => void }) {
   const [receipt, setReceipt] = useState<StageHomeReceipt | null>(null);
@@ -329,9 +428,9 @@ export function StageDesk({
         )}
         <a
           data-testid="stage-open-messages"
-          href={inboxLink({ folder: [scopeProduct, scopeProject].filter(Boolean).join("/"), stage: step })}
+          href={chatRoomLink({ project: [scopeProduct, scopeProject].filter(Boolean).join("/") || undefined })}
         >
-          查看阶段消息 ↗
+          在群聊讨论 ↗
         </a>
       </div>
       {error && (
@@ -401,22 +500,33 @@ export function StageDesk({
             </p>
             <MessageDelegate messageId={work.messageId}/>
             <ReopenWork work={work} changed={reload} />
-            <a href={inboxLink({ message: work.messageId })}>原任务与反馈 ↗</a>{" "}
+            <a
+              href={chatRoomLink({
+                project: [work.product, work.project].filter(Boolean).join("/") || undefined,
+                draft: `讨论阶段任务「${work.title}」（${stages[work.status]}）\n阶段页：#stage?step=${work.stage}${work.product ? "&product=" + encodeURIComponent(work.product) : ""}${work.project ? "&project=" + encodeURIComponent(work.project) : ""}`,
+              })}
+            >
+              到群聊讨论 ↗
+            </a>{" "}
             <button
               aria-expanded={active === work.id}
               onClick={() => setActive(active === work.id ? "" : work.id)}
             >
-              执行与回执
+              {work.status === "waiting" ? "答复问题与回执" : "执行与回执"}
             </button>
-            {active === work.id &&
-              (work.target === "agent-home" ? (
-                <HomeDispatch id={work.id} changed={reload} />
-              ) : (
-                <p>
-                  在执行者的会话中认领本单{" "}
-                  <code>opc-os stage claim {work.id} --agent 执行者 --session 会话标识</code>
-                </p>
-              ))}
+            {(active === work.id || work.status === "waiting") && (
+              <>
+                {work.target === "agent-home" ? (
+                  <HomeDispatch id={work.id} changed={reload} />
+                ) : (
+                  <p>
+                    在执行者的会话中认领本单{" "}
+                    <code>opc-os stage claim {work.id} --agent 执行者 --session 会话标识</code>
+                  </p>
+                )}
+                <StageWorkThread work={work} changed={reload} />
+              </>
+            )}
             {work.evidence.length > 0 && (
               <ul>
                 {work.evidence.map((ref) => (

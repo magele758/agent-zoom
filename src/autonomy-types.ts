@@ -1,10 +1,12 @@
 import type { RepoCapability } from "./repo-capabilities-types.ts";
 export type OpportunityKind = "feature" | "issue" | "upgrade" | "growth";
+export type OpportunityPipeline = "quick" | "full-product";
 export type OpportunityState = "queued" | "selected" | "skipped";
 
 export type OpportunityInput = {
   project: string;
   kind: OpportunityKind;
+  pipeline?: OpportunityPipeline;
   sourceId: string;
   title: string;
   rationale: string;
