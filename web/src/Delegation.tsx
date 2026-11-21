@@ -292,11 +292,11 @@ function Receipt({ item, source = false }: { item: Delegation; source?: boolean 
         </ul>
       )}
       {targetMessageId && (
-        <a href={"#inbox?" + new URLSearchParams({ message: targetMessageId })}>
-          {question ? "答复执行者的问题" : "查看工单记录"} ↗
+        <a href={item.sourceHref.startsWith("#") && !item.sourceHref.startsWith("#inbox") ? item.sourceHref : "#home-room"}>
+          {question ? "答复执行者的问题" : "到群聊或原页查看"} ↗
         </a>
       )}{" "}
-      {source && item.sourceHref.startsWith("#") && <a href={item.sourceHref}>回原事项 ↗</a>}
+      {source && item.sourceHref.startsWith("#") && !item.sourceHref.startsWith("#inbox") && <a href={item.sourceHref}>回原事项 ↗</a>}
     </div>
   );
 }
@@ -488,7 +488,7 @@ export function DelegationDesk({ nav }: { nav: ReactNode }) {
           <button type="button" onClick={() => void registry.update()}>
             刷新进展
           </button>
-          <a href="#inbox?filter=pending">查看待我处理 ↗</a>
+          <a href="#home-room">打开 Agent Home 群聊 ↗</a>
           <a href="#resource-department">查看执行者套餐额度 ↗</a>
         </div>
       </header>

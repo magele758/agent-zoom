@@ -133,7 +133,21 @@ function workflowMaterials(store: Store, m: ZoomMessage): string[] {
   ];
 }
 function messageSource(store: Store, m: ZoomMessage): Source {
-  const href = "#inbox?" + new URLSearchParams({ message: m.id });
+  const href = m.origin === "workflow"
+    ? "#workflows/" + encodeURIComponent(m.taskId)
+    : m.businessTrial
+      ? "#business-lines?" + new URLSearchParams({ line: m.businessTrial.lineId, trial: m.businessTrial.trialId })
+      : m.capabilityRequest
+        ? "#capabilities?" + new URLSearchParams({ request: m.capabilityRequest.id })
+        : m.roomBinding
+          ? "#home-room?" + new URLSearchParams({ binding: m.roomBinding })
+          : m.stage
+            ? "#stage?" + new URLSearchParams({
+                step: m.stage,
+                ...(m.folder ? { product: m.folder.split("/")[0] } : {}),
+                ...(m.folder?.includes("/") ? { project: m.folder.split("/").slice(1).join("/") } : {}),
+              })
+            : "#home-room";
   return {
     id: m.id,
     kind: "message",

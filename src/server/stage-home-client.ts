@@ -39,13 +39,13 @@ export class StageHomeClient {
     this.identity = createHash("sha256").update(this.origin + "\n" + (this.token ?? "")).digest("hex");
   }
 
-  async call<T>(path: string, schema: z.ZodType<T>, body?: unknown): Promise<T> {
+  async call<T>(path: string, schema: z.ZodType<T>, body?: unknown, method?: "GET" | "POST" | "PATCH" | "DELETE"): Promise<T> {
     const headers: Record<string,string> = { accept: "application/json" };
     if (this.token) headers.authorization = "Bearer " + this.token;
-    if (body) headers["content-type"] = "application/json";
+    if (body !== undefined) headers["content-type"] = "application/json";
     try {
-      const response = await fetch(this.origin + path, { method: body ? "POST" : "GET", headers,
-        body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(8000), redirect: "error" });
+      const response = await fetch(this.origin + path, { method: method ?? (body !== undefined ? "POST" : "GET"), headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(8000), redirect: "error" });
       if (!response.ok) {
         const hint = response.status === 401 || response.status === 403 ? "请核对服务端的 PPENG_TOKEN。" : "请在 Agent Home 核对服务状态。";
         throw new ApiError(502, "stage_home_remote", `Agent Home 返回 HTTP ${response.status}。${hint}`);

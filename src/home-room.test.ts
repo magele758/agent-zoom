@@ -273,3 +273,253 @@ test("idea references and individual post detail resolve bidirectionally within 
   assert.equal(hiddenRefs.references.length, 0);
   assert.equal((await h.call(path + "/" + posted.id)).status, 403);
 });
+
+test("direct Agent Home group chat manages multi-bot rooms, links, idea refs and idempotent pending notifications", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "opc-home-chat-"));
+  const store = openStore(join(root, "opc.db"));
+  type RemoteRoom = { id: string; title: string; status: string; botIds: string[]; hostBotId?: string; replyMode: string };
+  const rooms = new Map<string, RemoteRoom>();
+  const messagesByRoom = new Map<string, Msg[]>();
+  const turnsByRoom = new Map<string, Receipt["turn"][]>();
+  const byIdem = new Map<string, Receipt>();
+  let roomSeq = 0;
+
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url!, "http://localhost");
+    const json = (status: number, obj: unknown) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    const readJson = async () => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      return raw ? JSON.parse(raw) : {};
+    };
+    if (req.headers.authorization !== "Bearer chat-only") return json(403, {});
+    if (url.pathname === "/api/bot-work/status") {
+      return json(200, {
+        bots: [
+          { bot: { id: "bot-pm", name: "产品经理" }, control: {} },
+          { bot: { id: "bot-eng", name: "架构师" }, control: {} },
+          { bot: { id: "bot-qa", name: "测试员" }, control: {} },
+        ],
+      });
+    }
+    if (url.pathname === "/api/bot-rooms" && req.method === "GET") {
+      return json(200, { rooms: [...rooms.values()] });
+    }
+    if (url.pathname === "/api/bot-rooms" && req.method === "POST") {
+      const input = await readJson();
+      const id = "chat-room-" + ++roomSeq;
+      const room: RemoteRoom = {
+        id,
+        title: input.title,
+        status: "active",
+        botIds: [...input.botIds],
+        ...(input.hostBotId ? { hostBotId: input.hostBotId } : {}),
+        replyMode: "coordinator",
+      };
+      rooms.set(id, room);
+      messagesByRoom.set(id, []);
+      turnsByRoom.set(id, []);
+      return json(201, { room });
+    }
+    const match = /^\/api\/bot-rooms\/([^/]+)(?:\/(.*))?$/.exec(url.pathname);
+    if (!match) return json(404, {});
+    const roomId = decodeURIComponent(match[1]);
+    const rest = match[2] ?? "";
+    const room = rooms.get(roomId);
+    if (!room) return json(404, {});
+    if (!rest && req.method === "GET") return json(200, { room, models: [] });
+    if (!rest && req.method === "PATCH") {
+      const patch = await readJson();
+      Object.assign(room, patch);
+      return json(200, { room });
+    }
+    if (rest === "members" && req.method === "POST") {
+      const { botId } = await readJson();
+      if (!room.botIds.includes(botId)) room.botIds.push(botId);
+      return json(200, { room });
+    }
+    if (rest.startsWith("members/") && req.method === "DELETE") {
+      const botId = decodeURIComponent(rest.slice("members/".length));
+      room.botIds = room.botIds.filter((id) => id !== botId);
+      return json(200, { room });
+    }
+    if (rest === "stop" && req.method === "POST") {
+      room.status = "paused";
+      return json(200, { room });
+    }
+    if (rest === "resume" && req.method === "POST") {
+      room.status = "active";
+      return json(200, { room });
+    }
+    if (rest === "turns" && req.method === "GET") {
+      return json(200, { turns: turnsByRoom.get(roomId) ?? [] });
+    }
+    if (rest === "messages" && req.method === "GET") {
+      const list = messagesByRoom.get(roomId) ?? [];
+      return json(200, { messages: list, hasMore: false, nextCursor: null });
+    }
+    if (rest === "messages" && req.method === "POST") {
+      const input = await readJson();
+      const key = `${roomId}:${input.idempotencyKey}`;
+      let existing = byIdem.get(key);
+      if (!existing) {
+        const list = messagesByRoom.get(roomId)!;
+        const seq = list.length + 1;
+        const turnId = `t-${roomId}-${seq}`;
+        const message: Msg = {
+          id: `m-${roomId}-${seq}`,
+          roomId,
+          seq,
+          sender: { type: "user", id: "founder", name: "创始人" },
+          text: input.text,
+          createdAt: new Date().toISOString(),
+          turnId,
+          ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        };
+        list.push(message);
+        const turn = {
+          id: turnId,
+          roomId,
+          messageId: message.id,
+          botIds: input.mentions?.length ? input.mentions : room.botIds,
+          mentionedBotIds: input.mentions ?? [],
+        };
+        turnsByRoom.get(roomId)!.push(turn);
+        existing = { message, turn };
+        byIdem.set(key, existing);
+      }
+      return json(202, existing);
+    }
+    return json(404, {});
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const old = [process.env.PPENG_BASE_URL, process.env.PPENG_TOKEN];
+  process.env.PPENG_BASE_URL = "http://127.0.0.1:" + (server.address() as AddressInfo).port;
+  process.env.PPENG_TOKEN = "chat-only";
+  const created = createApp(store);
+  const cookie = (await created.app.request("/api/me")).headers.get("set-cookie")!.split(";")[0];
+  t.after(() => {
+    ["PPENG_BASE_URL", "PPENG_TOKEN"].forEach((key, i) => {
+      if (old[i] === undefined) delete process.env[key];
+      else process.env[key] = old[i];
+    });
+    server.close();
+    store.db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const call = (path: string, method = "GET", body?: unknown) =>
+    created.app.request(path, {
+      method,
+      headers: { cookie, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+
+  // 1. Overview lists bots directly without any local channel bindings.
+  const initRes = await call("/api/opc/home-chat/overview");
+  assert.equal(initRes.status, 200);
+  const initOverview = await initRes.json();
+  assert.equal(initOverview.available, true);
+  assert.equal(initOverview.bots.length, 3);
+  assert.equal(initOverview.rooms.length, 0);
+
+  // 2. Create two multi-bot group chats: one default, one scoped to business line 'shop'.
+  const createDefault = await call("/api/opc/home-chat/rooms", "POST", {
+    title: "OPC 总控群",
+    botIds: ["bot-pm", "bot-eng"],
+    hostBotId: "bot-pm",
+    replyMode: "all-members",
+    scopeKey: "default",
+  });
+  assert.equal(createDefault.status, 201);
+  const defaultRoom = (await createDefault.json()).room;
+  assert.equal(defaultRoom.replyMode, "all-members");
+
+  const createShop = await call("/api/opc/home-chat/rooms", "POST", {
+    title: "店铺运营群",
+    botIds: ["bot-pm"],
+    scopeKey: "line:shop",
+  });
+  assert.equal(createShop.status, 201);
+  const shopRoom = (await createShop.json()).room;
+
+  // 3. Member management, pause/resume, and multi-bot message with idea link capture.
+  assert.equal((await call(`/api/opc/home-chat/rooms/${defaultRoom.id}/members`, "POST", { botId: "bot-qa" })).status, 200);
+  assert.equal((await call(`/api/opc/home-chat/rooms/${defaultRoom.id}/members/bot-qa`, "DELETE")).status, 200);
+  assert.equal((await call(`/api/opc/home-chat/rooms/${defaultRoom.id}/stop`, "POST", {})).status, 200);
+  assert.equal(rooms.get(defaultRoom.id)?.status, "paused");
+  assert.equal((await call(`/api/opc/home-chat/rooms/${defaultRoom.id}/resume`, "POST", {})).status, 200);
+
+  const ideaId = "22222222-3333-4444-8555-666666666666";
+  const sendRes = await call(`/api/opc/home-chat/rooms/${defaultRoom.id}/messages`, "POST", {
+    text: `请两位一起评审这个想法\n来源：#ideas?idea=${ideaId}`,
+    mentions: ["bot-pm", "bot-eng"],
+  });
+  assert.equal(sendRes.status, 202);
+  const ideaRefs = await (await call(`/api/opc/home-rooms/references?idea=${ideaId}`)).json();
+  assert.equal(ideaRefs.references.length, 1);
+  assert.equal(ideaRefs.references[0].roomId, defaultRoom.id);
+
+  // 4. Scoped automatic pending decision notifications (idempotent & zero echo loops).
+  const fakePending: ZoomMessage[] = [
+    {
+      origin: "workflow",
+      id: "workflow:card:c1",
+      taskId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      taskTitle: "上线新支付网关",
+      source: "codex",
+      folder: "产品甲/支付",
+      context: "ctx-1",
+      kind: "decision",
+      body: "请确认 r1 计划",
+      at: new Date().toISOString(),
+      pending: true,
+    },
+    {
+      origin: "external",
+      id: "trial-q-1",
+      taskId: "t-shop-1",
+      taskTitle: "商品草稿抽查",
+      source: "OPC OS · 经营实验",
+      folder: "店铺运营",
+      context: "",
+      kind: "question",
+      body: "是否继续抽查？",
+      choices: ["继续", "调整", "暂停"],
+      businessTrial: { lineId: "shop", trialId: "trial-1" },
+      at: new Date().toISOString(),
+      pending: true,
+    },
+    {
+      origin: "external",
+      id: "home-room:echo-guard",
+      taskId: "home-room:echo-guard",
+      taskTitle: "不该回环的消息",
+      source: "Bot · Agent Home",
+      folder: "产品甲",
+      context: "",
+      kind: "question",
+      roomBinding: "binding-1",
+      body: "待我答复：不要回推",
+      at: new Date().toISOString(),
+      pending: true,
+    },
+  ];
+  created.homeRooms.attachPendingSource(() => fakePending);
+  const firstPush = await created.homeRooms.notifyPendingDecisions();
+  assert.equal(firstPush.sent, 2);
+  const secondPush = await created.homeRooms.notifyPendingDecisions();
+  assert.equal(secondPush.sent, 0);
+
+  const defaultMsgs = messagesByRoom.get(defaultRoom.id)!;
+  const shopMsgs = messagesByRoom.get(shopRoom.id)!;
+  assert.ok(defaultMsgs.some((m) => m.text.includes("#workflows/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")));
+  assert.equal(defaultMsgs.some((m) => m.text.includes("不要回推")), false);
+  assert.equal(shopMsgs.length, 1);
+  assert.match(shopMsgs[0].text, /#business-lines\?line=shop&trial=trial-1/);
+  assert.match(shopMsgs[0].text, /继续 \/ 调整 \/ 暂停/);
+});

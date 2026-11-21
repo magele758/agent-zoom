@@ -10,9 +10,9 @@ import type {
   ObservationKind,
   TrialEvidence,
 } from "../../src/business-types";
-import { request } from "./api";
+import { api, request } from "./api";
 import type { CapabilityIndex, RepoCapability } from "../../src/repo-capabilities-types";
-import { inboxLink } from "./zoom-routes";
+import { chatRoomLink } from "./zoom-routes";
 import "./business-lines.css";
 
 const root = "/api/opc/business";
@@ -339,7 +339,68 @@ function Totals({ records }: { records: TrialEvidence[] }) {
     </table>
   );
 }
-function TrialDetail({ trial, save }: { trial: BusinessTrial; save: Save }) {
+function TrialReviewPanel({ trial, onDone }: { trial: BusinessTrial; onDone: () => Promise<void> }) {
+  const [choice, setChoice] = useState("继续");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submitReview = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy || !trial.questionId || (!choice && !body.trim())) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.zoomReply(trial.taskId, {
+        questionId: trial.questionId,
+        choice: choice || undefined,
+        body: body.trim() || undefined,
+      });
+      await onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "提交复盘失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="bl-form" aria-label="经营实验复盘决定" onSubmit={(e) => void submitReview(e)}>
+      <fieldset disabled={busy}>
+        <legend>提交本轮复盘决定</legend>
+        <div>
+          {(["继续", "调整", "暂停"] as const).map((option) => (
+            <label key={option} style={{ marginRight: "1rem" }}>
+              <input
+                type="radio"
+                name={"trial-review-" + trial.id}
+                value={option}
+                checked={choice === option}
+                onChange={() => setChoice(option)}
+              />{" "}
+              {option}
+            </label>
+          ))}
+        </div>
+        <Field label="复盘结论与理由">
+          <textarea
+            rows={2}
+            maxLength={4000}
+            value={body}
+            placeholder="记录继续、调整或暂停的依据…"
+            onChange={(e) => setBody(e.target.value)}
+          />
+        </Field>
+        <div className="bl-actions">
+          <button type="submit" disabled={busy || (!choice && !body.trim())}>
+            {busy ? "正在保存…" : "保存复盘决定"}
+          </button>
+        </div>
+        {error && <p role="alert">{error}</p>}
+      </fieldset>
+    </form>
+  );
+}
+
+function TrialDetail({ trial, save, onReviewed }: { trial: BusinessTrial; save: Save; onReviewed: () => Promise<void> }) {
   const [adding, setAdding] = useState(false);
   const [referring, setReferring] = useState(false);
   const refer = async (e: FormEvent<HTMLFormElement>) => {
@@ -354,7 +415,9 @@ function TrialDetail({ trial, save }: { trial: BusinessTrial; save: Save }) {
     )
       setReferring(false);
   };
-  const href = trial.questionId ? inboxLink({ message: trial.questionId }) : null;
+  const chatHref = chatRoomLink({
+    draft: `讨论经营实验「${trial.title}」\n假设：${trial.hypothesis}\n指标：${trial.metric}\n直达：#business-lines?line=${trial.lineId}&trial=${trial.id}`,
+  });
   return (
     <article className="bl-trial" id={"trial-" + trial.id}>
       <header>
@@ -394,8 +457,13 @@ function TrialDetail({ trial, save }: { trial: BusinessTrial; save: Save }) {
           ))}
         </ul>
       )}
-      {href ? (
-        <a href={href}>{trial.decision ? "查看原决定" : "到 Zoom 处理复盘"} ↗</a>
+      {trial.questionId && !trial.decision ? (
+        <TrialReviewPanel trial={trial} onDone={onReviewed} />
+      ) : trial.decision ? (
+        <p className="bl-muted">
+          复盘已拍板：<strong>{trial.decision}</strong>{" "}
+          <a href={chatHref}>在群聊继续讨论 ↗</a>
+        </p>
       ) : adding ? (
         <EvidenceForm trial={trial} save={save} close={() => setAdding(false)} />
       ) : (
@@ -407,7 +475,13 @@ function TrialDetail({ trial, save }: { trial: BusinessTrial; save: Save }) {
           >
             提交复盘
           </button>
+          <a href={chatHref}>到群聊讨论 ↗</a>
         </div>
+      )}
+      {trial.questionId && !trial.decision && (
+        <p>
+          <a href={chatHref}>先到 Agent Home 群聊讨论 ↗</a>
+        </p>
       )}
       {trial.evidence.length > 0 && (
         <div className="bl-referral">
@@ -611,7 +685,7 @@ export function BusinessLines({ nav }: { nav: ReactNode }) {
                     <p className="bl-muted">从一个想验证的问题开始，记下本轮范围和判断标准。</p>
                   )}
                   {trials.map((trial) => (
-                    <TrialDetail key={trial.id} trial={trial} save={save} />
+                    <TrialDetail key={trial.id} trial={trial} save={save} onReviewed={load} />
                   ))}
                   <hr />
                   <h3>经营凭据</h3>
