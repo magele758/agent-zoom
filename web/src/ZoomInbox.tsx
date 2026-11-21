@@ -10,6 +10,7 @@ import { WorkflowBoard, WorkflowMessageContent } from "./WorkflowBoard";
 import { GrowthReport } from "./GrowthReport";
 import { ProjectShelf } from "./ProjectShelf";
 import { Overview } from "./Overview";
+import { DigitalTwin } from "./DigitalTwin";
 import { CommercialHub } from "./CommercialHub";
 import { SecurityDepartment } from "./SecurityDepartment";
 import { OperationsDepartment } from "./OperationsDepartment";
@@ -53,6 +54,7 @@ const icons = {
   shield: "M12 3 4.5 6v6c0 3.5 2.5 6.5 7.5 9 5-2.5 7.5-5.5 7.5-9V6z M8.5 12l2.5 2.5 4.5-5",
   pulse: "M2 12h5l3-7 4 14 3-7h5",
   wallet: "M20 8V5H5a2 2 0 0 0 0 4h16v10H5a2 2 0 0 1-2-2V7 M21 12h-5v4h5",
+  twin: "M12 3l8 4.5v9L12 21l-8-4.5v-9z M12 12l8-4.5 M12 12v9 M12 12L4 7.5",
 };
 function Icon({ name }: { name: keyof typeof icons }) {
   return <svg className="zo-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65"
@@ -113,8 +115,9 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   const productView = location.hash === "#product";
   const growthView = hash.split("?")[0] === "#growth";
   const overviewView = !hash || hash.split("?")[0] === "#overview";
+  const twinView = hash.split("?")[0] === "#digital-twin";
   const activityView = hash.split("?")[0] === "#activity-index";
-  const activityIndex = useActivityIndex(overviewView || activityView);
+  const activityIndex = useActivityIndex(overviewView || activityView || twinView);
   const opportunitiesView = hash.split("?")[0] === "#opportunities";
   const businessView = hash.split("?")[0] === "#business-lines";
   const capabilitiesView = hash.split("?")[0] === "#capabilities";
@@ -201,7 +204,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
     if (filter === "pending") setMobileView("list");
   };
 
-  const openPage = (page: DepartmentPage | "overview" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "capabilities" | "activity-index" | "delegations") => {
+  const openPage = (page: DepartmentPage | "overview" | "digital-twin" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "capabilities" | "activity-index" | "delegations") => {
     if (inboxView && folder) setProduct(folder.split("/")[0]);
     setMobileView("list"); location.hash = page;
   };
@@ -214,6 +217,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       <nav aria-label="消息筛选" className="zo-views">
         <span className="zo-nav-section" aria-hidden="true">总控与待办</span>
         <button type="button" aria-label="全局看板" aria-pressed={overviewView} onClick={() => openPage("overview")}><Icon name="board" /><span>全局看板</span></button>
+        <button type="button" aria-label="组织数字孪生" aria-pressed={twinView} onClick={() => openPage("digital-twin")}><Icon name="twin" /><span>组织数字孪生</span></button>
         {(Object.keys(filterNames) as InboxFilter[]).map(value => <button type="button" key={value} aria-label={filterNames[value]}
           aria-pressed={inboxView && filter === value && !folder && !stage} onClick={() => selectScope(value, "")}>
           <Icon name={value} /><span>{filterNames[value]}</span><small>{views[value].length}</small>
@@ -273,6 +277,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       : homeView ? <HomeRoom project={pageParams.get("project") ?? undefined} nav={openNav} />
       : worklogView ? <Worklog key={hash} line={pageParams.get("line") ?? ""} nav={openNav} />
       : businessView ? <BusinessLines nav={openNav} />
+      : twinView ? <DigitalTwin nav={openNav} messages={views.all} pending={views.pending} handled={views.handled} folders={folders} products={productNames} workflowEnabled={workflowEnabled} activityIndex={activityIndex} />
       : overviewView ? <Overview activityIndex={activityIndex} nav={openNav} products={projects.filter(name => !name.includes("/"))} messages={views.all} pending={views.pending} ready={ready} error={error} onRetry={() => void refresh()} />
       : projectsView ? <ProjectShelf key={hash} initialProduct={pageParams.get("product") ?? ""} nav={openNav} onInbox={name => selectScope("all", name)}
       onProgress={name => { setProduct(name); setMobileView("list"); location.hash = "product"; }} />

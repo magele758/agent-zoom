@@ -63,7 +63,7 @@ export function Overview({ activityIndex, nav, products, messages, pending, read
         </a>
       )}</div>
     </section>
-    <p className="overview-journal"><a href="#delegations">委派台与默认办理方式 ↗</a>　<a href="#ideas">从信息到想法 ↗</a>　<a href="#capabilities">开源能力 ↗</a>　<a href="#worklog">查看个人工作投入 ↗</a>　<a href="#home-room">项目讨论室 ↗</a></p>
+    <nav className="overview-journal" aria-label="快捷入口"><a href="#digital-twin">组织数字孪生 ↗</a><a href="#delegations">委派台与默认办理方式 ↗</a><a href="#ideas">从信息到想法 ↗</a><a href="#capabilities">开源能力 ↗</a><a href="#worklog">查看个人工作投入 ↗</a><a href="#home-room">项目讨论室 ↗</a></nav>
     {error && <p role="alert" className="overview-warning">{error} <button onClick={onRetry}>重试</button></p>}
     {!ready && !error && <p role="status">正在读取项目和消息…</p>}
     {ready && <>
