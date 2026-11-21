@@ -1,0 +1,958 @@
+.df-page {
+  background: var(--zo-paper, #fbf9f2);
+  color: #232d27;
+  padding: clamp(22px, 4vw, 52px);
+  height: 100%;
+  overflow: auto;
+  min-width: 0;
+}
+
+.df-page h1,
+.df-page h2,
+.df-page h3 {
+  font-family: var(--serif, "Noto Serif SC", "Songti SC", serif);
+  margin: 0;
+}
+
+.df-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 18px;
+  border-bottom: 3px solid #232d27;
+}
+
+.df-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.df-head h1 {
+  font-size: clamp(28px, 3.6vw, 44px);
+  line-height: 1.15;
+}
+
+.df-sub {
+  margin: 8px 0 0;
+  color: #4f5c53;
+  font-size: 14px;
+  max-width: 760px;
+}
+
+.df-pulse-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border: 1px solid #b8bfb3;
+  background: #f3f0e6;
+  color: #36453b;
+  font: 500 12px/1.2 var(--digits, "IBM Plex Mono", monospace);
+}
+
+.df-pulse-pill.is-active {
+  border-color: #3d7d57;
+  background: #e7f3eb;
+  color: #1d5133;
+}
+
+.df-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8e978e;
+}
+
+.df-pulse-pill.is-active .df-pulse-dot {
+  background: #239652;
+  box-shadow: 0 0 0 0 rgba(35, 150, 82, 0.55);
+  animation: df-pulse 1.8s infinite;
+}
+
+@keyframes df-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(35, 150, 82, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(35, 150, 82, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(35, 150, 82, 0);
+  }
+}
+
+.df-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.df-link-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border: 1px solid #b8bfb3;
+  background: #f5f2e8;
+  color: #232d27;
+  font: 500 13px/1.2 var(--sans, sans-serif);
+  text-decoration: none;
+}
+
+.df-link-btn:hover {
+  border-color: #2f513e;
+  color: #2f513e;
+}
+
+.df-page button:not(.zo-mobile-menu),
+.zoom .df-page button:not(.zo-mobile-menu) {
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid #9fa89c;
+  background: #fffdf8;
+  color: #232d27;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.df-page button:not(.zo-mobile-menu):hover:not(:disabled),
+.zoom .df-page button:not(.zo-mobile-menu):hover:not(:disabled) {
+  background: #f2efe5;
+}
+
+.df-page button.df-primary:not(.zo-mobile-menu),
+.zoom .df-page button.df-primary:not(.zo-mobile-menu) {
+  background: #2f513e;
+  border-color: #2f513e;
+  color: #fff;
+  font-weight: 500;
+}
+
+.df-page button.df-primary:not(.zo-mobile-menu):hover:not(:disabled),
+.zoom .df-page button.df-primary:not(.zo-mobile-menu):hover:not(:disabled) {
+  background: #244030;
+}
+
+.df-page button.df-accent:not(.zo-mobile-menu),
+.zoom .df-page button.df-accent:not(.zo-mobile-menu) {
+  background: #8d3b24;
+  border-color: #8d3b24;
+  color: #fff;
+  font-weight: 500;
+}
+
+.df-page button.df-accent:not(.zo-mobile-menu):hover:not(:disabled),
+.zoom .df-page button.df-accent:not(.zo-mobile-menu):hover:not(:disabled) {
+  background: #722e1b;
+}
+
+.df-page button.df-danger-btn:not(.zo-mobile-menu),
+.zoom .df-page button.df-danger-btn:not(.zo-mobile-menu) {
+  border-color: #b75a47;
+  color: #8b2817;
+  background: #fdf4f1;
+}
+
+.df-page button:disabled {
+  opacity: 0.52;
+  cursor: default;
+}
+
+.df-banner {
+  margin: 14px 0;
+  padding: 10px 14px;
+  border-left: 3px solid #2f513e;
+  background: #f2efe4;
+  font-size: 13.5px;
+}
+
+.df-banner.error {
+  border-left-color: #983421;
+  background: #fbf0eb;
+  color: #842614;
+}
+
+.df-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.df-kpi {
+  border: 1px solid #cfd3c7;
+  background: #fffdf8;
+  padding: 13px 15px;
+  display: grid;
+  gap: 4px;
+}
+
+.df-kpi span {
+  font-size: 12px;
+  color: #5b675e;
+}
+
+.df-kpi strong {
+  font: 600 22px/1.2 var(--digits, "IBM Plex Mono", monospace);
+  color: #1f2b23;
+}
+
+.df-kpi small {
+  font-size: 12px;
+  color: #4f5e53;
+}
+
+.df-section {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 2px solid #232d27;
+}
+
+.df-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.df-section-head h2 {
+  font-size: clamp(20px, 2.2vw, 26px);
+}
+
+.df-muted {
+  color: #58655b;
+  font-size: 12.5px;
+  margin: 4px 0 0;
+}
+
+.df-panel {
+  border: 1px solid #cfd3c7;
+  background: #fffdf8;
+  padding: 16px 18px;
+}
+
+.df-empty-box {
+  border: 1px dashed #b9bfb1;
+  background: #faf8f0;
+  padding: 18px;
+  color: #4d5a51;
+  font-size: 13.5px;
+  display: grid;
+  gap: 10px;
+}
+
+/* Badges */
+.df-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  border: 1px solid #9aa598;
+  background: #f1eee4;
+  color: #2f4638;
+  white-space: nowrap;
+}
+
+.df-badge.status-running,
+.df-badge.run-running {
+  border-color: #3d7d57;
+  background: #e7f4eb;
+  color: #1d5133;
+}
+
+.df-badge.status-idle,
+.df-badge.run-completed,
+.df-badge.run-pr_open,
+.df-badge.audit-passed {
+  border-color: #5a8569;
+  background: #eaf3ec;
+  color: #235036;
+}
+
+.df-badge.run-queued,
+.df-badge.audit-warning {
+  border-color: #b49a5a;
+  background: #fbf6e6;
+  color: #70571a;
+}
+
+.df-badge.run-no_output {
+  border-color: #c78b36;
+  background: #fef5e3;
+  color: #8a510c;
+  font-weight: 600;
+}
+
+.df-badge.status-error,
+.df-badge.run-failed,
+.df-badge.audit-blocked,
+.df-badge.breaker-cost_limit_exceeded,
+.df-badge.breaker-duration_limit_exceeded,
+.df-badge.breaker-dead_loop_detected,
+.df-badge.breaker-protected_path_violation {
+  border-color: #b84a36;
+  background: #fcebe7;
+  color: #8f2210;
+  font-weight: 600;
+}
+
+.df-badge.status-disabled,
+.df-badge.run-cancelled {
+  border-color: #b5b2a8;
+  background: #efede6;
+  color: #65635a;
+}
+
+/* Agent Registry Form & Grid */
+.df-agent-form-wrap {
+  margin-bottom: 16px;
+}
+
+.df-preset-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.df-preset-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #46534a;
+}
+
+.df-page button.df-preset-btn:not(.zo-mobile-menu),
+.zoom .df-page button.df-preset-btn:not(.zo-mobile-menu) {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: #f5f2e7;
+  border-color: #b5bca9;
+}
+
+.df-form {
+  display: grid;
+  gap: 11px;
+}
+
+.df-form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.df-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #2f3b33;
+}
+
+.df-page input:not([type="checkbox"]),
+.df-page select,
+.df-page textarea {
+  font: inherit;
+  font-weight: 400;
+  font-size: 13.5px;
+  padding: 7px 9px;
+  border: 1px solid #b4baa9;
+  background: #fcfaf3;
+  color: #232d27;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.df-mono-input {
+  font-family: var(--digits, "IBM Plex Mono", monospace) !important;
+  font-size: 12.5px !important;
+}
+
+.df-form-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.df-agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.df-agent-card {
+  border: 1px solid #cfd3c7;
+  background: #fffdf8;
+  padding: 14px 16px;
+  display: grid;
+  align-content: space-between;
+  gap: 10px;
+}
+
+.df-agent-card.status-running {
+  border-left: 3px solid #2f6c47;
+}
+
+.df-agent-card.status-disabled {
+  opacity: 0.72;
+  background: #f6f4ec;
+}
+
+.df-agent-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.df-agent-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.df-agent-name-wrap h3 {
+  font-size: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.df-type-chip {
+  font: 600 10.5px/1 var(--digits, "IBM Plex Mono", monospace);
+  padding: 3px 6px;
+  border: 1px solid #bcc2b4;
+  background: #f2efe5;
+  color: #46534a;
+}
+
+.df-agent-desc {
+  font-size: 12.5px;
+  color: #4f5c53;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.df-cmd {
+  display: block;
+  padding: 7px 9px;
+  background: #f3f0e6;
+  border: 1px solid #dcd9cc;
+  font: 12px/1.45 var(--digits, "IBM Plex Mono", monospace);
+  color: #243028;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.df-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.df-tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  background: #f0eee5;
+  border: 1px solid #d5d7cc;
+  color: #3e4d43;
+}
+
+.df-redline {
+  font-size: 12px;
+  color: #556157;
+  padding-top: 6px;
+  border-top: 1px dashed #d8dad0;
+}
+
+.df-redline strong {
+  font-family: var(--digits, "IBM Plex Mono", monospace);
+  color: #232d27;
+}
+
+.df-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Dispatch & Concurrency */
+.df-concurrency-bar {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e1e0d5;
+}
+
+.df-concurrency-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.df-progress-track {
+  height: 7px;
+  background: #e4e2d7;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.df-progress-fill {
+  height: 100%;
+  background: #2f513e;
+  transition: width 0.25s ease;
+}
+
+.df-dispatch-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.df-form label.df-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.df-checkbox input {
+  width: 15px;
+  height: 15px;
+  accent-color: #2f513e;
+}
+
+/* Runs Table */
+.df-filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.df-page .df-filter-tabs button[aria-selected="true"]:not(.zo-mobile-menu),
+.zoom .df-page .df-filter-tabs button[aria-selected="true"]:not(.zo-mobile-menu) {
+  background: #232d27;
+  border-color: #232d27;
+  color: #fff;
+}
+
+.df-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #cfd3c7;
+  background: #fffdf8;
+}
+
+.df-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.df-table th,
+.df-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e3e2d8;
+  vertical-align: top;
+}
+
+.df-table th {
+  background: #f5f3ea;
+  font-size: 12px;
+  color: #4f5c53;
+  font-weight: 600;
+}
+
+.df-table tr.is-selected td {
+  background: #f3f7f3;
+}
+
+.df-run-title {
+  font-weight: 600;
+  color: #1f2b23;
+}
+
+.df-run-meta {
+  font: 11.5px/1.4 var(--digits, "IBM Plex Mono", monospace);
+  color: #5c685f;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.df-run-agent {
+  font-weight: 600;
+}
+
+.df-run-branch {
+  font: 11.5px/1.4 var(--digits, "IBM Plex Mono", monospace);
+  color: #556358;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.df-status-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.df-run-err {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: #8f2210;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.df-mono-cell {
+  font-family: var(--digits, "IBM Plex Mono", monospace);
+  white-space: nowrap;
+}
+
+.df-mono-cell small {
+  color: #556358;
+}
+
+.df-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.df-pr-link {
+  display: inline-block;
+  padding: 6px 10px;
+  border: 1px solid #2f513e;
+  background: #eaf3ec;
+  color: #1e4b31;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.df-pr-link:hover {
+  background: #d8eadc;
+}
+
+/* Dark-Ink Live Terminal Panel */
+.df-terminal-wrap {
+  margin-top: 16px;
+  border: 2px solid #232d27;
+  background: #171d1a;
+  color: #eceae2;
+}
+
+.df-terminal-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #111614;
+  border-bottom: 1px solid #2c3631;
+}
+
+.df-terminal-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+}
+
+.df-term-sub {
+  font: 11.5px var(--digits, "IBM Plex Mono", monospace);
+  color: #93a79a;
+}
+
+.df-term-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #77857c;
+}
+
+.df-term-dot.live {
+  background: #36c972;
+  box-shadow: 0 0 8px rgba(54, 201, 114, 0.75);
+}
+
+.df-terminal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.df-page .df-terminal-actions button:not(.zo-mobile-menu),
+.zoom .df-page .df-terminal-actions button:not(.zo-mobile-menu) {
+  background: #232c27;
+  border-color: #425049;
+  color: #e9e7df;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+.df-page .df-terminal-actions button.df-danger-btn:not(.zo-mobile-menu),
+.zoom .df-page .df-terminal-actions button.df-danger-btn:not(.zo-mobile-menu) {
+  background: #5c1f16;
+  border-color: #b84a36;
+  color: #ffdcd5;
+}
+
+.df-terminal-body {
+  padding: 12px 14px;
+  max-height: 360px;
+  overflow: auto;
+  font: 12.5px/1.6 var(--digits, "IBM Plex Mono", monospace);
+  display: grid;
+  gap: 2px;
+}
+
+.df-term-empty {
+  color: #8c9a90;
+  font-style: italic;
+}
+
+.df-term-line {
+  display: grid;
+  grid-template-columns: 66px 52px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.df-term-ts {
+  color: #6e7d73;
+  font-size: 11px;
+}
+
+.df-term-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.df-term-line.stream-stdout {
+  color: #eceae2;
+}
+
+.df-term-line.stream-stdout .df-term-tag {
+  color: #82b596;
+}
+
+.df-term-line.stream-stderr {
+  color: #ff8b7b;
+}
+
+.df-term-line.stream-stderr .df-term-tag {
+  color: #ff6b57;
+}
+
+.df-term-line.stream-system {
+  color: #e4cb8e;
+}
+
+.df-term-line.stream-system .df-term-tag {
+  color: #d8b566;
+}
+
+.df-terminal-meta {
+  background: #fbf9f2;
+  color: #232d27;
+  border-top: 1px solid #2c3631;
+  padding: 12px 14px;
+  display: grid;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.df-violation-alert {
+  border: 1px solid #b84a36;
+  border-left: 4px solid #a12915;
+  background: #fdf0ec;
+  color: #7d1e0d;
+  padding: 10px 12px;
+}
+
+.df-violation-alert p {
+  margin: 4px 0 6px;
+}
+
+.df-violation-alert ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.df-meta-note.warn {
+  padding: 8px 10px;
+  background: #fbf4e6;
+  border-left: 3px solid #b97536;
+}
+
+.df-changed-files {
+  display: grid;
+  gap: 6px;
+}
+
+.df-file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.df-file-chips code {
+  font: 11.5px/1.3 var(--digits, "IBM Plex Mono", monospace);
+  padding: 3px 7px;
+  background: #f1eee4;
+  border: 1px solid #cfd3c7;
+  color: #26332b;
+}
+
+.df-file-chips code.is-violated {
+  background: #fce7e3;
+  border-color: #c25642;
+  color: #8f2210;
+  font-weight: 600;
+}
+
+.df-file-chips code.df-protected-chip {
+  background: #f5f0e2;
+  border-color: #c7b483;
+  color: #5c4614;
+}
+
+/* Worktrees & Bootstrap Audit Split */
+.df-split-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+.df-subhead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e1e0d5;
+}
+
+.df-subhead h3 {
+  font-size: 18px;
+}
+
+.df-wt-list,
+.df-audit-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.df-wt-item {
+  border: 1px solid #dcded4;
+  background: #faf8f0;
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.df-wt-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.df-wt-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.df-wt-task {
+  font-size: 12px;
+  color: #536157;
+}
+
+.df-wt-path {
+  font: 11px/1.35 var(--digits, "IBM Plex Mono", monospace);
+  color: #46544a;
+  overflow-wrap: anywhere;
+}
+
+.df-protected-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.df-audit-item {
+  border: 1px solid #dcded4;
+  background: #faf8f0;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.df-audit-item.audit-passed {
+  border-left: 3px solid #2f6c47;
+}
+
+.df-audit-item.audit-blocked {
+  border-left: 3px solid #a12915;
+  background: #fdf4f1;
+}
+
+.df-audit-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.df-audit-top time {
+  font: 11px var(--digits, "IBM Plex Mono", monospace);
+  color: #5e6a61;
+}
+
+.df-audit-item p {
+  margin: 0;
+  color: #2f3b33;
+}
+
+@media (max-width: 680px) {
+  .df-page {
+    padding: 16px 12px;
+  }
+  .df-term-line {
+    grid-template-columns: 54px 44px minmax(0, 1fr);
+    gap: 5px;
+  }
+}
