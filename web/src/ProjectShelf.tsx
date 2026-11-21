@@ -84,7 +84,7 @@ function CompanyProjects({ product, onInbox, profiles, onIndexChanged }: Profile
       <button disabled={busy || !name.trim()}>保存子项目</button></form>}
     {names.map(item => <div className="shelf-scope-row" key={item}>
       <button type="button" aria-label={item} aria-expanded={profile === item} onClick={() => setProfile(v => v === item ? "" : item)}>{item}</button>
-      <button type="button" className="shelf-scope" aria-label={item + "的项目消息"} onClick={() => onInbox(product + "/" + item)}>项目消息 ↗</button>
+      <button type="button" className="shelf-scope" aria-label={item + "的群聊"} onClick={() => onInbox(product + "/" + item)}>群聊 ↗</button>
       <a className="shelf-scope" href={"#capabilities?" + new URLSearchParams({consumer:product + "/" + item})}>查找可复用能力 ↗</a>
       {profile === item && <>
         <a className="shelf-scope" href={"#security-department?" + new URLSearchParams({product,project:item})}>项目安全评审 ↗</a>
@@ -102,7 +102,7 @@ function ProjectDetails({ project, term, onProgress, onInbox, onBack, profiles, 
   return <section className="shelf-detail" aria-label="产品详情">
     <button type="button" className="shelf-back" onClick={onBack}>‹ 产品列表</button>
     <header className="shelf-detail-head"><h2>{project.name}</h2><div className="shelf-actions">
-      <button type="button" onClick={() => onInbox(project.name)}>产品消息 ↗</button>
+      <button type="button" onClick={() => onInbox(project.name)}>群聊 ↗</button>
       <button type="button" onClick={() => onProgress(project.name)}>产品进程 ↗</button>
     </div></header>
     <CompanyProjects product={project.name} onInbox={onInbox} profiles={profiles} onIndexChanged={onIndexChanged} />

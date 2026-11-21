@@ -1,0 +1,2113 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type DragEvent,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import {
+  PLANNING_TASK_STATUSES,
+  PLANNING_TASK_TYPES,
+  type DailyTrendPoint,
+  type DailyTrendResponse,
+  type KanbanBoardResponse,
+  type KanbanColumnKey,
+  type PatrolReport,
+  type PlanningAgentOption,
+  type PlanningEnergyLevel,
+  type PlanningTask,
+  type PlanningTaskStatus,
+  type PlanningTaskType,
+  type PlanningTaskWithSubtasks,
+  type RoiDashboardResponse,
+} from "../../src/task-planning-types";
+import { request } from "./api";
+import "./task-planning.css";
+
+const API_BASE = "/api/opc/planning";
+const POMODORO_DEFAULT_SECONDS = 25 * 60;
+
+const KANBAN_COLUMNS: Array<{ key: KanbanColumnKey; label: string; hint: string }> = [
+  { key: "todo", label: "Todo", hint: "待规划" },
+  { key: "assigned", label: "Assigned", hint: "已认领" },
+  { key: "in_progress", label: "In Progress", hint: "执行中 / PR Open" },
+  { key: "review", label: "Review", hint: "待审阅" },
+  { key: "done", label: "Done", hint: "已完成 / Published" },
+];
+
+const STATUS_LABELS: Record<PlanningTaskStatus, string> = {
+  todo: "Todo",
+  assigned: "Assigned",
+  in_progress: "In Progress",
+  pr_open: "PR Open",
+  review: "Review",
+  done: "Done",
+  failed: "Failed",
+  archived: "Archived",
+  published: "Published",
+};
+
+const STATUS_COLORS: Record<PlanningTaskStatus, string> = {
+  todo: "#8c948c",
+  assigned: "#587968",
+  in_progress: "#1f6e78",
+  pr_open: "#2f8c96",
+  review: "#b8761c",
+  done: "#2f513e",
+  published: "#1d6b43",
+  failed: "#8d3b24",
+  archived: "#b4b7ad",
+};
+
+const TYPE_LABELS: Record<PlanningTaskType, string> = {
+  epic: "Epic",
+  task: "Task",
+  bug: "Bug",
+  prd: "PRD",
+};
+
+function priorityTier(priority: number): "high" | "mid" | "low" {
+  if (priority >= 8) return "high";
+  if (priority >= 5) return "mid";
+  return "low";
+}
+
+function formatClock(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return String(tokens);
+}
+
+function formatUsd(usd: number): string {
+  if (usd === 0) return "$0.00";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function formatShortTime(iso: string): string {
+  try {
+    return new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+function isOverdue(task: PlanningTask): boolean {
+  if (!task.dueAt) return false;
+  if (task.status === "done" || task.status === "published" || task.status === "archived") return false;
+  const dueMs = Date.parse(task.dueAt);
+  return Number.isFinite(dueMs) && dueMs < Date.now();
+}
+
+function columnForStatus(status: PlanningTaskStatus): keyof Pick<
+  KanbanBoardResponse,
+  "todo" | "assigned" | "in_progress" | "review" | "done" | "failed" | "archived"
+> {
+  if (status === "pr_open") return "in_progress";
+  if (status === "published") return "done";
+  return status;
+}
+
+function heatLevel(point: DailyTrendPoint): 0 | 1 | 2 | 3 | 4 {
+  const score = point.completed * 2 + point.created + point.agentRuns + point.pomodoroCount;
+  if (score <= 0) return 0;
+  if (score <= 2) return 1;
+  if (score <= 5) return 2;
+  if (score <= 9) return 3;
+  return 4;
+}
+
+// ---- Embedded Pomodoro Timer Component ----
+
+interface PomodoroWidgetProps {
+  taskId: string;
+  busy: boolean;
+  onComplete: (taskId: string, energyLevel: PlanningEnergyLevel, durationMins: number, note: string) => Promise<void>;
+  onClose: () => void;
+}
+
+function PomodoroWidget({ taskId, busy, onComplete, onClose }: PomodoroWidgetProps) {
+  const [secondsLeft, setSecondsLeft] = useState(POMODORO_DEFAULT_SECONDS);
+  const [running, setRunning] = useState(true);
+  const [awaitingEnergy, setAwaitingEnergy] = useState(false);
+  const [energy, setEnergy] = useState<PlanningEnergyLevel | null>(null);
+  const [note, setNote] = useState("");
+  const [settledMins, setSettledMins] = useState(25);
+
+  useEffect(() => {
+    if (!running || awaitingEnergy) return;
+    const timer = window.setInterval(() => {
+      setSecondsLeft((prev) => {
+        if (prev <= 1) {
+          setRunning(false);
+          setSettledMins(25);
+          setAwaitingEnergy(true);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [running, awaitingEnergy]);
+
+  const elapsedPct = Math.min(
+    100,
+    Math.round(((POMODORO_DEFAULT_SECONDS - secondsLeft) / POMODORO_DEFAULT_SECONDS) * 100),
+  );
+
+  const triggerQuickSettle = () => {
+    setRunning(false);
+    const elapsedMins = Math.max(1, Math.round((POMODORO_DEFAULT_SECONDS - secondsLeft) / 60));
+    setSettledMins(secondsLeft === POMODORO_DEFAULT_SECONDS ? 25 : Math.max(elapsedMins, 25));
+    setAwaitingEnergy(true);
+  };
+
+  const handleSave = async () => {
+    if (!energy) return;
+    await onComplete(taskId, energy, settledMins, note.trim());
+    onClose();
+  };
+
+  return (
+    <div className="tp-pomo-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="tp-pomo-clock">
+        <span className="tp-pomo-time">{formatClock(secondsLeft)}</span>
+        <span className="tp-pill mono">{awaitingEnergy ? "待结算精力" : running ? "专注计时中" : "已暂停"}</span>
+      </div>
+      <div className="tp-pomo-track">
+        <div className="tp-pomo-fill" style={{ width: `${awaitingEnergy ? 100 : elapsedPct}%` }} />
+      </div>
+
+      {!awaitingEnergy ? (
+        <div className="tp-pomo-controls">
+          <button type="button" onClick={() => setRunning((r) => !r)}>
+            {running ? "暂停" : "继续"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRunning(false);
+              setSecondsLeft(POMODORO_DEFAULT_SECONDS);
+            }}
+          >
+            重置
+          </button>
+          <button type="button" className="tp-amber" onClick={triggerQuickSettle}>
+            快速结算 1 番茄
+          </button>
+          <button type="button" className="tp-ghost" onClick={onClose}>
+            收起
+          </button>
+        </div>
+      ) : (
+        <div className="tp-energy-gate">
+          <div style={{ fontSize: 12, fontWeight: 600 }}>
+            必选本轮精力状态（完成后记录 {settledMins} 分钟番茄）：
+          </div>
+          <div className="tp-energy-choices">
+            <button
+              type="button"
+              aria-pressed={energy === "high"}
+              onClick={() => setEnergy("high")}
+            >
+              ⚡ 高能状态
+            </button>
+            <button
+              type="button"
+              aria-pressed={energy === "low"}
+              onClick={() => setEnergy("low")}
+            >
+              🌙 低能状态
+            </button>
+          </div>
+          <input
+            type="text"
+            placeholder="可选：本轮专注备注（产出或卡点）"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <div className="tp-pomo-controls">
+            <button
+              type="button"
+              className="tp-primary"
+              disabled={!energy || busy}
+              onClick={() => void handleSave()}
+            >
+              保存番茄记录
+            </button>
+            <button
+              type="button"
+              className="tp-ghost"
+              onClick={() => {
+                setAwaitingEnergy(false);
+                setEnergy(null);
+              }}
+            >
+              返回计时
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Task Card Component ----
+
+interface TaskCardProps {
+  task: PlanningTaskWithSubtasks;
+  agents: PlanningAgentOption[];
+  busy: boolean;
+  isDragging: boolean;
+  onDragStart: (e: DragEvent<HTMLElement>, taskId: string) => void;
+  onDragEnd: () => void;
+  onStatusChange: (taskId: string, status: PlanningTaskStatus) => Promise<void>;
+  onAssignHuman: (taskId: string) => Promise<void>;
+  onDispatch: (taskId: string, agentId: string, autoCreatePr: boolean) => Promise<void>;
+  onRecordPomodoro: (
+    taskId: string,
+    energyLevel: PlanningEnergyLevel,
+    durationMins: number,
+    note: string,
+  ) => Promise<void>;
+  onCreateSubtask: (parent: PlanningTaskWithSubtasks, title: string) => Promise<void>;
+  onDeleteTask: (taskId: string) => Promise<void>;
+}
+
+function TaskCard({
+  task,
+  agents,
+  busy,
+  isDragging,
+  onDragStart,
+  onDragEnd,
+  onStatusChange,
+  onAssignHuman,
+  onDispatch,
+  onRecordPomodoro,
+  onCreateSubtask,
+  onDeleteTask,
+}: TaskCardProps) {
+  const [showPomo, setShowPomo] = useState(false);
+  const [showDispatch, setShowDispatch] = useState(false);
+  const [showSubtasks, setShowSubtasks] = useState(task.type === "epic" && task.subtasks.length > 0);
+  const [newSubTitle, setNewSubTitle] = useState("");
+  const [selectedAgentId, setSelectedAgentId] = useState(agents[0]?.id ?? "");
+  const [autoCreatePr, setAutoCreatePr] = useState(true);
+
+  useEffect(() => {
+    if (!selectedAgentId && agents.length > 0) {
+      setSelectedAgentId(agents[0].id);
+    }
+  }, [agents, selectedAgentId]);
+
+  const tier = priorityTier(task.priority);
+  const overdue = isOverdue(task);
+  const subPct =
+    task.subtaskStats.total > 0
+      ? Math.round((task.subtaskStats.done / task.subtaskStats.total) * 100)
+      : 0;
+
+  const submitSubtask = async (e: FormEvent) => {
+    e.preventDefault();
+    const title = newSubTitle.trim();
+    if (!title) return;
+    await onCreateSubtask(task, title);
+    setNewSubTitle("");
+    setShowSubtasks(true);
+  };
+
+  return (
+    <article
+      className={`tp-card${isDragging ? " is-dragging" : ""}`}
+      draggable
+      onDragStart={(e) => onDragStart(e, task.id)}
+      onDragEnd={onDragEnd}
+    >
+      <div className={`tp-card-prio-bar ${tier}`} />
+
+      <div className="tp-card-top">
+        <span className={`tp-pill mono prio-${tier}`}>P{task.priority}</span>
+        <span className={`tp-pill type-${task.type}`}>{TYPE_LABELS[task.type]}</span>
+        <span className="tp-pill">{task.project}</span>
+        {task.status === "pr_open" && <span className="tp-pill pr-open">PR Open</span>}
+        {task.status === "published" && <span className="tp-pill published">Published</span>}
+        {task.dueAt && (
+          <span className={`tp-pill mono${overdue ? " overdue" : ""}`}>
+            {overdue ? "已超期 " : "截止 "}
+            {task.dueAt.slice(0, 10)}
+          </span>
+        )}
+      </div>
+
+      <div className="tp-card-title">{task.title}</div>
+      {task.description && <div className="tp-card-desc">{task.description}</div>}
+
+      {task.tags.length > 0 && (
+        <div className="tp-card-tags">
+          {task.tags.map((tag) => (
+            <span key={tag} className="tp-tag">
+              #{tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="tp-card-meta">
+        <span className={`tp-pill ${task.assigneeType}`}>
+          {task.assigneeType === "agent" ? "◈ Agent: " : "◉ "}
+          {task.assigneeName || task.assigneeId || (task.assigneeType === "agent" ? "未指定" : "人类")}
+        </span>
+        <span className="tp-pill pomo mono">🍅 {task.pomodoroCount}</span>
+        {task.energyLevel && (
+          <span className={`tp-pill energy-${task.energyLevel}`}>
+            {task.energyLevel === "high" ? "⚡高能" : "🌙低能"}
+          </span>
+        )}
+        {(task.tokenUsed > 0 || task.costUsd > 0) && (
+          <span className="tp-pill mono">
+            {formatTokens(task.tokenUsed)} · {formatUsd(task.costUsd)}
+          </span>
+        )}
+      </div>
+
+      {(task.prUrl || task.latestRunId || task.sourceRef) && (
+        <div className="tp-card-links">
+          {task.prUrl && (
+            <a href={task.prUrl} target="_blank" rel="noreferrer">
+              PR ↗
+            </a>
+          )}
+          {task.latestRunId && (
+            <a href={`#dark-factory?run=${encodeURIComponent(task.latestRunId)}`}>
+              运行日志 ({task.latestRunId.slice(0, 10)}) ↗
+            </a>
+          )}
+          {task.sourceRef && (() => {
+            if (task.sourceRef.startsWith("canvas:")) {
+              const parts = task.sourceRef.split(":");
+              const canvasId = parts[1] ?? "";
+              const nodeId = parts[2] ?? "";
+              const href = canvasId
+                ? `#canvas?id=${encodeURIComponent(canvasId)}${nodeId ? `&node=${encodeURIComponent(nodeId)}` : ""}`
+                : "#canvas";
+              return (
+                <a href={href} title={task.sourceRef}>
+                  画布溯源 ↗
+                </a>
+              );
+            }
+            return (
+              <span className="tp-source-link" title={task.sourceRef}>
+                来源: {task.sourceRef.length > 26 ? `${task.sourceRef.slice(0, 26)}…` : task.sourceRef}
+              </span>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Subtask progress & expandable tree */}
+      <div className="tp-subtasks-box">
+        <div className="tp-subtasks-bar">
+          <button
+            type="button"
+            className="tp-ghost"
+            onClick={() => setShowSubtasks((v) => !v)}
+          >
+            {showSubtasks ? "▾" : "▸"}{" "}
+            {task.subtaskStats.total > 0
+              ? `${task.subtaskStats.done}/${task.subtaskStats.total} sub`
+              : "+ 子任务"}
+          </button>
+          {task.subtaskStats.total > 0 && (
+            <div className="tp-mini-track" aria-label="子任务进度">
+              <div className="tp-mini-fill" style={{ width: `${subPct}%` }} />
+            </div>
+          )}
+          <select
+            aria-label={`修改任务 ${task.title} 状态`}
+            value={task.status}
+            disabled={busy}
+            onChange={(e) => void onStatusChange(task.id, e.target.value as PlanningTaskStatus)}
+            style={{ fontSize: 11, padding: "2px 4px" }}
+          >
+            {PLANNING_TASK_STATUSES.map((st) => (
+              <option key={st} value={st}>
+                {STATUS_LABELS[st]}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {showSubtasks && (
+          <>
+            {task.subtasks.length > 0 && (
+              <ul className="tp-subtask-list">
+                {task.subtasks.map((sub) => {
+                  const subDone = sub.status === "done" || sub.status === "published";
+                  return (
+                    <li key={sub.id} className={`tp-subtask-item${subDone ? " is-done" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={subDone}
+                        disabled={busy}
+                        onChange={() => void onStatusChange(sub.id, subDone ? "todo" : "done")}
+                      />
+                      <span className="tp-subtask-item-title" title={sub.title}>
+                        {sub.title}
+                      </span>
+                      <span className="tp-pill mono" style={{ fontSize: 10 }}>
+                        {STATUS_LABELS[sub.status]}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <form className="tp-inline-add-sub" onSubmit={(e) => void submitSubtask(e)}>
+              <input
+                type="text"
+                placeholder="输入子任务标题并回车…"
+                value={newSubTitle}
+                onChange={(e) => setNewSubTitle(e.target.value)}
+              />
+              <button type="submit" disabled={busy || !newSubTitle.trim()}>
+                添加
+              </button>
+            </form>
+          </>
+        )}
+      </div>
+
+      {/* Embedded Action Bar */}
+      <div className="tp-card-actions">
+        <button
+          type="button"
+          className={showPomo ? "tp-amber" : "tp-ghost"}
+          onClick={() => {
+            setShowPomo((v) => !v);
+            setShowDispatch(false);
+          }}
+        >
+          🍅 专注番茄
+        </button>
+        <button
+          type="button"
+          className="tp-ghost"
+          disabled={busy}
+          onClick={() => void onAssignHuman(task.id)}
+        >
+          ◉ 分给我
+        </button>
+        <button
+          type="button"
+          className={showDispatch ? "tp-teal" : "tp-ghost"}
+          onClick={() => {
+            setShowDispatch((v) => !v);
+            setShowPomo(false);
+          }}
+        >
+          → 派给 Agent
+        </button>
+        {(task.status === "review" || task.status === "pr_open") && (
+          <>
+            <button
+              type="button"
+              className="tp-primary"
+              disabled={busy}
+              onClick={() => void onStatusChange(task.id, "done")}
+            >
+              ✓ 审阅通过
+            </button>
+            <button
+              type="button"
+              className="tp-ghost"
+              disabled={busy}
+              style={{ color: "#8d3b24" }}
+              onClick={() => void onStatusChange(task.id, "failed")}
+            >
+              ↩ 打回修改
+            </button>
+          </>
+        )}
+        {task.status === "done" && (
+          <button
+            type="button"
+            className="tp-ghost"
+            disabled={busy}
+            onClick={() => void onStatusChange(task.id, "published")}
+          >
+            🚀 标记发布
+          </button>
+        )}
+        <button
+          type="button"
+          className="tp-ghost"
+          disabled={busy}
+          title="删除任务及其子任务"
+          onClick={() => void onDeleteTask(task.id)}
+          style={{ marginLeft: "auto", color: "#8d3b24" }}
+        >
+          删
+        </button>
+      </div>
+
+      {showPomo && (
+        <PomodoroWidget
+          taskId={task.id}
+          busy={busy}
+          onComplete={onRecordPomodoro}
+          onClose={() => setShowPomo(false)}
+        />
+      )}
+
+      {showDispatch && (
+        <div className="tp-dispatch-panel">
+          {agents.length === 0 ? (
+            <div style={{ fontSize: 12, color: "#4f5c53" }}>
+              当前暂无已注册的暗工厂 Agent。<a href="#dark-factory">前往 Agent 暗工厂注册 ↗</a>
+            </div>
+          ) : (
+            <>
+              <label className="tp-field">
+                选择暗工厂 Agent
+                <select value={selectedAgentId} onChange={(e) => setSelectedAgentId(e.target.value)}>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.status}) {a.capabilities.length ? `· ${a.capabilities.slice(0, 3).join("/")}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={autoCreatePr}
+                  onChange={(e) => setAutoCreatePr(e.target.checked)}
+                />
+                完成后自动提 PR (autoCreatePr)
+              </label>
+              <div className="tp-pomo-controls">
+                <button
+                  type="button"
+                  className="tp-teal"
+                  disabled={busy || !selectedAgentId}
+                  onClick={async () => {
+                    await onDispatch(task.id, selectedAgentId, autoCreatePr);
+                    setShowDispatch(false);
+                  }}
+                >
+                  确认派发
+                </button>
+                <button type="button" className="tp-ghost" onClick={() => setShowDispatch(false)}>
+                  取消
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+// ---- Main TaskPlanning Page Component ----
+
+export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?: "kanban" | "roi" | "patrol" }) {
+  const [activeTab, setActiveTab] = useState<"kanban" | "roi" | "patrol">(initialTab ?? "kanban");
+  useEffect(() => {
+    if (initialTab) setActiveTab(initialTab);
+  }, [initialTab]);
+  const [viewMode, setViewMode] = useState<"board" | "tree">("board");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [assigneeFilter, setAssigneeFilter] = useState<"all" | "human" | "agent">("all");
+  const [showArchiveDrawer, setShowArchiveDrawer] = useState(false);
+
+  const [kanban, setKanban] = useState<KanbanBoardResponse | null>(null);
+  const [roi, setRoi] = useState<RoiDashboardResponse | null>(null);
+  const [roiDays, setRoiDays] = useState(30);
+  const [trend, setTrend] = useState<DailyTrendPoint[]>([]);
+  const [selectedHeatDay, setSelectedHeatDay] = useState<DailyTrendPoint | null>(null);
+
+  const [patrolStaleDays, setPatrolStaleDays] = useState(7);
+  const [latestPatrol, setLatestPatrol] = useState<PatrolReport | null>(null);
+  const [patrolHistory, setPatrolHistory] = useState<PatrolReport[]>([]);
+
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  // Drag & Drop state
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverCol, setDragOverCol] = useState<KanbanColumnKey | null>(null);
+
+  // Task / Epic Creator form
+  const [showCreator, setShowCreator] = useState(false);
+  const [createMode, setCreateMode] = useState<"task" | "epic">("task");
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftProject, setDraftProject] = useState("default");
+  const [draftDesc, setDraftDesc] = useState("");
+  const [draftType, setDraftType] = useState<PlanningTaskType>("task");
+  const [draftPriority, setDraftPriority] = useState(6);
+  const [draftTags, setDraftTags] = useState("");
+  const [draftDueAt, setDraftDueAt] = useState("");
+  const [draftSourceRef, setDraftSourceRef] = useState("");
+  const [epicSubtasks, setEpicSubtasks] = useState<
+    Array<{ title: string; type: PlanningTaskType; priority: number }>
+  >([
+    { title: "", type: "task", priority: 6 },
+    { title: "", type: "task", priority: 5 },
+  ]);
+
+  const loadKanban = useCallback(async () => {
+    const query = projectFilter ? `?project=${encodeURIComponent(projectFilter)}` : "";
+    const data = await request<KanbanBoardResponse>(`${API_BASE}/kanban${query}`);
+    setKanban(data);
+  }, [projectFilter]);
+
+  const loadRoiAndTrend = useCallback(async () => {
+    const [roiData, trendData] = await Promise.all([
+      request<RoiDashboardResponse>(`${API_BASE}/roi?days=${roiDays}`),
+      request<DailyTrendResponse>(`${API_BASE}/daily-trend?days=112`),
+    ]);
+    setRoi(roiData);
+    setTrend(trendData.points);
+    if (trendData.points.length > 0) {
+      setSelectedHeatDay((prev) => prev ?? trendData.points[trendData.points.length - 1]);
+    }
+  }, [roiDays]);
+
+  const loadPatrolHistory = useCallback(async () => {
+    const res = await request<{ runs: PatrolReport[] }>(`${API_BASE}/patrol/history?limit=15`);
+    setPatrolHistory(res.runs);
+    if (res.runs.length > 0) {
+      setLatestPatrol((prev) => prev ?? res.runs[0]);
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    try {
+      await Promise.all([loadKanban(), loadRoiAndTrend(), loadPatrolHistory()]);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载任务规划数据失败");
+    }
+  }, [loadKanban, loadRoiAndTrend, loadPatrolHistory]);
+
+  useEffect(() => {
+    void loadKanban().catch((err) => setError(err instanceof Error ? err.message : "加载看板失败"));
+  }, [loadKanban]);
+
+  useEffect(() => {
+    if (activeTab === "roi") {
+      void loadRoiAndTrend().catch((err) => setError(err instanceof Error ? err.message : "加载 ROI 数据失败"));
+    } else if (activeTab === "patrol") {
+      void loadPatrolHistory().catch((err) => setError(err instanceof Error ? err.message : "加载巡检记录失败"));
+    }
+  }, [activeTab, loadRoiAndTrend, loadPatrolHistory]);
+
+  // Initial background load of patrol history so badge count is ready
+  useEffect(() => {
+    void loadPatrolHistory().catch(() => {});
+  }, [loadPatrolHistory]);
+
+  const filterTasks = useCallback(
+    (list: PlanningTaskWithSubtasks[]) => {
+      if (assigneeFilter === "all") return list;
+      return list.filter((t) => t.assigneeType === assigneeFilter);
+    },
+    [assigneeFilter],
+  );
+
+  const allBoardTasks = useMemo(() => {
+    if (!kanban) return [];
+    return [
+      ...kanban.todo,
+      ...kanban.assigned,
+      ...kanban.in_progress,
+      ...kanban.review,
+      ...kanban.done,
+      ...kanban.failed,
+      ...kanban.archived,
+    ];
+  }, [kanban]);
+
+  const visibleTreeTasks = useMemo(() => {
+    return filterTasks(allBoardTasks).filter((t) => t.status !== "archived");
+  }, [allBoardTasks, filterTasks]);
+
+  const handleStatusChange = async (taskId: string, nextStatus: PlanningTaskStatus) => {
+    setError("");
+    // Optimistic update for top-level tasks
+    const previous = kanban;
+    if (kanban) {
+      const cols: Array<keyof Pick<KanbanBoardResponse, "todo" | "assigned" | "in_progress" | "review" | "done" | "failed" | "archived">> = [
+        "todo",
+        "assigned",
+        "in_progress",
+        "review",
+        "done",
+        "failed",
+        "archived",
+      ];
+      let movedTask: PlanningTaskWithSubtasks | null = null;
+      const nextBoard: KanbanBoardResponse = {
+        ...kanban,
+        todo: [...kanban.todo],
+        assigned: [...kanban.assigned],
+        in_progress: [...kanban.in_progress],
+        review: [...kanban.review],
+        done: [...kanban.done],
+        failed: [...kanban.failed],
+        archived: [...kanban.archived],
+      };
+      for (const col of cols) {
+        const idx = nextBoard[col].findIndex((t) => t.id === taskId);
+        if (idx !== -1) {
+          movedTask = { ...nextBoard[col][idx], status: nextStatus };
+          nextBoard[col].splice(idx, 1);
+          break;
+        }
+      }
+      if (movedTask) {
+        const targetCol = columnForStatus(nextStatus);
+        nextBoard[targetCol] = [movedTask, ...nextBoard[targetCol]];
+        setKanban(nextBoard);
+      }
+    }
+
+    try {
+      await request<PlanningTaskWithSubtasks>(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      await loadKanban();
+      setNotice(`任务状态已更新为 ${STATUS_LABELS[nextStatus]}`);
+    } catch (err) {
+      if (previous) setKanban(previous);
+      setError(err instanceof Error ? err.message : "状态更新失败");
+    }
+  };
+
+  const handleAssignHuman = async (taskId: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      await request<PlanningTaskWithSubtasks>(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/assign-human`, {
+        method: "POST",
+        body: "{}",
+      });
+      await loadKanban();
+      setNotice("已将任务分配给人类执行");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "分配失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDispatch = async (taskId: string, agentId: string, autoCreatePr: boolean) => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await request<{ runId: string; runStatus: string }>(
+        `${API_BASE}/tasks/${encodeURIComponent(taskId)}/dispatch`,
+        {
+          method: "POST",
+          body: JSON.stringify({ agentId, autoCreatePr }),
+        },
+      );
+      await loadKanban();
+      setNotice(`已派发给 Agent (${agentId}) · Run ${res.runId} (${res.runStatus})`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "派发 Agent 失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRecordPomodoro = async (
+    taskId: string,
+    energyLevel: PlanningEnergyLevel,
+    durationMins: number,
+    note: string,
+  ) => {
+    setBusy(true);
+    setError("");
+    try {
+      await request(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/pomodoro`, {
+        method: "POST",
+        body: JSON.stringify({ energyLevel, durationMins, note }),
+      });
+      await loadKanban();
+      if (activeTab === "roi") await loadRoiAndTrend();
+      setNotice(`已完成 1 轮番茄专注（${durationMins}m · ${energyLevel === "high" ? "⚡高能" : "🌙低能"}）`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "记录番茄失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateSubtask = async (parent: PlanningTaskWithSubtasks, title: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      await request<PlanningTask>(`${API_BASE}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({
+          parentId: parent.id,
+          project: parent.project,
+          title,
+          type: "task",
+          priority: parent.priority,
+        }),
+      });
+      await loadKanban();
+      setNotice(`已为「${parent.title}」添加子任务`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "添加子任务失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      await request(`${API_BASE}/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+      await loadKanban();
+      setNotice("已删除任务");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除任务失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!draftTitle.trim()) return;
+    setBusy(true);
+    setError("");
+    const tags = draftTags
+      .split(/[,，\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    try {
+      if (createMode === "epic") {
+        const cleanSubs = epicSubtasks
+          .filter((s) => s.title.trim())
+          .map((s) => ({ title: s.title.trim(), type: s.type, priority: s.priority }));
+        await request(`${API_BASE}/epics`, {
+          method: "POST",
+          body: JSON.stringify({
+            project: draftProject.trim() || "default",
+            title: draftTitle.trim(),
+            description: draftDesc.trim(),
+            priority: draftPriority,
+            tags,
+            dueAt: draftDueAt ? new Date(draftDueAt).toISOString() : null,
+            sourceRef: draftSourceRef.trim() || null,
+            subtasks: cleanSubs,
+          }),
+        });
+        setNotice(`已创建 Epic「${draftTitle.trim()}」及 ${cleanSubs.length} 个子任务`);
+      } else {
+        await request(`${API_BASE}/tasks`, {
+          method: "POST",
+          body: JSON.stringify({
+            project: draftProject.trim() || "default",
+            title: draftTitle.trim(),
+            description: draftDesc.trim(),
+            type: draftType,
+            priority: draftPriority,
+            tags,
+            dueAt: draftDueAt ? new Date(draftDueAt).toISOString() : null,
+            sourceRef: draftSourceRef.trim() || null,
+          }),
+        });
+        setNotice(`已创建任务「${draftTitle.trim()}」`);
+      }
+
+      setDraftTitle("");
+      setDraftDesc("");
+      setDraftTags("");
+      setDraftDueAt("");
+      setDraftSourceRef("");
+      setEpicSubtasks([
+        { title: "", type: "task", priority: 6 },
+        { title: "", type: "task", priority: 5 },
+      ]);
+      setShowCreator(false);
+      await loadKanban();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建任务失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRunPatrol = async (notifyZoom: boolean) => {
+    setBusy(true);
+    setError("");
+    try {
+      const report = await request<PatrolReport>(`${API_BASE}/patrol`, {
+        method: "POST",
+        body: JSON.stringify({ staleDays: patrolStaleDays, notifyZoom }),
+      });
+      setLatestPatrol(report);
+      await loadPatrolHistory();
+      setNotice(
+        `巡检完成：发现 ${report.staleCount} 条超期滞留任务、${report.failedCount} 条失败任务${
+          report.notifiedZoom ? " · 已推送 Zoom 待办" : ""
+        }`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "巡检执行失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePatrolAction = async (
+    taskId: string,
+    action: "assign" | "archive" | "done" | "todo",
+  ) => {
+    setBusy(true);
+    setError("");
+    try {
+      if (action === "assign") {
+        await request(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/assign-human`, {
+          method: "POST",
+          body: "{}",
+        });
+      } else {
+        const status: PlanningTaskStatus =
+          action === "archive" ? "archived" : action === "done" ? "done" : "todo";
+        await request(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/status`, {
+          method: "PATCH",
+          body: JSON.stringify({ status }),
+        });
+      }
+      await Promise.all([loadKanban(), handleRunPatrol(false)]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "任务处置失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Drag handlers
+  const handleDragStart = (e: DragEvent<HTMLElement>, taskId: string) => {
+    setDraggingId(taskId);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", taskId);
+  };
+
+  const handleDragEnd = () => {
+    setDraggingId(null);
+    setDragOverCol(null);
+  };
+
+  const handleColDragOver = (e: DragEvent<HTMLElement>, col: KanbanColumnKey) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverCol !== col) setDragOverCol(col);
+  };
+
+  const handleColDrop = (e: DragEvent<HTMLElement>, col: KanbanColumnKey) => {
+    e.preventDefault();
+    const taskId = e.dataTransfer.getData("text/plain") || draggingId;
+    setDraggingId(null);
+    setDragOverCol(null);
+    if (!taskId) return;
+    void handleStatusChange(taskId, col);
+  };
+
+  // Heatmap 16 weeks x 7 days slicing
+  const heatmapWeeks = useMemo(() => {
+    const slice = trend.slice(-112);
+    const weeks: DailyTrendPoint[][] = [];
+    for (let w = 0; w < 16; w++) {
+      weeks.push(slice.slice(w * 7, w * 7 + 7));
+    }
+    return weeks;
+  }, [trend]);
+
+  const monthLabels = useMemo(() => {
+    let lastMonth = "";
+    return heatmapWeeks.map((week) => {
+      const first = week[0];
+      if (!first) return "";
+      const m = first.date.slice(5, 7);
+      if (m !== lastMonth) {
+        lastMonth = m;
+        return `${Number(m)}月`;
+      }
+      return "";
+    });
+  }, [heatmapWeeks]);
+
+  const recent14Days = useMemo(() => trend.slice(-14), [trend]);
+  const maxTrendVal = useMemo(() => {
+    let max = 1;
+    for (const pt of recent14Days) {
+      max = Math.max(max, pt.completed, pt.agentRuns, pt.pomodoroCount);
+    }
+    return max;
+  }, [recent14Days]);
+
+  const patrolBadgeCount = (latestPatrol?.staleCount ?? 0) + (latestPatrol?.failedCount ?? 0);
+
+  return (
+    <section className="zo-product tp-page" aria-label="任务规划与 ROI 看板">
+      <header className="tp-head">
+        <div>
+          <div className="tp-title-row">
+            {nav}
+            <h1>任务规划与 ROI 看板</h1>
+          </div>
+          <p className="tp-sub">
+            Epic → SubTask 任务树 · 人机混合 5 列拖拽看板 · 番茄钟精力追踪 · 巡检卫士 · 30 天 ROI 与 16 周热力图
+          </p>
+        </div>
+        <div className="tp-head-actions">
+          <button
+            type="button"
+            className="tp-primary"
+            onClick={() => {
+              setActiveTab("kanban");
+              setShowCreator((v) => !v);
+            }}
+          >
+            {showCreator ? "收起新建面板" : "+ 新建任务 / Epic"}
+          </button>
+          <button type="button" disabled={busy} onClick={() => void refreshAll()}>
+            刷新数据
+          </button>
+        </div>
+      </header>
+
+      <div className="tp-nav-bar">
+        <div className="tp-tabs" role="tablist" aria-label="任务规划视图切换">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "kanban"}
+            onClick={() => setActiveTab("kanban")}
+          >
+            人机混合看板
+            {kanban && <span className="tp-tab-count">{kanban.counts.total}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "roi"}
+            onClick={() => setActiveTab("roi")}
+          >
+            ROI 仪表盘 & 热力图
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "patrol"}
+            onClick={() => setActiveTab("patrol")}
+          >
+            巡检卫士 (Patrol)
+            {patrolBadgeCount > 0 && <span className="tp-tab-count warn">{patrolBadgeCount}</span>}
+          </button>
+        </div>
+
+        {activeTab === "kanban" && (
+          <div className="tp-filters">
+            <select
+              aria-label="按项目筛选"
+              value={projectFilter}
+              onChange={(e) => setProjectFilter(e.target.value)}
+            >
+              <option value="">全部项目</option>
+              {(kanban?.projects ?? []).map((proj) => (
+                <option key={proj} value={proj}>
+                  {proj}
+                </option>
+              ))}
+            </select>
+
+            <div className="tp-segmented" role="group" aria-label="归属筛选">
+              <button
+                type="button"
+                aria-pressed={assigneeFilter === "all"}
+                onClick={() => setAssigneeFilter("all")}
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                aria-pressed={assigneeFilter === "human"}
+                onClick={() => setAssigneeFilter("human")}
+              >
+                ◉ 人类
+              </button>
+              <button
+                type="button"
+                aria-pressed={assigneeFilter === "agent"}
+                onClick={() => setAssigneeFilter("agent")}
+              >
+                ◈ Agent
+              </button>
+            </div>
+
+            <div className="tp-segmented" role="group" aria-label="布局切换">
+              <button
+                type="button"
+                aria-pressed={viewMode === "board"}
+                onClick={() => setViewMode("board")}
+              >
+                看板
+              </button>
+              <button
+                type="button"
+                aria-pressed={viewMode === "tree"}
+                onClick={() => setViewMode("tree")}
+              >
+                Epic 树
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {notice && (
+        <div role="status" className="tp-banner">
+          <span>{notice}</span>
+          <button type="button" className="tp-ghost" onClick={() => setNotice("")}>
+            关闭
+          </button>
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="tp-banner error">
+          <span>{error}</span>
+          <button type="button" className="tp-ghost" onClick={() => setError("")}>
+            关闭
+          </button>
+        </div>
+      )}
+
+      {/* Create Task / Epic Form */}
+      {showCreator && activeTab === "kanban" && (
+        <form className="tp-creator" onSubmit={(e) => void handleCreateSubmit(e)}>
+          <div className="tp-creator-head">
+            <h3>{createMode === "epic" ? "新建 Epic 与子任务树" : "新建结构化任务"}</h3>
+            <div className="tp-segmented">
+              <button
+                type="button"
+                aria-pressed={createMode === "task"}
+                onClick={() => setCreateMode("task")}
+              >
+                单条任务
+              </button>
+              <button
+                type="button"
+                aria-pressed={createMode === "epic"}
+                onClick={() => setCreateMode("epic")}
+              >
+                Epic + 子任务树
+              </button>
+            </div>
+          </div>
+
+          <div className="tp-form-grid">
+            <label className="tp-field full">
+              标题 *
+              <input
+                type="text"
+                required
+                placeholder={createMode === "epic" ? "例：Phase 2 商业闭环上线" : "例：实现虎皮椒 Webhook 验签"}
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+              />
+            </label>
+            <label className="tp-field">
+              项目
+              <input
+                type="text"
+                value={draftProject}
+                onChange={(e) => setDraftProject(e.target.value)}
+                placeholder="default"
+              />
+            </label>
+            {createMode === "task" && (
+              <label className="tp-field">
+                类型
+                <select
+                  value={draftType}
+                  onChange={(e) => setDraftType(e.target.value as PlanningTaskType)}
+                >
+                  {PLANNING_TASK_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {TYPE_LABELS[t]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label className="tp-field">
+              优先级 (1低 - 10高)
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={draftPriority}
+                onChange={(e) => setDraftPriority(Math.max(1, Math.min(10, Number(e.target.value) || 5)))}
+              />
+            </label>
+            <label className="tp-field">
+              标签（逗号分隔）
+              <input
+                type="text"
+                placeholder="growth, backend, p0"
+                value={draftTags}
+                onChange={(e) => setDraftTags(e.target.value)}
+              />
+            </label>
+            <label className="tp-field">
+              截止日期
+              <input type="date" value={draftDueAt} onChange={(e) => setDraftDueAt(e.target.value)} />
+            </label>
+            <label className="tp-field">
+              来源回链 (sourceRef)
+              <input
+                type="text"
+                placeholder="prd://pagelens-v2 或 #opportunities"
+                value={draftSourceRef}
+                onChange={(e) => setDraftSourceRef(e.target.value)}
+              />
+            </label>
+            <label className="tp-field full">
+              描述与验收标准
+              <textarea
+                rows={2}
+                placeholder="补充上下文、验收标准或交付产物…"
+                value={draftDesc}
+                onChange={(e) => setDraftDesc(e.target.value)}
+              />
+            </label>
+          </div>
+
+          {createMode === "epic" && (
+            <div className="tp-subtask-drafts">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <strong style={{ fontSize: 12.5 }}>子任务列表（同一事务落盘）</strong>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setEpicSubtasks((prev) => [...prev, { title: "", type: "task", priority: draftPriority }])
+                  }
+                >
+                  + 加一行子任务
+                </button>
+              </div>
+              {epicSubtasks.map((sub, idx) => (
+                <div key={idx} className="tp-subtask-draft-row">
+                  <input
+                    type="text"
+                    placeholder={`子任务 #${idx + 1} 标题`}
+                    value={sub.title}
+                    onChange={(e) =>
+                      setEpicSubtasks((prev) =>
+                        prev.map((item, i) => (i === idx ? { ...item, title: e.target.value } : item)),
+                      )
+                    }
+                  />
+                  <select
+                    value={sub.type}
+                    onChange={(e) =>
+                      setEpicSubtasks((prev) =>
+                        prev.map((item, i) =>
+                          i === idx ? { ...item, type: e.target.value as PlanningTaskType } : item,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="task">Task</option>
+                    <option value="bug">Bug</option>
+                    <option value="prd">PRD</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={sub.priority}
+                    onChange={(e) =>
+                      setEpicSubtasks((prev) =>
+                        prev.map((item, i) =>
+                          i === idx ? { ...item, priority: Number(e.target.value) || 5 } : item,
+                        ),
+                      )
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="tp-ghost"
+                    onClick={() => setEpicSubtasks((prev) => prev.filter((_, i) => i !== idx))}
+                  >
+                    移除
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="tp-form-actions">
+            <button type="button" onClick={() => setShowCreator(false)}>
+              取消
+            </button>
+            <button type="submit" className="tp-primary" disabled={busy || !draftTitle.trim()}>
+              {createMode === "epic" ? "一键创建 Epic 任务树" : "保存任务"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* ==================== TAB 1: KANBAN / EPIC TREE ==================== */}
+      {activeTab === "kanban" && (
+        <>
+          {!kanban ? (
+            <p role="status">正在加载任务看板…</p>
+          ) : viewMode === "board" ? (
+            <>
+              <div className="tp-board" aria-label="人机混合五列看板">
+                {KANBAN_COLUMNS.map((col) => {
+                  const items = filterTasks(kanban[col.key]);
+                  return (
+                    <section
+                      key={col.key}
+                      className={`tp-col${dragOverCol === col.key ? " is-drag-over" : ""}`}
+                      aria-label={`${col.label} 列`}
+                      onDragOver={(e) => handleColDragOver(e, col.key)}
+                      onDragLeave={() => {
+                        if (dragOverCol === col.key) setDragOverCol(null);
+                      }}
+                      onDrop={(e) => handleColDrop(e, col.key)}
+                    >
+                      <header className="tp-col-head">
+                        <div className="tp-col-title">
+                          <span className={`tp-col-dot ${col.key}`} />
+                          <span>{col.label}</span>
+                          <small style={{ fontWeight: 400, color: "#616e65", fontSize: 11 }}>{col.hint}</small>
+                        </div>
+                        <span className="tp-col-count">{items.length}</span>
+                      </header>
+                      <div className="tp-col-body">
+                        {items.length === 0 ? (
+                          <div className="tp-col-empty">拖拽任务卡片到此处</div>
+                        ) : (
+                          items.map((task) => (
+                            <TaskCard
+                              key={task.id}
+                              task={task}
+                              agents={kanban.agents}
+                              busy={busy}
+                              isDragging={draggingId === task.id}
+                              onDragStart={handleDragStart}
+                              onDragEnd={handleDragEnd}
+                              onStatusChange={handleStatusChange}
+                              onAssignHuman={handleAssignHuman}
+                              onDispatch={handleDispatch}
+                              onRecordPomodoro={handleRecordPomodoro}
+                              onCreateSubtask={handleCreateSubtask}
+                              onDeleteTask={handleDeleteTask}
+                            />
+                          ))
+                        )}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+
+              {/* Collapsible Failed / Archived Drawer */}
+              <section className="tp-drawer" aria-label="失败与已归档抽屉">
+                <div
+                  className="tp-drawer-head"
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={showArchiveDrawer}
+                  onClick={() => setShowArchiveDrawer((v) => !v)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setShowArchiveDrawer((v) => !v);
+                    }
+                  }}
+                >
+                  <strong>
+                    {showArchiveDrawer ? "▾" : "▸"} Failed / Archived 抽屉
+                  </strong>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <span className="tp-pill prio-high mono">Failed: {filterTasks(kanban.failed).length}</span>
+                    <span className="tp-pill mono">Archived: {filterTasks(kanban.archived).length}</span>
+                  </div>
+                </div>
+                {showArchiveDrawer && (
+                  <div className="tp-drawer-body">
+                    {[...filterTasks(kanban.failed), ...filterTasks(kanban.archived)].length === 0 ? (
+                      <div style={{ fontSize: 12.5, color: "#657268" }}>暂无失败或已归档任务。</div>
+                    ) : (
+                      [...filterTasks(kanban.failed), ...filterTasks(kanban.archived)].map((task) => (
+                        <div key={task.id} className="tp-card" style={{ cursor: "default" }}>
+                          <div className={`tp-card-prio-bar ${task.status === "failed" ? "high" : "low"}`} />
+                          <div className="tp-card-top">
+                            <span className={`tp-pill ${task.status === "failed" ? "prio-high" : ""}`}>
+                              {STATUS_LABELS[task.status]}
+                            </span>
+                            <span className="tp-pill">{task.project}</span>
+                            <span className="tp-pill mono">P{task.priority}</span>
+                          </div>
+                          <div className="tp-card-title">{task.title}</div>
+                          <div className="tp-card-actions">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleStatusChange(task.id, "todo")}
+                            >
+                              恢复 Todo
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleAssignHuman(task.id)}
+                            >
+                              ◉ 分给我
+                            </button>
+                            <button
+                              type="button"
+                              className="tp-danger"
+                              disabled={busy}
+                              onClick={() => void handleDeleteTask(task.id)}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </section>
+            </>
+          ) : (
+            /* Epic Tree View */
+            <div className="tp-tree" aria-label="Epic 任务树视图">
+              {visibleTreeTasks.length === 0 ? (
+                <div className="tp-panel">暂无符合筛选条件的任务或 Epic。</div>
+              ) : (
+                visibleTreeTasks.map((task) => {
+                  const pct =
+                    task.subtaskStats.total > 0
+                      ? Math.round((task.subtaskStats.done / task.subtaskStats.total) * 100)
+                      : task.status === "done" || task.status === "published"
+                        ? 100
+                        : 0;
+                  return (
+                    <div key={task.id} className="tp-tree-node">
+                      <div className="tp-tree-head">
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div className="tp-card-top">
+                            <span className={`tp-pill mono prio-${priorityTier(task.priority)}`}>
+                              P{task.priority}
+                            </span>
+                            <span className={`tp-pill type-${task.type}`}>{TYPE_LABELS[task.type]}</span>
+                            <span className="tp-pill">{task.project}</span>
+                            <span className="tp-pill">{STATUS_LABELS[task.status]}</span>
+                            <span className={`tp-pill ${task.assigneeType}`}>
+                              {task.assigneeType === "agent" ? "◈ " : "◉ "}
+                              {task.assigneeName || task.assigneeId || "未分配"}
+                            </span>
+                            <span className="tp-pill pomo mono">🍅 {task.pomodoroCount}</span>
+                          </div>
+                          <h3>{task.title}</h3>
+                          {task.description && <p className="tp-sub">{task.description}</p>}
+                        </div>
+
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                          <span className="tp-pill mono">
+                            {task.subtaskStats.total > 0
+                              ? `${task.subtaskStats.done}/${task.subtaskStats.total} sub (${pct}%)`
+                              : `${pct}%`}
+                          </span>
+                          <select
+                            value={task.status}
+                            disabled={busy}
+                            onChange={(e) => void handleStatusChange(task.id, e.target.value as PlanningTaskStatus)}
+                          >
+                            {PLANNING_TASK_STATUSES.map((st) => (
+                              <option key={st} value={st}>
+                                {STATUS_LABELS[st]}
+                              </option>
+                            ))}
+                          </select>
+                          <button type="button" disabled={busy} onClick={() => void handleAssignHuman(task.id)}>
+                            ◉ 分给我
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="tp-mini-track" style={{ height: 6 }}>
+                        <div className="tp-mini-fill" style={{ width: `${pct}%` }} />
+                      </div>
+
+                      {task.subtasks.length > 0 && (
+                        <div className="tp-tree-children">
+                          {task.subtasks.map((sub) => (
+                            <div key={sub.id} className="tp-tree-child">
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                                <span className={`tp-pill mono prio-${priorityTier(sub.priority)}`}>
+                                  P{sub.priority}
+                                </span>
+                                <span className={`tp-pill type-${sub.type}`}>{TYPE_LABELS[sub.type]}</span>
+                                <strong style={{ fontSize: 13 }}>{sub.title}</strong>
+                                <span className={`tp-pill ${sub.assigneeType}`}>
+                                  {sub.assigneeType === "agent" ? "◈ " : "◉ "}
+                                  {sub.assigneeName || sub.assigneeId || "人类"}
+                                </span>
+                                <span className="tp-pill pomo mono">🍅 {sub.pomodoroCount}</span>
+                              </div>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <select
+                                  value={sub.status}
+                                  disabled={busy}
+                                  onChange={(e) =>
+                                    void handleStatusChange(sub.id, e.target.value as PlanningTaskStatus)
+                                  }
+                                >
+                                  {PLANNING_TASK_STATUSES.map((st) => (
+                                    <option key={st} value={st}>
+                                      {STATUS_LABELS[st]}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  className="tp-ghost"
+                                  disabled={busy}
+                                  onClick={() => void handleAssignHuman(sub.id)}
+                                >
+                                  分给我
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ==================== TAB 2: ROI DASHBOARD & HEATMAP ==================== */}
+      {activeTab === "roi" && (
+        <div>
+          <div className="tp-roi-head">
+            <h2 style={{ fontSize: 21 }}>投入产出 ROI 仪表盘</h2>
+            <div className="tp-segmented" role="group" aria-label="统计周期">
+              {[7, 30, 90].map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  aria-pressed={roiDays === d}
+                  onClick={() => setRoiDays(d)}
+                >
+                  近 {d} 天
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {!roi ? (
+            <p role="status">正在汇总 ROI 与趋势数据…</p>
+          ) : (
+            <>
+              <div className="tp-kpis" aria-label="ROI 核心指标">
+                <div className="tp-kpi green">
+                  <span>任务完成数与完成率（近 {roi.days} 天）</span>
+                  <strong>
+                    {roi.tasks.completed} / {roi.tasks.total}
+                  </strong>
+                  <small>完成率 {roi.tasks.completionRate.toFixed(1)}%</small>
+                </div>
+                <div className="tp-kpi teal">
+                  <span>Agent 执行次数与算力成本</span>
+                  <strong>{formatUsd(roi.agents.totalCostUsd)}</strong>
+                  <small>
+                    {roi.agents.totalRuns} 次运行 · {formatTokens(roi.agents.totalTokensUsed)} tokens
+                  </small>
+                </div>
+                <div className="tp-kpi amber">
+                  <span>人类专注番茄与折算工时</span>
+                  <strong>{roi.human.totalPomodoros} 🍅</strong>
+                  <small>折算深度工时 {roi.human.estimatedHours.toFixed(2)} 小时</small>
+                </div>
+                <div className="tp-kpi ochre">
+                  <span>高能状态占比（精力追踪）</span>
+                  <strong>{roi.human.highEnergyRate.toFixed(1)}%</strong>
+                  <small>
+                    ⚡高能 {roi.human.highEnergyCount} 轮 · 🌙低能 {roi.human.lowEnergyCount} 轮
+                  </small>
+                </div>
+              </div>
+
+              {/* Status Distribution Progress Bar */}
+              <section className="tp-panel" aria-label="任务状态分布">
+                <div className="tp-panel-head">
+                  <h2>任务完成率与状态分布</h2>
+                  <span className="tp-pill mono">完成率 {roi.tasks.completionRate.toFixed(1)}%</span>
+                </div>
+                <div className="tp-status-bar">
+                  {roi.tasks.total > 0 &&
+                    roi.tasks.byStatus.map((item) => (
+                      <div
+                        key={item.status}
+                        className="tp-status-seg"
+                        title={`${STATUS_LABELS[item.status]}: ${item.count}`}
+                        style={{
+                          width: `${(item.count / roi.tasks.total) * 100}%`,
+                          background: STATUS_COLORS[item.status],
+                        }}
+                      />
+                    ))}
+                </div>
+                <div className="tp-legend">
+                  {roi.tasks.byStatus.length === 0 ? (
+                    <span>统计周期内暂无任务</span>
+                  ) : (
+                    roi.tasks.byStatus.map((item) => (
+                      <span key={item.status} className="tp-legend-item">
+                        <span
+                          className="tp-legend-swatch"
+                          style={{ background: STATUS_COLORS[item.status] }}
+                        />
+                        {STATUS_LABELS[item.status]}: <strong>{item.count}</strong>
+                      </span>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              {/* 16-Week Heatmap & 14-Day Trend Bar Chart */}
+              <div className="tp-charts-grid">
+                <section className="tp-panel" aria-label="16 周活动热力图">
+                  <div className="tp-panel-head">
+                    <h2>16 周活动热力图（112 天）</h2>
+                    <span className="tp-pill mono">7 × 16 矩阵</span>
+                  </div>
+                  <div className="tp-heatmap-wrap">
+                    <div className="tp-heatmap-months">
+                      <span />
+                      {monthLabels.map((m, idx) => (
+                        <span key={idx}>{m}</span>
+                      ))}
+                    </div>
+                    <div className="tp-heatmap-body">
+                      <div className="tp-heatmap-weekdays">
+                        <span>一</span>
+                        <span />
+                        <span>三</span>
+                        <span />
+                        <span>五</span>
+                        <span />
+                        <span>日</span>
+                      </div>
+                      {heatmapWeeks.map((week, wIdx) => (
+                        <div key={wIdx} className="tp-heatmap-week">
+                          {week.map((pt) => {
+                            const lvl = heatLevel(pt);
+                            const tip = `${pt.date} · 完成 ${pt.completed} / 新建 ${pt.created} / Agent ${pt.agentRuns} / 番茄 ${pt.pomodoroCount} (⚡${pt.highEnergyPomodoros})`;
+                            return (
+                              <div
+                                key={pt.date}
+                                className={`tp-heat-cell lvl-${lvl}${
+                                  selectedHeatDay?.date === pt.date ? " is-selected" : ""
+                                }`}
+                                title={tip}
+                                onMouseEnter={() => setSelectedHeatDay(pt)}
+                                onClick={() => setSelectedHeatDay(pt)}
+                              />
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="tp-heatmap-foot">
+                    <div>
+                      {selectedHeatDay ? (
+                        <span>
+                          <strong>{selectedHeatDay.date}</strong>：完成 {selectedHeatDay.completed} · 新建{" "}
+                          {selectedHeatDay.created} · Agent {selectedHeatDay.agentRuns} 次 · 番茄{" "}
+                          {selectedHeatDay.pomodoroCount} 个（⚡高能 {selectedHeatDay.highEnergyPomodoros}）
+                        </span>
+                      ) : (
+                        <span>悬停任意方格查看每日明细</span>
+                      )}
+                    </div>
+                    <div className="tp-heat-scale">
+                      <span>少</span>
+                      <span className="tp-heat-swatch lvl-0" style={{ background: "#efede3" }} />
+                      <span className="tp-heat-swatch lvl-1" style={{ background: "#c6dccb" }} />
+                      <span className="tp-heat-swatch lvl-2" style={{ background: "#83b293" }} />
+                      <span className="tp-heat-swatch lvl-3" style={{ background: "#4a8362" }} />
+                      <span className="tp-heat-swatch lvl-4" style={{ background: "#2f513e" }} />
+                      <span>多</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="tp-panel" aria-label="14 天趋势对比柱图">
+                  <div className="tp-panel-head">
+                    <h2>近 14 天交付与投入趋势</h2>
+                    <div className="tp-legend" style={{ gap: 10 }}>
+                      <span className="tp-legend-item">
+                        <span className="tp-legend-swatch" style={{ background: "#2f513e" }} />
+                        完成
+                      </span>
+                      <span className="tp-legend-item">
+                        <span className="tp-legend-swatch" style={{ background: "#1f6e78" }} />
+                        Agent
+                      </span>
+                      <span className="tp-legend-item">
+                        <span className="tp-legend-swatch" style={{ background: "#b8761c" }} />
+                        番茄
+                      </span>
+                    </div>
+                  </div>
+                  <div className="tp-trend-chart">
+                    {recent14Days.map((pt) => {
+                      const hDone = Math.round((pt.completed / maxTrendVal) * 100);
+                      const hAgent = Math.round((pt.agentRuns / maxTrendVal) * 100);
+                      const hPomo = Math.round((pt.pomodoroCount / maxTrendVal) * 100);
+                      return (
+                        <div
+                          key={pt.date}
+                          className="tp-trend-day"
+                          title={`${pt.date}: 完成 ${pt.completed} / Agent ${pt.agentRuns} / 番茄 ${pt.pomodoroCount}`}
+                        >
+                          <div className="tp-trend-bars">
+                            <div
+                              className="tp-trend-bar completed"
+                              style={{ height: `${Math.max(2, hDone)}%` }}
+                            />
+                            <div
+                              className="tp-trend-bar agent"
+                              style={{ height: `${Math.max(2, hAgent)}%` }}
+                            />
+                            <div
+                              className="tp-trend-bar pomo"
+                              style={{ height: `${Math.max(2, hPomo)}%` }}
+                            />
+                          </div>
+                          <span className="tp-trend-date">{pt.date.slice(5)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+
+              {/* Epic & Project ROI Table */}
+              <section className="tp-panel" aria-label="Epic 与项目级 ROI 投入产出表">
+                <div className="tp-panel-head">
+                  <h2>Epic & 项目级 ROI 投入产出表</h2>
+                  <span className="tp-pill mono">{roi.epicRoi.length} 项汇总</span>
+                </div>
+                <div className="tp-table-wrap">
+                  <table className="tp-table">
+                    <thead>
+                      <tr>
+                        <th>层级</th>
+                        <th>名称</th>
+                        <th>所属项目</th>
+                        <th className="num">完成 / 总数</th>
+                        <th className="num">人类番茄 / 工时</th>
+                        <th className="num">Agent 成本</th>
+                        <th className="num">关联营收</th>
+                        <th className="num">单完成任务成本</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {roi.epicRoi.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} style={{ textAlign: "center", color: "#68756b" }}>
+                            暂无项目或 Epic 统计记录
+                          </td>
+                        </tr>
+                      ) : (
+                        roi.epicRoi.map((row) => (
+                          <tr key={row.id}>
+                            <td>
+                              <span className={`tp-pill ${row.kind === "epic" ? "type-epic" : ""}`}>
+                                {row.kind === "epic" ? "Epic" : "项目"}
+                              </span>
+                            </td>
+                            <td>
+                              <strong>{row.name}</strong>
+                            </td>
+                            <td>{row.project}</td>
+                            <td className="num">
+                              {row.completedTasks} / {row.totalTasks}
+                            </td>
+                            <td className="num">
+                              {row.pomodoros} 🍅 ({row.humanHours.toFixed(2)}h)
+                            </td>
+                            <td className="num">{formatUsd(row.agentCostUsd)}</td>
+                            <td className="num" style={{ color: row.revenueUsd > 0 ? "#2f513e" : undefined }}>
+                              {formatUsd(row.revenueUsd)}
+                            </td>
+                            <td className="num">
+                              {row.costPerCompletedTask !== null ? formatUsd(row.costPerCompletedTask) : "—"}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ==================== TAB 3: PATROL GUARD ==================== */}
+      {activeTab === "patrol" && (
+        <div>
+          <div className="tp-patrol-controls">
+            <label>
+              滞留判定阈值（天）
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={patrolStaleDays}
+                onChange={(e) => setPatrolStaleDays(Math.max(1, Math.min(365, Number(e.target.value) || 7)))}
+              />
+            </label>
+            <button
+              type="button"
+              className="tp-primary"
+              disabled={busy}
+              onClick={() => void handleRunPatrol(false)}
+            >
+              立即执行巡检
+            </button>
+            <button
+              type="button"
+              className="tp-danger"
+              disabled={busy}
+              onClick={() => void handleRunPatrol(true)}
+            >
+              巡检并推送 Zoom 待办
+            </button>
+          </div>
+
+          {latestPatrol && (
+            <>
+              <section className="tp-panel" aria-label="超期滞留任务">
+                <div className="tp-panel-head">
+                  <h2>滞留任务告警（超过 {latestPatrol.staleDays} 天未推进）</h2>
+                  <span className={`tp-pill mono${latestPatrol.staleCount > 0 ? " prio-high" : ""}`}>
+                    {latestPatrol.staleCount} 条滞留
+                  </span>
+                </div>
+                {latestPatrol.staleTasks.length === 0 ? (
+                  <p className="tp-sub">当前所有活跃任务均在正常节奏内，无超期滞留。</p>
+                ) : (
+                  <div className="tp-alert-list">
+                    {latestPatrol.staleTasks.map((alert) => (
+                      <div key={alert.taskId} className="tp-alert-row">
+                        <div className="tp-alert-info">
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                            <span className="tp-pill prio-high mono">滞留 {alert.staleDays} 天</span>
+                            <span className="tp-pill">{alert.project}</span>
+                            <span className="tp-pill">{STATUS_LABELS[alert.status]}</span>
+                            <strong>{alert.title}</strong>
+                          </div>
+                          <small style={{ color: "#5c685f" }}>
+                            负责人：{alert.assigneeName || (alert.assigneeType === "agent" ? "Agent" : "人类")} ·
+                            最后更新：{formatShortTime(alert.updatedAt)}
+                          </small>
+                        </div>
+                        <div className="tp-alert-actions">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handlePatrolAction(alert.taskId, "assign")}
+                          >
+                            重新分配给我
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handlePatrolAction(alert.taskId, "archive")}
+                          >
+                            归档
+                          </button>
+                          <button
+                            type="button"
+                            className="tp-primary"
+                            disabled={busy}
+                            onClick={() => void handlePatrolAction(alert.taskId, "done")}
+                          >
+                            标为完成
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="tp-panel" aria-label="失败异常任务">
+                <div className="tp-panel-head">
+                  <h2>失败任务告警 (Failed)</h2>
+                  <span className={`tp-pill mono${latestPatrol.failedCount > 0 ? " prio-high" : ""}`}>
+                    {latestPatrol.failedCount} 条失败
+                  </span>
+                </div>
+                {latestPatrol.failedTasks.length === 0 ? (
+                  <p className="tp-sub">当前无失败异常任务。</p>
+                ) : (
+                  <div className="tp-alert-list">
+                    {latestPatrol.failedTasks.map((alert) => (
+                      <div key={alert.taskId} className="tp-alert-row failed">
+                        <div className="tp-alert-info">
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                            <span className="tp-pill prio-high">Failed</span>
+                            <span className="tp-pill">{alert.project}</span>
+                            <strong>{alert.title}</strong>
+                          </div>
+                          <small style={{ color: "#5c685f" }}>
+                            负责人：{alert.assigneeName || (alert.assigneeType === "agent" ? "Agent" : "人类")} ·
+                            更新时间：{formatShortTime(alert.updatedAt)}
+                          </small>
+                        </div>
+                        <div className="tp-alert-actions">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handlePatrolAction(alert.taskId, "assign")}
+                          >
+                            重新分配给我
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handlePatrolAction(alert.taskId, "todo")}
+                          >
+                            重开 Todo
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handlePatrolAction(alert.taskId, "archive")}
+                          >
+                            归档
+                          </button>
+                          <button
+                            type="button"
+                            className="tp-primary"
+                            disabled={busy}
+                            onClick={() => void handlePatrolAction(alert.taskId, "done")}
+                          >
+                            标为完成
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+
+          <section className="tp-panel" aria-label="历史巡检记录">
+            <div className="tp-panel-head">
+              <h2>最近巡检记录历史</h2>
+              <span className="tp-pill mono">{patrolHistory.length} 次记录</span>
+            </div>
+            <div className="tp-table-wrap">
+              <table className="tp-table">
+                <thead>
+                  <tr>
+                    <th>巡检时间</th>
+                    <th className="num">滞留阈值</th>
+                    <th className="num">滞留数</th>
+                    <th className="num">失败数</th>
+                    <th>Zoom 通知</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {patrolHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} style={{ textAlign: "center", color: "#68756b" }}>
+                        尚未执行巡检，点击上方「立即执行巡检」开始扫描。
+                      </td>
+                    </tr>
+                  ) : (
+                    patrolHistory.map((run) => (
+                      <tr key={run.id}>
+                        <td className="num" style={{ textAlign: "left" }}>
+                          {formatShortTime(run.createdAt)}
+                        </td>
+                        <td className="num">&gt; {run.staleDays} 天</td>
+                        <td className="num">{run.staleCount}</td>
+                        <td className="num">{run.failedCount}</td>
+                        <td>
+                          <span className={`tp-pill ${run.notifiedZoom ? "published" : ""}`}>
+                            {run.notifiedZoom ? "已推送 Zoom" : "仅本地记录"}
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="tp-ghost"
+                            onClick={() => setLatestPatrol(run)}
+                          >
+                            查看详情
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      )}
+    </section>
+  );
+}

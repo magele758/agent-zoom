@@ -338,7 +338,8 @@ export function App() {
       </div>
       <main className={`stage ${mobile === "chat" ? "on" : ""}`}>
         <div className="view-toolbar">
-          <a href="#inbox">消息列表</a>
+          <a href="#overview">全局看板</a>
+          <a href="#home-room">Agent Home 群聊</a>
           <a href="#delegations">委派台</a>
           {workflowEnabled && <a href="#workflows">工作流决策</a>}
           <button type="button" data-testid="toggle-channels" aria-expanded={channelsOpen} onClick={() => setChannelsOpen(!channelsOpen)}>{channelsOpen ? "收起频道" : "展开频道"}</button>
@@ -382,7 +383,7 @@ export function App() {
         )}
       </aside>
       <nav className="mobile-nav" aria-label="面板">
-        <a href="#inbox">消息列表</a>
+        <a href="#home-room">群聊</a>
         <button type="button" className={mobile === "rooms" ? "active" : ""} onClick={() => setMobile("rooms")}>频道</button>
         <button type="button" className={mobile === "chat" ? "active" : ""} onClick={() => setMobile("chat")}>消息</button>
         <button type="button" className={mobile === "tasks" ? "active" : ""} onClick={() => setMobile("tasks")}>任务</button>
@@ -784,7 +785,7 @@ function Channel({
                     {message.taskTitle}
                   </button>
                 ) : null}
-                {message.authorType==="agent" && (message.kind==="question" || message.kind==="blocked") && <a href={"#inbox?"+new URLSearchParams({message:"channel:"+message.id})}>到原消息处理 ↗</a>}
+                {message.authorType==="agent" && (message.kind==="question" || message.kind==="blocked") && <a href="#home-room">到群聊继续讨论 ↗</a>}
                 <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
               </div>
               <FoldedBody

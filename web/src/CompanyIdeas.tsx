@@ -5,7 +5,7 @@ import type { OpportunityIndex } from "../../src/autonomy-types";
 import type { HomeRoomIdeaRef } from "../../src/home-room-types";
 import { DelegateWork } from "./Delegation";
 import { api, request } from "./api";
-import { inboxLink } from "./zoom-routes";
+import { chatRoomLink } from "./zoom-routes";
 import "./company-ideas.css";
 
 const company = "/api/zoom/company";
@@ -161,6 +161,7 @@ function IdeaDetail({ idea, index, candidates, updated }: {
   idea: CompanyIdea; index: CompanyIndex; candidates: OpportunityIndex; updated: () => Promise<void>;
 }) {
   const [target, setTarget] = useState("");
+  const [pipeline, setPipeline] = useState<"quick" | "full-product">("quick");
   const [newProduct,setNewProduct] = useState("");
   const [product,setProduct] = useState("");
   const [newProject,setNewProject] = useState("");
@@ -201,7 +202,7 @@ function IdeaDetail({ idea, index, candidates, updated }: {
     if (!selected) return;
     await act(async () => {
       setLastResult(await request<DispatchResult>(company + "/ideas/" + idea.id + "/dispatch",
-        post({product: selected.product, name: selected.name})));
+        post({product: selected.product, name: selected.name, ...(pipeline !== "quick" && { pipeline })})));
     });
   }
   const deliveryText: Record<DispatchResult["status"],string> = {
@@ -225,6 +226,10 @@ function IdeaDetail({ idea, index, candidates, updated }: {
               <option key={item.name} value={name + "/" + item.name}>{name} / {item.name}</option>)}</optgroup>;
           })}
         </select></label>
+        <label>流程模式<select value={pipeline} onChange={event => setPipeline(event.target.value as "quick" | "full-product")}>
+          <option value="quick">快速编码直发（Coding Agent：实现 → 独立评审）</option>
+          <option value="full-product">产研全流程（Coding Agent 调研→PRD→视觉稿→开发→评审 · PM Bot 串联）</option>
+        </select></label>
         <button className="ci-main" disabled={!selected || busy}>{busy ? "处理中…" : "发起研发"}</button>
       </form>
       {lastResult && <p role="status">{deliveryText[latestRun ? "plan" : lastResult.status]} <a href={latestRun ?
@@ -236,9 +241,8 @@ function IdeaDetail({ idea, index, candidates, updated }: {
         return <li key={row.opportunityId}><strong>{row.product} / {row.name}</strong>
           <a href={record?.runId ? "#workflows/" + record.runId : opportunityLink(row.opportunityId)}>{status} ↗</a>
           <details className="ci-project-links"><summary>项目入口</summary><div>
-            <a href={inboxLink({folder:row.product + "/" + row.name})}>任务消息</a>
-            <a href={"#home-room?" + new URLSearchParams({idea:idea.id,project:row.product + "/" + row.name})}>讨论室</a>
-            <a href={"#stage?" + new URLSearchParams({step:"prd",product:row.product,project:row.name})}>起草 PRD</a>
+            <a href={chatRoomLink({ idea: idea.id, project: row.product + "/" + row.name })}>Agent Home 群聊</a>
+            <a href={"#stage?" + new URLSearchParams({ step: "prd", product: row.product, project: row.name })}>起草 PRD</a>
           </div></details>
         </li>;
       })}</ul>}
@@ -282,12 +286,12 @@ function IdeaDetail({ idea, index, candidates, updated }: {
     })}</section>}
     <div className="ci-detail-links">
       <a href={"#stage?" + new URLSearchParams({step:"idea",item:idea.id})}>让 agent 研究这个想法 ↗</a>
-      <a href={"#home-room?" + new URLSearchParams({idea:idea.id})}>到项目讨论室提问 ↗</a>
+      <a href={"#home-room?" + new URLSearchParams({idea:idea.id})}>到 Agent Home 群聊讨论 ↗</a>
     </div>
     <DelegateWork key={idea.id} label="委派研究这个想法" operation={{key:"idea:"+idea.id,title:idea.title,
       href:href({idea:idea.id}),detail:[idea.body,...links.map(note=>note.title+" "+note.reference)].filter(Boolean).join("\n") || idea.title}}/>
-    {roomRefs.length > 0 && <section><h3>相关项目讨论</h3><ul className="ci-room-refs">{roomRefs.map(ref => <li key={ref.postId}>
-      <a href={"#home-room?" + new URLSearchParams({binding:ref.bindingId,post:ref.postId})}>{ref.project} / {ref.roomTitle} · @{ref.botName} ↗</a><p>{ref.excerpt}</p>
+    {roomRefs.length > 0 && <section aria-label="相关项目讨论"><h3>相关项目讨论</h3><ul className="ci-room-refs">{roomRefs.map(ref => <li key={ref.postId}>
+      <a href={ref.roomId ? "#home-room?" + new URLSearchParams({room:ref.roomId}) : "#home-room?" + new URLSearchParams({binding:ref.bindingId,post:ref.postId})}>{ref.project} / {ref.roomTitle} · @{ref.botName} ↗</a><p>{ref.excerpt}</p>
     </li>)}</ul></section>}
   </article>;
 }
@@ -297,6 +301,10 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
   const [index,setIndex] = useState<CompanyIndex | null>(null);
   const [candidates,setCandidates] = useState<OpportunityIndex>({projects:[],opportunities:[]});
   const [days,setDays] = useState<string[] | null>(null);
+  const [readDays,setReadDays] = useState<Set<string>>(() => new Set());
+  const [readLoaded,setReadLoaded] = useState(false);
+  const [unreadOnly,setUnreadOnly] = useState(false);
+  const [readBusy,setReadBusy] = useState(false);
   const [journal,setJournal] = useState<ReadableJournal | null>(null);
   const [learning,setLearning] = useState<Learning | null>(null);
   const [draft,setDraft] = useState<Draft | null>(null);
@@ -314,6 +322,8 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
   const contents = useRef<HTMLDetailsElement>(null);
   const editor = useRef<HTMLTextAreaElement>(null);
   const saveGuard = useRef(false);
+  const manualUnread = useRef<Set<string>>(new Set());
+  const previousDay = useRef("");
   const tab = route.has("idea") || route.get("tab") === "saved" ? "saved" : route.get("tab") === "learn" ? "learn" : "journal";
   const activeDay = route.get("day") || days?.[0] || "";
   const sectionId = route.get("section") || route.get("excerpt") || "";
@@ -324,8 +334,57 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
   const source = journal && (journal.excerpts.find(note => note.id === sectionId) || journal.article);
   const dayIndex = days?.indexOf(activeDay) ?? -1;
   const query = filter.trim().toLowerCase();
-  const visibleDays = (days || []).filter(day => !query || day.includes(query) || displayDay(day).includes(query));
+  const unreadDays = useMemo(() => (days || []).filter(day => !readDays.has(day)), [days, readDays]);
+  const unreadCount = unreadDays.length;
+  const activeUnread = Boolean(activeDay && readLoaded && !readDays.has(activeDay));
+  const visibleDays = (days || []).filter(day =>
+    (!query || day.includes(query) || displayDay(day).includes(query)) &&
+    (!unreadOnly || !readDays.has(day) || day === activeDay));
   const visibleIdeas = (index?.ideas || []).filter(item => !query || (item.body + item.title).toLowerCase().includes(query));
+
+  const setDayRead = useCallback(async (day: string, read: boolean, manual: boolean) => {
+    if (!day) return;
+    if (manual) {
+      if (!read) manualUnread.current.add(day);
+      else manualUnread.current.delete(day);
+      setReadBusy(true);
+    }
+    setReadDays(prev => {
+      const next = new Set(prev);
+      if (read) next.add(day);
+      else next.delete(day);
+      return next;
+    });
+    try {
+      const result = await request<{ day: string; read: boolean; readDays: string[] }>(
+        company + "/journal/" + encodeURIComponent(day) + "/read",
+        { method: "PUT", body: JSON.stringify({ read }) },
+      );
+      setReadDays(new Set(result.readDays));
+    } catch {
+      // Keep optimistic state if offline/transient; next refresh reconciles.
+    } finally {
+      if (manual) setReadBusy(false);
+    }
+  }, []);
+
+  const markAllRead = useCallback(async () => {
+    if (!unreadDays.length || readBusy) return;
+    setReadBusy(true);
+    const targets = [...unreadDays];
+    manualUnread.current.clear();
+    setReadDays(prev => {
+      const next = new Set(prev);
+      for (const day of targets) next.add(day);
+      return next;
+    });
+    try {
+      const result = await request<{ readDays: string[] }>(company + "/journal/read-all", post({ days: targets }));
+      setReadDays(new Set(result.readDays));
+    } finally {
+      setReadBusy(false);
+    }
+  }, [unreadDays, readBusy]);
 
   const reload = useCallback(async (signal?: AbortSignal) => {
     const [data,queue] = await Promise.all([api.companyIndex(signal),api.opportunities(signal)]);
@@ -335,13 +394,33 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
     const control = new AbortController();
     setError("");
     reload(control.signal).catch(error => { if (!control.signal.aborted) setError(describe(error)); });
-    request<{ available: boolean; days: string[] }>(company + "/journal",{signal:control.signal}).then(result => {
+    request<{ available: boolean; days: string[]; readDays?: string[] }>(company + "/journal",{signal:control.signal}).then(result => {
       if (control.signal.aborted) return;
       setDays(result.days);
+      setReadDays(new Set(result.readDays ?? []));
+      setReadLoaded(true);
       if (!result.available) setJournalError("暂时无法读取本机 daily-review-learning。");
     }).catch(error => { if (!control.signal.aborted) setJournalError(describe(error)); });
     return () => control.abort();
   },[revision]);
+  useEffect(() => {
+    if (previousDay.current && previousDay.current !== activeDay) {
+      manualUnread.current.delete(previousDay.current);
+    }
+    previousDay.current = activeDay;
+  }, [activeDay]);
+  useEffect(() => {
+    if (tab !== "journal" || !readLoaded || !activeDay || !journal || journal.day !== activeDay) return;
+    if (readDays.has(activeDay) || manualUnread.current.has(activeDay)) return;
+    const narrow = typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches;
+    if (narrow && !mobileOpen) return;
+    const timer = window.setTimeout(() => {
+      if (!document.hidden && !manualUnread.current.has(activeDay)) {
+        void setDayRead(activeDay, true, false);
+      }
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [tab, readLoaded, activeDay, journal, readDays, mobileOpen, setDayRead]);
   useEffect(() => {
     const control = new AbortController();
     if (!activeDay) return;
@@ -423,14 +502,31 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
           </details>}
         </div>
         {tab === "journal" && <>
-          <h2 className="ci-list-heading">文章列表</h2>
+          <div className="ci-list-head">
+            <h2 className="ci-list-heading">文章列表{readLoaded && unreadCount > 0 && <span className="ci-unread-badge">{unreadCount} 未读</span>}</h2>
+            {readLoaded && Boolean(days?.length) && <div className="ci-read-filter" role="group" aria-label="文章阅读筛选">
+              <button type="button" aria-pressed={!unreadOnly} onClick={() => setUnreadOnly(false)}>全部</button>
+              <button type="button" aria-pressed={unreadOnly} onClick={() => setUnreadOnly(true)}>未读{unreadCount > 0 ? ` (${unreadCount})` : ""}</button>
+              {unreadCount > 0 && <button type="button" className="ci-read-all" disabled={readBusy} onClick={() => void markAllRead()}>全部已读</button>}
+            </div>}
+          </div>
           {!days && !journalError && <p role="status">正在读取日读…</p>}
-          {visibleDays.slice(0,limit).map(day =>
-            <a className="ci-list-item" href={href({day})} key={day} aria-current={day === activeDay ? "page" : undefined}
-              onClick={() => setMobileOpen(true)}><strong>{displayDay(day)}</strong>{day === days?.[0] && <small>最近更新</small>}</a>)}
-          {!!days && !visibleDays.length && <p className="ci-quiet">{query ? "没有匹配日期。" : "暂无日读。"}</p>}
+          {visibleDays.slice(0,limit).map(day => {
+            const unread = readLoaded && !readDays.has(day);
+            return <a className="ci-list-item" href={href({day})} key={day}
+              data-unread={unread ? "true" : "false"}
+              aria-current={day === activeDay ? "page" : undefined}
+              onClick={() => setMobileOpen(true)}>
+              <span className="ci-day-row">
+                {unread && <span className="ci-unread-dot" aria-label="未读" title="未读" />}
+                <strong>{displayDay(day)}</strong>
+              </span>
+              {day === days?.[0] && <small>最近更新</small>}
+            </a>;
+          })}
+          {!!days && !visibleDays.length && <p className="ci-quiet">{query ? "没有匹配日期。" : unreadOnly ? "所有文章都已读完。" : "暂无日读。"}</p>}
           {visibleDays.length > limit && <button type="button" className="ci-more" onClick={() => setLimit(limit+30)}>再看 30 天</button>}
-          {!visibleDays.length && <button type="button" className="ci-more" onClick={() => openDraft()}>写下想验证的事</button>}
+          {!visibleDays.length && !unreadOnly && <button type="button" className="ci-more" onClick={() => openDraft()}>写下想验证的事</button>}
         </>}
         {tab === "saved" && <>
           <h2 className="ci-list-heading">想验证的事</h2>
@@ -460,7 +556,7 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
             {journalError && <p role="alert">{journalError} <button type="button" onClick={() => setRevision(n=>n+1)}>重新读取</button></p>}
             {journal && <div className="ci-article-header">
               <div className="ci-date-nav">
-                <p className="ci-kicker">daily-review-learning</p>
+                <p className="ci-kicker">daily-review-learning{activeUnread && <span className="ci-unread-pill">未读</span>}</p>
                 {days && dayIndex >= 0 && <nav aria-label="前后日读">
                   {days[dayIndex+1] && <a href={href({day:days[dayIndex+1]})}>‹ 前一天</a>}
                   {dayIndex > 0 && <a href={href({day:days[dayIndex-1]})}>后一天 ›</a>}
@@ -471,6 +567,10 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
             {journal && <div className="ci-reading-tools">
               <div className="ci-actions">
                 <button type="button" className="ci-main" onClick={() => openDraft(source || undefined)}>写下想验证的事</button>
+                {readLoaded && activeDay && <button type="button" disabled={readBusy}
+                  onClick={() => void setDayRead(activeDay, activeUnread, true)}>
+                  {activeUnread ? "标为已读" : "标为未读"}
+                </button>}
                 {sections.length > 1 && <button type="button" onClick={() => {
                   if (contents.current) {
                     contents.current.open = true;
@@ -480,6 +580,8 @@ export function CompanyIdeas({ nav }: { nav?: ReactNode }) {
                 }}>目录</button>}
                 {source && <ClipForm key={source.id} day={activeDay} source={source} status={learnError} data={learning}
                   created={() => setLearnRevision(n=>n+1)}/>}
+                <a href="#canvas">无界知识画布 ↗</a>
+                <a href="#metabolism">简报清洗与 PM 自动立项 ↗</a>
               </div>
               {source && section && <p className="ci-reading-section">本次引用 · {section.title} <a href={href({day:activeDay})}>改用整篇</a></p>}
             </div>}

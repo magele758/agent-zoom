@@ -14,7 +14,7 @@ const demoEnabled = process.env.DEMO_MODE === "1";
 const store = openStore(dataPath, { demo: demoEnabled });
 const workflow = configureWorkflow(store.db, dataPath, port);
 const activityIndexEnabled = process.env.OPC_ACTIVITY_INDEX === "1";
-const { app, injectWebSocket, nudge, opportunities, homeRooms, activityIndex, delegations } = createApp(store, { workflow, activityIndexEnabled });
+const { app, injectWebSocket, nudge, opportunities, homeRooms, activityIndex, delegations, darkFactory, taskPlanning } = createApp(store, { workflow, activityIndexEnabled });
 
 store.hooks = {
   onInbox: poke,
@@ -48,6 +48,18 @@ syncRoomDiscussions();
 const reconcileDelegations = () => void delegations.tick().catch(error => console.error("委派回执核对", error));
 setInterval(reconcileDelegations, 5000).unref();
 reconcileDelegations();
+
+const drainDarkFactory = () => {
+  try { darkFactory.tickQueue(); }
+  catch (error) { console.error("暗工厂队列调度", error); }
+};
+setInterval(drainDarkFactory, 3000).unref();
+
+const patrolStaleTasks = () => {
+  try { taskPlanning.runPatrol({ notifyZoom: true }); }
+  catch (error) { console.error("后台巡检卫士", error); }
+};
+setInterval(patrolStaleTasks, 6 * 60 * 60 * 1000).unref();
 
 if (activityIndexEnabled) {
   const refresh = () => void activityIndex.sync().catch(() => console.error("仓库索引暂未刷新"));

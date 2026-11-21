@@ -1,13 +1,23 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
-import type { ManagedService, OperationsIndex, ServiceProbe } from "../operations-department-types.ts";
+import type { ManagedService, OperationsIndex, RichServiceProbe } from "../operations-department-types.ts";
 import { ApiError } from "./logic.ts";
+import { buildOperationsTopology, type FleetReaderOptions } from "./ops-fleet.ts";
 
 const label = z.string().trim().min(1).max(160);
 const note = z.string().trim().min(1).max(2000);
 const register = z.strictObject({
-  id: z.uuid(), name: label, scope: z.string().trim().max(321).default(""), version: z.string().trim().max(160).default(""),
+  id: z.uuid(),
+  name: label,
+  scope: z.string().trim().max(321).default(""),
+  version: z.string().trim().max(160).default(""),
+  host: z.string().trim().max(160).optional().default(""),
+  endpoint: z.string().trim().max(500).optional().default(""),
+});
+const deploymentPatch = z.strictObject({
+  host: z.string().trim().max(160).default(""),
+  endpoint: z.string().trim().max(500).default(""),
 });
 const event = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("observation"), health: z.enum(["healthy", "degraded", "outage"]), source: z.string().trim().min(1).max(1000), note }),
@@ -25,11 +35,21 @@ function read<T>(schema: z.ZodType<T>, input: unknown) {
 
 const conflict = (message: string) => new ApiError(409, "operations_conflict", message);
 
-type ServiceRow = Pick<ManagedService, "id" | "name" | "scope" | "version">;
+type ServiceRow = { id: string; name: string; scope: string; version: string; host?: string; endpoint?: string };
 type EventRow = { service: string; id: string; sequence: number; payload: string; at: string };
 
 function serviceView(row: ServiceRow): ManagedService {
-  return { ...row, revision: 0, observations: [], updates: [] };
+  return {
+    id: row.id,
+    name: row.name,
+    scope: row.scope,
+    version: row.version,
+    ...(row.host ? { host: row.host } : {}),
+    ...(row.endpoint ? { endpoint: row.endpoint } : {}),
+    revision: 0,
+    observations: [],
+    updates: [],
+  };
 }
 
 function apply(service: ManagedService, id: string, data: ServiceEvent, at: string) {
@@ -55,12 +75,16 @@ function apply(service: ManagedService, id: string, data: ServiceEvent, at: stri
 export class OperationsDepartmentStore {
   constructor(private db: DatabaseSync) {
     db.exec(`CREATE TABLE IF NOT EXISTS opc_ops_services(
-      id TEXT PRIMARY KEY, name TEXT NOT NULL, scope TEXT NOT NULL, version TEXT NOT NULL, UNIQUE(scope,name)
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, scope TEXT NOT NULL, version TEXT NOT NULL,
+      host TEXT NOT NULL DEFAULT '', endpoint TEXT NOT NULL DEFAULT '', UNIQUE(scope,name)
     );
     CREATE TABLE IF NOT EXISTS opc_ops_events(
       service TEXT NOT NULL REFERENCES opc_ops_services(id), id TEXT NOT NULL, sequence INTEGER NOT NULL,
       payload TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(service,id), UNIQUE(service,sequence)
     );`);
+    const cols = new Set(db.prepare("PRAGMA table_info(opc_ops_services)").all().map(c => String(c.name)));
+    if (!cols.has("host")) db.exec("ALTER TABLE opc_ops_services ADD COLUMN host TEXT NOT NULL DEFAULT ''");
+    if (!cols.has("endpoint")) db.exec("ALTER TABLE opc_ops_services ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''");
   }
 
   private scopes(): string[] {
@@ -91,13 +115,21 @@ export class OperationsDepartmentStore {
   create(input: unknown) {
     const data = read(register, input);
     if (data.scope && !this.scopes().includes(data.scope)) throw new ApiError(400, "operations_scope", "请从目录选择所属产品或项目。");
-    this.db.prepare("INSERT INTO opc_ops_services(id,name,scope,version) VALUES(?,?,?,?) ON CONFLICT DO NOTHING")
-      .run(data.id, data.name, data.scope, data.version);
-    const saved = this.db.prepare("SELECT * FROM opc_ops_services WHERE id=?").get(data.id);
-    if (!saved || saved.name !== data.name || saved.scope !== data.scope || saved.version !== data.version) {
+    this.db.prepare("INSERT INTO opc_ops_services(id,name,scope,version,host,endpoint) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING")
+      .run(data.id, data.name, data.scope, data.version, data.host, data.endpoint);
+    const saved = this.db.prepare("SELECT * FROM opc_ops_services WHERE id=?").get(data.id) as ServiceRow | undefined;
+    if (!saved || saved.name !== data.name || saved.scope !== data.scope || saved.version !== data.version ||
+        (saved.host ?? "") !== data.host || (saved.endpoint ?? "") !== data.endpoint) {
       throw conflict("该范围内的服务或这条登记记录已存在，请核对后重试。");
     }
     return this.service(data.id);
+  }
+
+  updateDeployment(id: string, input: unknown) {
+    const data = read(deploymentPatch, input);
+    const updated = this.db.prepare("UPDATE opc_ops_services SET host=?, endpoint=? WHERE id=?").run(data.host, data.endpoint, id);
+    if (!updated.changes) throw new ApiError(404, "operations_service_missing", "找不到这项服务。");
+    return this.service(id);
   }
 
   append(id: string, input: unknown) {
@@ -126,10 +158,12 @@ export class OperationsDepartmentStore {
 
 export function registerOperationsDepartmentRoutes(
   app: Hono, db: DatabaseSync, user: (c: Context) => unknown,
-  readHealth: () => Promise<ServiceProbe[]> = async () => [],
+  readHealth: () => Promise<RichServiceProbe[]> = async () => [],
+  fleetOptions: FleetReaderOptions = {},
 ) {
   const store = new OperationsDepartmentStore(db);
   const path = "/api/opc/departments/operations";
+  const preview = process.env.KUNLUN_PREVIEW === "1" || process.env.DEMO_MODE === "1";
   app.use(path + "/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
     user(c);
@@ -140,6 +174,16 @@ export function registerOperationsDepartmentRoutes(
     const services = (await readHealth()).map(({ id, name, healthy, latencyMs }) => ({ id, name, healthy, latencyMs }));
     return c.json({ checkedAt: new Date().toISOString(), services });
   });
+  app.get(path + "/topology", async c => {
+    const probes = await readHealth();
+    const topology = await buildOperationsTopology(store.index().services, probes, {
+      selfPort: Number(process.env.PORT ?? 0) || undefined,
+      disableHostProbes: preview,
+      ...fleetOptions,
+    });
+    return c.json(topology);
+  });
   app.post(path + "/services", async c => c.json(store.create(await c.req.json())));
+  app.patch(`${path}/services/:id/deployment`, async c => c.json(store.updateDeployment(c.req.param("id"), await c.req.json())));
   app.post(`${path}/services/:id/events`, async c => c.json(store.append(c.req.param("id"), await c.req.json())));
 }

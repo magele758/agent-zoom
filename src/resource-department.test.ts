@@ -185,3 +185,69 @@ setTimeout(() => {
   }
   assert.equal(readFileSync(join(directory, "calls"), "utf8"), callsBefore);
 });
+
+test("实时采集暂不可用时自动回退 quota_snapshots 未过期窗口，推导月账期并脱敏归类诊断码", t => {
+  const dir = mkdtempSync(join(tmpdir(), "opc-hub-fallback-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "hub.db");
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE quota_snapshots(
+      tool TEXT, window TEXT, snapshot_at REAL, collected_at REAL, kind TEXT,
+      used_pct REAL, resets_at REAL, window_minutes INTEGER, plan TEXT, status TEXT, source TEXT, extra TEXT
+    );
+    CREATE TABLE sessions(agent TEXT, day TEXT, tokens INTEGER);
+    CREATE TABLE cost_daily(day TEXT, tool TEXT, calls INTEGER);
+    CREATE TABLE cost_platform_snapshots(tool TEXT, snapshot_at REAL, metric TEXT, value_usd REAL);
+  `);
+  const nowSec = Math.floor(Date.parse("2026-11-21T03:00:00Z") / 1000);
+  db.prepare("INSERT INTO meta VALUES(?,?)").run("cost_meta", JSON.stringify({
+    plans: [
+      { tool: "cursor", plan: "Cursor Ultra", monthly_usd: 200, paid: true },
+      { tool: "antigravity", plan: "Google AI Pro", monthly_usd: 19.99, paid: true },
+    ],
+  }));
+  db.prepare("INSERT INTO meta VALUES(?,?)").run("quota_latest", JSON.stringify({
+    generated_at: nowSec,
+    tools: [
+      { tool: "cursor", name: "Cursor", plan: "ultra", status: "error", reason: "usage-summary HTTP 401 secret-cookie-value", windows: [] },
+      { tool: "antigravity", name: "Antigravity", status: "unavailable", reason: "language_server offline secret-path", windows: [] },
+    ],
+  }));
+
+  const ins = db.prepare("INSERT INTO quota_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?)");
+  // Antigravity: 1 unexpired weekly window + 1 expired 5h window
+  ins.run("antigravity", "Gemini 周", nowSec - 7200, nowSec - 7200, "weekly", 12.01, nowSec + 5 * 86400, 10080, "Google AI Ultra", "ok", "ls", null);
+  ins.run("antigravity", "Gemini 5h", nowSec - 7200, nowSec - 7200, "5h", 4.5, nowSec - 600, 300, "Google AI Ultra", "ok", "ls", null);
+  // Cursor: last snapshot cycle ended 2 days ago (2026-11-19) -> should infer next monthly cycle 2026-12-19
+  const prevCycleEnd = Math.floor(Date.parse("2026-11-19T02:19:53Z") / 1000);
+  ins.run("cursor", "Auto / Cursor 模型池", prevCycleEnd - 20 * 86400, prevCycleEnd - 20 * 86400, "monthly", 45.1, prevCycleEnd, null, "ultra", "ok", "api", null);
+
+  db.prepare("INSERT INTO sessions VALUES(?,?,?)").run("antigravity", "2026-11-20", 2500000);
+  db.prepare("INSERT INTO cost_daily VALUES(?,?,?)").run("2026-11-20", "antigravity", 120);
+  db.prepare("INSERT INTO cost_daily VALUES(?,?,?)").run("2026-11-20", "cursor", 0);
+  db.prepare("INSERT INTO cost_platform_snapshots VALUES(?,?,?,?)").run("cursor", prevCycleEnd - 86400, "usage_total", 1361.55);
+
+  const hub = readHubResources(file, nowSec * 1000);
+  assert.doesNotMatch(JSON.stringify(hub), /secret-cookie-value|secret-path/);
+  const cursor = hub.tools.find(item => item.tool === "cursor")!;
+  const agy = hub.tools.find(item => item.tool === "antigravity")!;
+
+  assert.equal(cursor.diagnostic, "auth_expired");
+  assert.deepEqual(cursor.windows, []);
+  assert.equal(cursor.usage?.monthlyUsd, 200);
+  assert.equal(cursor.usage?.cycleCalls, 0);
+  assert.equal(cursor.usage?.lastCycleUsedUsd, 1361.55);
+  assert.ok(cursor.usage?.cycleResetAt?.startsWith("2026-12-19"));
+
+  assert.equal(agy.plan, "Google AI Ultra");
+  assert.equal(agy.fromHistory, true);
+  assert.equal(agy.diagnostic, "local_server_offline");
+  assert.equal(agy.windows.length, 1);
+  assert.equal(agy.windows[0].name, "Gemini 周");
+  assert.equal(agy.windows[0].reportedRemaining, 87.99);
+  assert.equal(agy.usage?.sessions7d, 1);
+  assert.equal(agy.usage?.calls7d, 120);
+});

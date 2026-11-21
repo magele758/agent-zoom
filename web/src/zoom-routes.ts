@@ -1,4 +1,5 @@
 import { productStages, type ProductStageId } from "../../src/product-stages";
+import type { ZoomMessage } from "../../src/zoom-types";
 
 export const companyDepartments = [
   { page: "commercial", name: "商业与治理部", icon: "growth", description: "统筹 7 层资产地图、1 号变现试点、收银离线授权、门面合规与 DuckDB 漏斗。" },
@@ -10,15 +11,52 @@ export type DepartmentPage = typeof companyDepartments[number]["page"];
 
 export type InboxFilter = "all" | "pending" | "handled";
 export type StageFilter = ProductStageId | "unfiled" | "";
+
+export function chatRoomLink({ room, project, idea, draft }: {
+  room?: string; project?: string; idea?: string; draft?: string;
+} = {}) {
+  const query = new URLSearchParams();
+  if (room) query.set("room", room);
+  if (project) query.set("project", project);
+  if (idea) query.set("idea", idea);
+  if (draft) query.set("draft", draft);
+  return "#home-room" + (query.size ? "?" + query : "");
+}
+
+export function stageLink(step?: ProductStageId | "unfiled" | "", folder?: string) {
+  if (!step || step === "unfiled") return folder ? "#projects?" + new URLSearchParams({ product: folder.split("/")[0] }) : "#product";
+  const query = new URLSearchParams({ step });
+  if (folder) {
+    const [product, ...rest] = folder.split("/");
+    if (product) query.set("product", product);
+    if (rest.length) query.set("project", rest.join("/"));
+  }
+  return "#stage?" + query;
+}
+
+export function decisionTarget(item: ZoomMessage): string {
+  if (item.origin === "workflow") return "#workflows/" + encodeURIComponent(item.taskId);
+  if (item.businessTrial) {
+    return "#business-lines?" + new URLSearchParams({ line: item.businessTrial.lineId, trial: item.businessTrial.trialId });
+  }
+  if (item.capabilityRequest) {
+    return "#capabilities?" + new URLSearchParams({ request: item.capabilityRequest.id });
+  }
+  if (item.roomBinding) return "#home-room?" + new URLSearchParams({ binding: item.roomBinding });
+  if (item.repository) return "#activity-index?" + new URLSearchParams({ view: "repos", repo: item.repository.fullName });
+  if (item.stage) return stageLink(item.stage, item.folder);
+  if (item.origin === "channel") return "#channels";
+  return chatRoomLink({ project: item.folder || undefined });
+}
+
 export function inboxLink({ filter = "all", folder, stage, message }: {
   filter?: InboxFilter; folder?: string; stage?: StageFilter; message?: string;
 } = {}) {
-  const query = new URLSearchParams();
-  if (filter !== "all") query.set("filter", filter);
-  if (folder) query.set("folder", folder);
-  if (stage) query.set("stage", stage);
-  if (message) query.set("message", message);
-  return "#inbox" + (query.size ? "?" + query : "");
+  if (stage && stage !== "unfiled") return stageLink(stage, folder);
+  if (folder) return chatRoomLink({ project: folder });
+  if (message) return chatRoomLink();
+  if (filter === "pending") return "#workflows";
+  return "#home-room";
 }
 
 export function inboxScope(hash: string) {

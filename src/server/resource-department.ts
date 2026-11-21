@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
-import { currentReading, type CollectionReceipt, type ManualPlan, type ResourceDepartmentIndex } from "../resource-department-types.ts";
+import {
+  currentReading,
+  type CollectionReceipt,
+  type HubDiagnostic,
+  type HubToolUsage,
+  type ManualPlan,
+  type ResourceDepartmentIndex,
+} from "../resource-department-types.ts";
 import { ApiError } from "./logic.ts";
 
 const instant = z.iso.datetime({ offset: true }).transform(value => new Date(value).toISOString());
@@ -38,6 +45,7 @@ const hubSnapshot = z.object({
   generated_at: z.number(),
   tools: z.array(z.object({
     tool: z.string(), name: z.string(), plan: z.string().nullish(), status: z.string(),
+    reason: z.string().nullish(),
     snapshot_at: z.number().nullish(), live: z.boolean().optional(), windows: z.array(hubWindow), extra: hubCreditFields,
   })),
 });
@@ -75,31 +83,204 @@ function hubJson(db: DatabaseSync, query: string) {
   } catch { return null; }
 }
 
-export function readHubResources(path: string): ResourceDepartmentIndex["hub"] {
+function classifyDiagnostic(status: string, reason: string | null | undefined): HubDiagnostic | undefined {
+  if (status === "error") {
+    if (reason && /\b(?:401|403)\b|unauthorized/i.test(reason)) return "auth_expired";
+    return "quota_error";
+  }
+  if (status === "unavailable" && reason && /language.?server/i.test(reason)) {
+    return "local_server_offline";
+  }
+  return undefined;
+}
+
+function advanceMonthlyCycle(resetSec: number, nowMs: number): { startIso: string; resetIso: string } | null {
+  const base = new Date(resetSec * 1000);
+  if (!Number.isFinite(base.getTime())) return null;
+  const next = new Date(base.getTime());
+  let guard = 0;
+  while (next.getTime() <= nowMs && guard < 48) {
+    next.setMonth(next.getMonth() + 1);
+    guard++;
+  }
+  if (next.getTime() <= nowMs) return null;
+  const prev = new Date(next.getTime());
+  prev.setMonth(prev.getMonth() - 1);
+  return { startIso: prev.toISOString(), resetIso: next.toISOString() };
+}
+
+const SESSION_AGENTS: Record<string, string[]> = {
+  cursor: ["cursor", "cursor-cloud", "cursor-agent"],
+  antigravity: ["antigravity", "antigravity-cli"],
+  codex: ["codex"],
+  "grok-build": ["grok-build"],
+  claude: ["claude-code", "claude-desktop"],
+};
+
+function hasTable(db: DatabaseSync, name: string): boolean {
+  try {
+    return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+  } catch {
+    return false;
+  }
+}
+
+function readHistoricalWindows(db: DatabaseSync, toolId: string, nowMs: number) {
+  if (!hasTable(db, "quota_snapshots")) return null;
+  try {
+    const rows = db.prepare(`
+      SELECT window, snapshot_at, used_pct, resets_at, plan
+      FROM quota_snapshots
+      WHERE tool = ? AND status = 'ok'
+        AND snapshot_at = (SELECT MAX(snapshot_at) FROM quota_snapshots WHERE tool = ? AND status = 'ok')
+      ORDER BY rowid
+    `).all(toolId, toolId) as Array<{
+      window: string;
+      snapshot_at: number | null;
+      used_pct: number | null;
+      resets_at: number | null;
+      plan: string | null;
+    }>;
+    if (!rows.length) return null;
+    const plan = typeof rows[0].plan === "string" && rows[0].plan.length <= 48 ? rows[0].plan : null;
+    const active = rows.filter(r =>
+      typeof r.used_pct === "number" && r.used_pct >= 0 && r.used_pct <= 100 &&
+      (r.resets_at == null || r.resets_at * 1000 > nowMs)
+    );
+    const latestReset = rows.reduce<number | null>((acc, r) =>
+      typeof r.resets_at === "number" && r.resets_at > 0 && (acc === null || r.resets_at > acc) ? r.resets_at : acc, null);
+    return {
+      plan,
+      windows: active.map(r => ({
+        name: r.window,
+        live: false,
+        reportedRemaining: Math.round((100 - (r.used_pct as number)) * 100) / 100,
+        observedAt: isoTime(r.snapshot_at),
+        resetsAt: isoTime(r.resets_at),
+      })),
+      cycle: active.length === 0 && latestReset ? advanceMonthlyCycle(latestReset, nowMs) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readToolUsage(
+  db: DatabaseSync,
+  toolId: string,
+  nowMs: number,
+  monthlyUsd: number | null,
+  cycle: { startIso: string; resetIso: string } | null,
+): HubToolUsage | undefined {
+  const hasSessions = hasTable(db, "sessions");
+  const hasCostDaily = hasTable(db, "cost_daily");
+  const hasPlatform = hasTable(db, "cost_platform_snapshots");
+  if (!hasSessions && !hasCostDaily && !hasPlatform) return undefined;
+
+  const sevenDaysAgo = new Date(nowMs - 7 * 86400 * 1000).toISOString().slice(0, 10);
+  let sessions7d = 0;
+  let tokens7d = 0;
+  let calls7d = 0;
+  let cycleCalls: number | null = null;
+  let lastCycleUsedUsd: number | null = null;
+
+  const agents = SESSION_AGENTS[toolId] ?? [toolId];
+  if (hasSessions && agents.length) {
+    try {
+      const placeholders = agents.map(() => "?").join(",");
+      const row = db.prepare(
+        `SELECT COUNT(*) AS cnt, COALESCE(SUM(tokens), 0) AS tok FROM sessions WHERE agent IN (${placeholders}) AND day >= ?`
+      ).get(...agents, sevenDaysAgo) as { cnt?: number; tok?: number } | undefined;
+      sessions7d = Number(row?.cnt ?? 0);
+      tokens7d = Number(row?.tok ?? 0);
+    } catch { /* ignore */ }
+  }
+
+  if (hasCostDaily) {
+    try {
+      const row = db.prepare(
+        `SELECT COALESCE(SUM(calls), 0) AS calls FROM cost_daily WHERE tool = ? AND day >= ?`
+      ).get(toolId, sevenDaysAgo) as { calls?: number } | undefined;
+      calls7d = Number(row?.calls ?? 0);
+      if (cycle) {
+        const cycleDay = cycle.startIso.slice(0, 10);
+        const cRow = db.prepare(
+          `SELECT COALESCE(SUM(calls), 0) AS calls FROM cost_daily WHERE tool = ? AND day >= ?`
+        ).get(toolId, cycleDay) as { calls?: number } | undefined;
+        cycleCalls = Number(cRow?.calls ?? 0);
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (hasPlatform) {
+    try {
+      const pRow = db.prepare(
+        `SELECT value_usd FROM cost_platform_snapshots WHERE tool = ? AND metric = 'usage_total' ORDER BY snapshot_at DESC LIMIT 1`
+      ).get(toolId) as { value_usd?: number } | undefined;
+      if (typeof pRow?.value_usd === "number" && Number.isFinite(pRow.value_usd)) {
+        lastCycleUsedUsd = Math.round(pRow.value_usd * 100) / 100;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return {
+    sessions7d,
+    calls7d,
+    tokens7d,
+    cycleCalls,
+    cycleStartAt: cycle?.startIso ?? null,
+    cycleResetAt: cycle?.resetIso ?? null,
+    monthlyUsd,
+    lastCycleUsedUsd,
+  };
+}
+
+export function readHubResources(path: string, nowMs = Date.now()): ResourceDepartmentIndex["hub"] {
   const hub: ResourceDepartmentIndex["hub"] = { generatedAt: null, tools: [], fees: [], feesAvailable: false };
   let db: DatabaseSync;
   try { db = new DatabaseSync(path, { readOnly: true }); }
   catch { return hub; }
   try {
-    const quota = hubSnapshot.safeParse(hubJson(db, "SELECT v AS value FROM meta WHERE k='quota_latest'"));
-    if (quota.success) {
-      hub.generatedAt = isoTime(quota.data.generated_at);
-      hub.tools = quota.data.tools.map(tool => ({
-        tool: tool.tool, name: tool.name, plan: tool.plan ?? null, applicable: tool.status !== "not_applicable",
-        balances: explicitBalances(tool),
-        windows: (tool.status === "ok" || tool.status === "fallback_log" ? tool.windows : []).map(window => ({
-          name: window.name, live: tool.live === true, reportedRemaining: window.remaining_pct ?? null,
-          resetsAt: isoTime(window.resets_at), observedAt: isoTime(tool.snapshot_at),
-        })),
-      }));
-    }
+    const feeMap = new Map<string, { plan: string; monthlyUsd: number | null }>();
     const fees = feeList.safeParse(hubJson(db, "SELECT json_extract(v,'$.plans') AS value FROM meta WHERE k='cost_meta'"));
     if (fees.success) {
       hub.feesAvailable = true;
-      hub.fees = fees.data.map(fee => ({
-        tool: fee.tool, plan: fee.plan, monthlyUsd: fee.monthly_usd ?? null, paid: fee.paid !== false,
-        checked: fee.checked ?? null, since: fee.since ?? null, until: fee.until ?? null,
-      }));
+      hub.fees = fees.data.map(fee => {
+        feeMap.set(fee.tool, { plan: fee.plan, monthlyUsd: fee.monthly_usd ?? null });
+        return {
+          tool: fee.tool, plan: fee.plan, monthlyUsd: fee.monthly_usd ?? null, paid: fee.paid !== false,
+          checked: fee.checked ?? null, since: fee.since ?? null, until: fee.until ?? null,
+        };
+      });
+    }
+    const quota = hubSnapshot.safeParse(hubJson(db, "SELECT v AS value FROM meta WHERE k='quota_latest'"));
+    if (quota.success) {
+      hub.generatedAt = isoTime(quota.data.generated_at);
+      hub.tools = quota.data.tools.map(tool => {
+        const applicable = tool.status !== "not_applicable";
+        const directWindows = (tool.status === "ok" || tool.status === "fallback_log" ? tool.windows : []).map(window => ({
+          name: window.name, live: tool.live === true, reportedRemaining: window.remaining_pct ?? null,
+          resetsAt: isoTime(window.resets_at), observedAt: isoTime(tool.snapshot_at),
+        }));
+        const fallback = applicable && directWindows.length === 0 ? readHistoricalWindows(db, tool.tool, nowMs) : null;
+        const windows = directWindows.length > 0 ? directWindows : (fallback?.windows ?? []);
+        const fromHistory = directWindows.length === 0 && windows.length > 0;
+        const feeInfo = feeMap.get(tool.tool);
+        const plan = tool.plan ?? fallback?.plan ?? (applicable ? feeInfo?.plan ?? null : null);
+        const diagnostic = classifyDiagnostic(tool.status, tool.reason);
+        const usage = applicable ? readToolUsage(db, tool.tool, nowMs, feeInfo?.monthlyUsd ?? null, fallback?.cycle ?? null) : undefined;
+        return {
+          tool: tool.tool,
+          name: tool.name,
+          plan,
+          applicable,
+          balances: explicitBalances(tool),
+          windows,
+          ...(fromHistory ? { fromHistory: true } : {}),
+          ...(diagnostic ? { diagnostic } : {}),
+          ...(usage ? { usage } : {}),
+        };
+      });
     }
     return hub;
   } finally { db.close(); }

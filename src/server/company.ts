@@ -16,7 +16,8 @@ export function initCompany(db: DatabaseSync) {
     CREATE TABLE IF NOT EXISTS company_idea_products(idea TEXT NOT NULL REFERENCES company_notes(id), product TEXT NOT NULL REFERENCES projects(name), PRIMARY KEY(idea,product));
     CREATE TABLE IF NOT EXISTS company_projects(product TEXT NOT NULL REFERENCES projects(name), name TEXT NOT NULL, PRIMARY KEY(product,name));
     CREATE TABLE IF NOT EXISTS company_project_repos(product TEXT NOT NULL, name TEXT NOT NULL, repo TEXT NOT NULL COLLATE NOCASE REFERENCES project_repositories(full_name), PRIMARY KEY(product,name,repo), FOREIGN KEY(product,name) REFERENCES company_projects(product,name));
-    CREATE TABLE IF NOT EXISTS company_idea_referrals(idea TEXT NOT NULL, product TEXT NOT NULL, name TEXT NOT NULL, opportunity_id TEXT NOT NULL REFERENCES opc_opportunities(id), PRIMARY KEY(idea,product,name), FOREIGN KEY(idea,product) REFERENCES company_idea_products(idea,product), FOREIGN KEY(product,name) REFERENCES company_projects(product,name));`);
+    CREATE TABLE IF NOT EXISTS company_idea_referrals(idea TEXT NOT NULL, product TEXT NOT NULL, name TEXT NOT NULL, opportunity_id TEXT NOT NULL REFERENCES opc_opportunities(id), PRIMARY KEY(idea,product,name), FOREIGN KEY(idea,product) REFERENCES company_idea_products(idea,product), FOREIGN KEY(product,name) REFERENCES company_projects(product,name));
+    CREATE TABLE IF NOT EXISTS company_journal_reads(user_id TEXT NOT NULL, day TEXT NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY(user_id,day));`);
   const missing = db.prepare('SELECT project,full_name FROM project_repositories r WHERE NOT EXISTS(SELECT 1 FROM company_project_repos p WHERE p.repo=r.full_name)').all();
   for (const row of missing) linkImportedRepo(db, String(row.project), String(row.full_name));
 }
@@ -30,8 +31,15 @@ export function linkImportedRepo(db: DatabaseSync, product: string, repo: string
   db.prepare('INSERT OR IGNORE INTO company_project_repos(product,name,repo) VALUES(?,?,?)').run(product,name,repo);
 }
 const segment = zoomFolder.refine(s => !s.includes('/') && s.length<=160, '请使用单一名称');
+const journalDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '请选择有效日期');
+const journalReadSchema = z.strictObject({ read: z.boolean() });
+const journalReadAllSchema = z.strictObject({ days: z.array(journalDaySchema).max(2000) });
+const actorId = (value: unknown) =>
+  typeof value === 'object' && value !== null && 'id' in value && typeof (value as { id: unknown }).id === 'string'
+    ? (value as { id: string }).id
+    : 'local';
 const noteSchema = z.strictObject({ id:z.uuid(), title:z.string().trim().min(1).max(180).optional(), body:z.string().trim().max(5000).default(''), reference:z.string().trim().max(1500).default(''), sources:z.array(z.uuid()).max(64).default([]), products:z.array(segment).max(64).default([]) });
-const ideaTarget = z.strictObject({product:segment, name:segment});
+const ideaTarget = z.strictObject({product:segment, name:segment, pipeline:z.enum(["quick", "full-product"]).optional()});
 const projectSchema = z.strictObject({product:segment,name:segment,repos:z.array(z.string().max(255)).max(50).default([])});
 function parse<T>(schema:z.ZodType<T>, input:unknown) { const r=schema.safeParse(input); if (!r.success) throw new ApiError(400,'company_input',r.error.issues.map(x=>x.path.join('.')+' '+x.message).join(' / ')); return r.data; }
 function demand(ok:unknown,message:string) { if (!ok) throw new ApiError(409,'company_scope',message); }
@@ -45,7 +53,32 @@ export function validateStageScope(db:DatabaseSync, scope:{stage:ProductStageId;
   demand(!scope.companyItemId&&scope.product&&scope.project&&db.prepare('SELECT 1 FROM company_projects WHERE product=? AND name=?').get(scope.product,scope.project),'请先选择该产品下已登记的项目');
 }
 export class CompanyStore {
-  constructor(private db:DatabaseSync) {}
+  constructor(private db:DatabaseSync) {
+    db.exec('CREATE TABLE IF NOT EXISTS company_journal_reads(user_id TEXT NOT NULL, day TEXT NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY(user_id,day))');
+  }
+  readDays(userId: string): string[] {
+    return this.db.prepare('SELECT day FROM company_journal_reads WHERE user_id=? ORDER BY day DESC').all(userId).map(r => String(r.day));
+  }
+  setJournalRead(userId: string, rawDay: string, input: unknown) {
+    const day = parse(journalDaySchema, rawDay);
+    const { read } = parse(journalReadSchema, input);
+    if (read) {
+      this.db.prepare('INSERT INTO company_journal_reads(user_id,day,read_at) VALUES(?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET read_at=excluded.read_at')
+        .run(userId, day, new Date().toISOString());
+    } else {
+      this.db.prepare('DELETE FROM company_journal_reads WHERE user_id=? AND day=?').run(userId, day);
+    }
+    return { day, read, readDays: this.readDays(userId) };
+  }
+  markJournalDaysRead(userId: string, input: unknown) {
+    const { days } = parse(journalReadAllSchema, input);
+    const now = new Date().toISOString();
+    return atom(this.db, () => {
+      const stmt = this.db.prepare('INSERT OR IGNORE INTO company_journal_reads(user_id,day,read_at) VALUES(?,?,?)');
+      for (const day of days) stmt.run(userId, day, now);
+      return { readDays: this.readDays(userId) };
+    });
+  }
   refer(ideaId: string, input: unknown, opportunities: OpportunityStore) {
     const target = parse(ideaTarget, input);
     return atom(this.db, () => {
@@ -62,7 +95,7 @@ export class CompanyStore {
       const key = path.length <= 256 && (bound(path) || !singleRepo || !bound(singleRepo)) ? path : singleRepo || 'opc-project/' + digest;
       const notes = index.information.filter(note => idea.sources.includes(note.id));
       const result = opportunities.addFromRecord({
-        kind:'feature', project:key, sourceId:'company-idea/' + ideaId + '/' + digest, title:idea.title,
+        kind:'feature', pipeline:target.pipeline ?? 'quick', project:key, sourceId:'company-idea/' + ideaId + '/' + digest, title:idea.title,
         rationale:(idea.body || idea.title).slice(0,1000),
         evidence:['#ideas?idea=' + ideaId, ('关联项目 ' + path).slice(0,360),
           ...notes.slice(0,3).flatMap(note => [note.reference.slice(0,360),note.body.slice(0,360)]).filter(Boolean)],
@@ -115,8 +148,10 @@ export class CompanyStore {
 export function addCompanyRoutes(app:Hono,db:DatabaseSync,token:string|undefined,user:(c:Context)=>unknown,opportunities:OpportunityStore){
   const {permits}=submitAuth(token);const company=new CompanyStore(db);
   app.use('/api/zoom/company/*',async(c,next)=>{if(!permits(c))user(c);await next();});
-  app.get('/api/zoom/company/journal',async c=>{user(c);return c.json(await listJournalDays(journalRoot()));});
+  app.get('/api/zoom/company/journal',async c=>{const u=user(c);const listed=await listJournalDays(journalRoot());return c.json({...listed,readDays:company.readDays(actorId(u))});});
+  app.post('/api/zoom/company/journal/read-all',async c=>{const u=user(c);return c.json(company.markJournalDaysRead(actorId(u),await c.req.json()));});
   app.get('/api/zoom/company/journal/:day',async c=>{user(c);return c.json(await readJournalDay(journalRoot(),c.req.param('day')));});
+  app.put('/api/zoom/company/journal/:day/read',async c=>{const u=user(c);return c.json(company.setJournalRead(actorId(u),c.req.param('day'),await c.req.json()));});
   app.get('/api/zoom/company',c=>{if(!permits(c))user(c);return c.json(company.index());});
   app.post('/api/zoom/company/information',async c=>c.json(company.addNote('research',await c.req.json())));
   app.post('/api/zoom/company/ideas',async c=>c.json(company.addNote('idea',await c.req.json())));

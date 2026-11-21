@@ -2,7 +2,7 @@ import { MessageDelegate } from "./Delegation";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { CapabilityIndex as RepoCapabilityIndex } from "../../src/repo-capabilities-types";
 import { request } from "./api";
-import { inboxLink } from "./zoom-routes";
+import { chatRoomLink } from "./zoom-routes";
 import "./repository-capabilities.css";
 
 type Project = RepoCapabilityIndex["projects"][number];
@@ -362,13 +362,13 @@ function RequestForm({
         )}
         <p>
           {gap
-            ? "提交后到 Zoom 审批。批准后需求进入维护项目的研发候选，工程计划单独确认。"
+            ? "提交后可在本页直接审批，同时提醒已绑定的 Agent Home 群聊。批准后需求进入维护项目的研发候选，工程计划单独确认。"
             : previous
               ? "保存后消费方按当前接口集成。原需求、审批反馈和本次采用将保存在同一条记录。"
               : "保存后可按版本追溯这次采用。跨项目复用也会写入消费项目档案。"}
         </p>
         <button className="rc-primary" type="submit">
-          {gap ? "提交到 Zoom 审批" : "记录版本复用"}
+          {gap ? "提交维护需求审批" : "记录版本复用"}
         </button>
         <button type="button" onClick={cancel}>
           取消
@@ -490,6 +490,14 @@ function RequestDetail({
           )}
         </p>
       )}
+      {record.status === "pending" && record.questionId && (
+        <CapabilityDecision
+          requestId={record.id}
+          revision={record.revision}
+          questionId={record.questionId}
+          onSaved={onSaved}
+        />
+      )}
       <div className="rc-actions">
         {gapToConfirm && record.sourceOpportunityId && (
           <a
@@ -503,11 +511,14 @@ function RequestDetail({
           </a>
         )}
         {record.questionId && <MessageDelegate messageId={record.questionId} personal/>}
-        {record.questionId && (
-          <a className="rc-primary" href={inboxLink({ message: record.questionId })}>
-            {record.status === "pending" ? "在 Zoom 审批" : "查看 Zoom 回执"} · r{record.revision} ↗
-          </a>
-        )}
+        <a
+          href={chatRoomLink({
+            project: cap.product + "/" + cap.project,
+            draft: `讨论开源能力维护需求「${record.title}」\n使用方：${record.product}/${record.project} · 维护仓：${cap.repo}\n直达审批：#capabilities?request=${record.id}`,
+          })}
+        >
+          到群聊讨论 ↗
+        </a>
         {record.sourceOpportunityId && (
           <a href={"#opportunities?" + new URLSearchParams({ item: record.sourceOpportunityId })}>
             返回使用方的原候选 ↗
@@ -870,11 +881,13 @@ export function CapabilityDecision({
   revision,
   questionId,
   onChanged,
+  onSaved,
 }: {
   requestId: string;
   revision: number;
   questionId: string;
-  onChanged: (status: string) => Promise<void>;
+  onChanged?: (status: string) => Promise<void>;
+  onSaved?: (record: Adoption) => void;
 }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false),
@@ -896,7 +909,8 @@ export function CapabilityDecision({
         action,
         note: note.trim(),
       });
-      await onChanged(statusName[saved.status] + " · r" + saved.revision);
+      onSaved?.(saved);
+      if (onChanged) await onChanged(statusName[saved.status] + " · r" + saved.revision);
     } catch (err) {
       setError(errorMessage(err));
     } finally {

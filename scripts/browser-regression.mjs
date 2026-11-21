@@ -44,7 +44,7 @@ try {
     return expiredRequests === 1 ? route.fulfill({ status: 401, json: { message: '会话已结束' } }) : route.continue();
   });
   await missingInbox.goto(base + '/#inbox');
-  await expect(missingInbox.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
+  await expect(missingInbox.getByRole('heading', { name: 'Agent Home 群聊', exact: true })).toBeVisible();
   await expect.poll(() => expiredRequests).toBeGreaterThanOrEqual(2);
   await expect(missingInbox.getByTestId('name-input')).toHaveCount(0);
   await expect(missingInbox).toHaveURL(/#inbox$/);

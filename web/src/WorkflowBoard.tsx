@@ -1,8 +1,10 @@
 import { MessageDelegate } from "./Delegation";
 import type { ZoomMessage } from "../../src/zoom-types";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { RoleBotCoordinateResult } from "../../src/role-bots-types";
 import type { DecisionAction, WorkflowAttempt, WorkflowCard, WorkflowDetail, WorkflowSummary } from "../../src/workflow-types";
-import { api, type BoardMark, type BoardMarkAction } from "./api";
+import { api, request, type BoardMark, type BoardMarkAction } from "./api";
+import { chatRoomLink } from "./zoom-routes";
 import "./workflow-paper.css";
 
 const phases = { planning: "计划", execution: "执行", review: "评审", acceptance: "验收", complete: "完成" };
@@ -115,6 +117,9 @@ export function WorkflowBoard({ runId, id = runId ?? "", nav }: { runId?: string
     {!ready ? <>{!error && <p role="status">正在读取工作流…</p>}</> : id ? <>
       {detail && <RunDetail key={id} run={detail} onChanged={updateRun} />}
     </> : <>
+      <p className="wf-how-banner">
+        <strong>工作流决策怎么用：</strong>当数字员工把复杂任务拆成多步计划（实现 → 独立评审 → 验收）后，会停在「待人工决定」等你拍板；点击卡片即可查看具体步骤并选择<strong>批准开工</strong>、<strong>要求修改</strong>或<strong>关闭归档</strong>。
+      </p>
       <nav className="workflow-filters" aria-label="任务视图">
         <button type="button" aria-pressed={!archive} onClick={() => setArchive(false)}>看板 · {data.runs.length - archived.length}</button>
         <button type="button" aria-pressed={archive} onClick={() => setArchive(true)}>已归档 · {archived.length}</button>
@@ -155,6 +160,72 @@ function runnerFor(run: WorkflowDetail, node: WorkflowDetail["revisions"][number
   return selected ? selected.label + " · " + selected.id : node.capability;
 }
 
+function isVisualArtifact(name: string, content: string) {
+  return /\.(?:html?|svg)$/i.test(name.trim()) || /^\s*(?:<!doctype\s+html|<html|<svg)/i.test(content);
+}
+
+function ArtifactPreview({ artifact }: { artifact: { name: string; content: string } }) {
+  const visual = isVisualArtifact(artifact.name, artifact.content);
+  const [showSource, setShowSource] = useState(false);
+  return <div className="wf-artifact">
+    <div className="wf-artifact-head">
+      <strong>{artifact.name}</strong>
+      {visual && <button type="button" className="wf-artifact-toggle" onClick={() => setShowSource(v => !v)}>
+        {showSource ? "切换可视化预览" : "查看源码"}
+      </button>}
+    </div>
+    {visual && !showSource ? (
+      <iframe
+        className="wf-visual-frame"
+        sandbox=""
+        title={`视觉设计稿预览 · ${artifact.name}`}
+        srcDoc={artifact.content}
+      />
+    ) : (
+      <pre>{artifact.content}</pre>
+    )}
+  </div>;
+}
+
+function PmBotCoordinator({ run, stageLabel }: { run: WorkflowDetail; stageLabel: string }) {
+  const [busy, setBusy] = useState(false);
+  const [receipt, setReceipt] = useState<RoleBotCoordinateResult | null>(null);
+  const [error, setError] = useState("");
+  const coordinate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const latest = run.attempts.slice(-3).map(a => `${a.nodeId}(${a.state}): ${a.evidence?.summary || "处理中"}`).join("\n");
+      const res = await request<RoleBotCoordinateResult>("/api/opc/role-bots/pm/coordinate", {
+        method: "POST",
+        body: JSON.stringify({
+          title: run.request.goal,
+          stage: stageLabel,
+          workflowId: run.id,
+          summary: [run.request.context, latest ? `最近节点回执：\n${latest}` : ""].filter(Boolean).join("\n\n").slice(0, 4800),
+          postToRoom: true,
+        }),
+      });
+      setReceipt(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PM Bot 串联派发失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="wf-pm-bar">
+    <button type="button" disabled={busy} onClick={() => void coordinate()}>
+      {busy ? "正在调度 PM Bot…" : "由 PM Bot 串联协同（有则复用 · 无则自动创建）"}
+    </button>
+    {receipt && <span role="status" className="wf-pm-status">
+      已交由 <strong>{receipt.botName}</strong>（{receipt.action === "created" ? "自动新建职能 Bot" : "复用已有 Bot"} · {receipt.matchedBy}）
+      {receipt.roomId && <> · <a href={chatRoomLink({ room: receipt.roomId })}>查看总控群 ↗</a></>}
+    </span>}
+    {error && <span role="alert" className="workflow-error">{error}</span>}
+  </div>;
+}
+
 function RunDetail({ run, onChanged }: DetailProps) {
   const revision = run.revisions[run.revisions.length - 1];
   const decisions = run.cards.filter(card => card.status === "open" && card.revision === revision.number);
@@ -167,6 +238,7 @@ function RunDetail({ run, onChanged }: DetailProps) {
   const canCleanup = !run.cleanedAt && !run.summary.readOnly && run.attempts.length > 0 && !hasInFlight &&
     (run.summary.phase === "complete" || returned?.status === "reject");
   const implement = [...new Set(revision.plan.nodes.filter(node => node.kind === "implement").map(node => runnerFor(run, node)))].join("、");
+  const isMultiStage = revision.plan.nodes.some(node => node.kind === "gate");
   return <>
     <section className="workflow-run wf-run-intro" aria-label="当前任务">
       <h1>{run.request.goal}</h1>
@@ -178,7 +250,9 @@ function RunDetail({ run, onChanged }: DetailProps) {
         <div><dt>执行宿主</dt><dd>{run.backend === "herdr" ? "Herdr" : run.backend === "local-demo" ? "本地演示进程" : run.backend}</dd></div>
         {implement && <div><dt>实现</dt><dd>{implement}</dd></div>}
         <div><dt>独立评审</dt><dd>{run.runners?.review ?? "当前宿主未提供配置"}</dd></div>
+        <div><dt>协作讨论</dt><dd><a href={chatRoomLink({ project: run.request.folder || run.request.projectKey, draft: `讨论工作流「${run.request.goal}」（阶段：${phases[run.summary.phase]} · r${revision.number}）\n直达审批：#workflows/${run.id}` })}>发到 Agent Home 群聊讨论 ↗</a></dd></div>
       </dl>
+      {isMultiStage && <PmBotCoordinator run={run} stageLabel={`${phases[run.summary.phase]} · r${revision.number}`} />}
       {run.summary.blockedReason && <p className="workflow-blocked" role="status">{run.summary.blockedReason}</p>}
     </section>
     {decisions.map(card => <div key={card.id}><Decision run={run} card={card} onChanged={onChanged}
@@ -197,7 +271,7 @@ function RunDetail({ run, onChanged }: DetailProps) {
     {run.cleanedAt
       ? <p className="wf-cleanup-note">执行终端与临时工作树已于 <time dateTime={run.cleanedAt}>{new Date(run.cleanedAt).toLocaleString()}</time> 清理（回执与差异已保留）。</p>
       : canCleanup && <CleanupAction run={run} onChanged={onChanged} />}
-    <details id={"wf-plan-" + run.id} className="wf-fold"><summary>计划与依赖 <small>r{revision.number} · {revision.plan.nodes.length} 个节点</small></summary>
+    <details id={"wf-plan-" + run.id} className="wf-fold" open={decisions.some(card => card.kind === "plan") || undefined}><summary>计划与依赖 <small>r{revision.number} · {revision.plan.nodes.length} 个节点</small></summary>
       <PlanDetails run={run} />
     </details>
     {run.attempts.length > 0 && <details className="wf-fold"><summary>执行记录与证据 <small>{run.attempts.length} 次尝试</small></summary>
@@ -287,7 +361,7 @@ function PlanDetails({ run, number }: { run: WorkflowDetail; number?: number }) 
 export function WorkflowMessageContent({ run, message, onChanged }: DetailProps & { message: ZoomMessage }) {
   const action = message.pending && !run.summary.readOnly ? message.action : undefined;
   const revision = run.revisions.find(item => item.number === message.revision) ?? run.revisions[run.revisions.length - 1];
-  const plan = <details className="zo-plan"><summary>查看计划 r{revision.number} · {revision.plan.nodes.length} 个节点</summary>
+  const plan = <details className="zo-plan" open={action?.kind === "decision" || undefined}><summary>查看计划 r{revision.number} · {revision.plan.nodes.length} 个节点</summary>
     <PlanDetails run={run} number={revision.number} />
   </details>;
   let content;
@@ -350,13 +424,15 @@ function Decision({ run, card, onChanged, onInspectPlan }: DetailProps & { card:
     finally { setBusy(false); }
   };
 
-  const decide = async (action: DecisionAction) => {
+  const blockedPlan = card.kind === "plan" && Boolean(run.summary.blockedReason);
+  const decide = async (action: DecisionAction, overrideNote?: string) => {
     setError("");
-    if (action !== "approve" && !note.trim()) { setError("请填写要发回原请求的反馈"); return; }
+    const finalNote = overrideNote ?? note;
+    if (action !== "approve" && !finalNote.trim()) { setError("请填写要发回原请求的反馈"); return; }
     setBusy(true);
     try {
       const payload = {
-        cardId: card.id, revision: card.revision, action, note,
+        cardId: card.id, revision: card.revision, action, note: finalNote,
         ...(card.kind === "final" && action === "approve" && cleanup ? { cleanup: true } : {}),
       };
       onChanged(await api.workflowAction(run.id, "decisions", payload));
@@ -366,6 +442,35 @@ function Decision({ run, card, onChanged, onInspectPlan }: DetailProps & { card:
 
   return <section className="workflow-card workflow-decision" data-kind={card.kind}>
     <h3>{cardKinds[card.kind]} · r{card.revision}</h3>
+    {blockedPlan ? (
+      <div className="wf-guide" data-blocked="true">
+        <strong>这项任务的原工作区或执行器已不存在（如历史测试样例或已删除目录），无法直接「批准」继续派发。</strong>
+        <span>如果你不需要再恢复原目录，直接点击下方按钮即可一键关闭并移出「待我处理」：</span>
+        <button
+          type="button"
+          className="wf-guide-dismiss"
+          disabled={busy}
+          onClick={() => void decide("reject", note.trim() || "原工作区或宿主配置已失效，手动关闭归档")}
+        >
+          {busy ? "正在关闭…" : "一键关闭此失效任务（移出待办）"}
+        </button>
+      </div>
+    ) : (
+      <div className="wf-guide">
+        <strong>这一步需要你做什么：</strong>
+        {card.kind === "plan" ? (
+          <ul>
+            <li><strong>批准</strong>：同意下方计划步骤，系统立即自动派发给执行器开工并安排独立评审。</li>
+            <li><strong>要求修改</strong>：在反馈框写一句调整意见，打回给 <code>{run.request.source}</code> 重新生成计划。</li>
+            <li><strong>拒绝</strong>：取消这项任务（在反馈框写一句原因后点击「拒绝」即可移出待办）。</li>
+          </ul>
+        ) : card.kind === "final" ? (
+          <span>核对下方独立评审与测试证据：满意点<strong>批准</strong>完成收口（默认顺带清理临时终端与工作树），需返工则填意见点<strong>要求修改</strong>。</span>
+        ) : (
+          <span>查看下方人工确认节点要求：同意放行点<strong>批准</strong>，需调整请填写说明后点<strong>要求修改</strong>或<strong>拒绝</strong>。</span>
+        )}
+      </div>
+    )}
     {onInspectPlan && card.kind === "plan" && <button type="button" className="wf-plan-link" onClick={onInspectPlan}>查看当前版本的计划与依赖</button>}
     {selectable.length > 0 && <details className="wf-runner-choice"><summary>选择实现节点的执行器</summary>
       {selectable.map(node => <label key={node.id}>{node.title}<select disabled={busy} aria-label={node.title + "的执行器"}
@@ -377,6 +482,17 @@ function Decision({ run, card, onChanged, onInspectPlan }: DetailProps & { card:
       <button type="button" disabled={busy || !choice} onClick={() => void changeRunner()}>保存执行器并生成新版</button>
     </details>}
     {question && <p>{question.instruction}</p>}
+    {card.kind === "gate" && question && (() => {
+      const upstreamArtifacts = question.dependsOn.flatMap(depId => {
+        const latest = run.attempts.findLast(item => item.nodeId === depId && item.state === "succeeded");
+        return latest?.evidence?.artifacts ?? [];
+      });
+      if (!upstreamArtifacts.length) return null;
+      return <div className="wf-gate-artifacts" aria-label="上游阶段交付产物预览">
+        <h4>上游交付产物（供本次拍板审阅）</h4>
+        {upstreamArtifacts.map((artifact, index) => <ArtifactPreview key={index} artifact={artifact} />)}
+      </div>;
+    })()}
     {card.kind === "final" && <ul>{run.revisions.at(-1)?.plan.acceptance.map(nodeId => {
       const review = run.attempts.findLast(attempt => attempt.nodeId === nodeId);
       return <li key={nodeId}><button type="button" onClick={() => {
@@ -393,7 +509,7 @@ function Decision({ run, card, onChanged, onInspectPlan }: DetailProps & { card:
     </label>}
     <p className="zo-delivery">决定与反馈写入本次任务。发起者可以取回反馈，提交后续版本。</p>
     <div className="workflow-actions">{(Object.keys(actions) as DecisionAction[]).map(action =>
-      <button type="button" key={action} disabled={busy || Boolean(choice)} onClick={() => void decide(action)}>{actions[action]}</button>)}</div>
+      <button type="button" key={action} disabled={busy || Boolean(choice) || (action === "approve" && blockedPlan)} title={action === "approve" && blockedPlan ? "原工作区已失效，无法批准派发" : undefined} onClick={() => void decide(action)}>{actions[action]}</button>)}</div>
     {error && <p className="workflow-error" role="alert">{error}</p>}
   </section>;
 }
@@ -431,7 +547,7 @@ function Attempt({ attempt, run, onChanged, anchor = Boolean(onChanged) }: {
       <p>{attempt.evidence.summary}</p>
       <details><summary>检查、产物与差异</summary>
         {attempt.evidence.checks.map((check, index) => <div key={index}><strong>{check.name} · 退出码 {check.exitCode}</strong><pre>{check.output}</pre></div>)}
-        {attempt.evidence.artifacts.map((artifact, index) => <div key={index}><strong>{artifact.name}</strong><pre>{artifact.content}</pre></div>)}
+        {attempt.evidence.artifacts.map((artifact, index) => <ArtifactPreview key={index} artifact={artifact} />)}
         {attempt.evidence.patch && <pre>{attempt.evidence.patch}</pre>}
       </details>
     </>}

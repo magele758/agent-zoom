@@ -37,4 +37,4 @@
 
 Bot 整理证据，需要取舍时由 Zoom 送来「继续投入、调整方向、暂停观察」。决定及理由回到项目和原想法。新提案可接续历史，经验可选入日常库的专题。公司统一的营收和成本口径留待接入真实资料时确定。
 
-当前渠道报表已能从产品和渠道下钻到事件来源。事件记录客户与订单标识，发布版本归属、金额、成本和退款仍需接入，完整的经营复盘属于设计目标。[渠道转化页面](../../web/src/GrowthReport.tsx) · [当前事件字段](../../src/growth-types.ts)
+当前渠道报表已能从产品和渠道下钻到事件来源（`acquired / activated / order` 与未计入漏斗核查）；金额、退款、LLM Token 与基础设施成本、毛利率核算、Ed25519 离线 License 发码验签、客服工单分诊以及 `data_analysis` DuckDB 17 列 Trace 漏斗同步，已通过「商业与治理部」（`#commercial`）与业务线多币种收支凭据打通。对外正式发布、退款执行与发信仍保留人工在 Zoom 单独确认。[商业与治理部](../../web/src/CommercialHub.tsx) · [渠道转化页面](../../web/src/GrowthReport.tsx) · [商业闭环流程图](flows.html#commercial) · [当前事件字段](../../src/growth-types.ts)

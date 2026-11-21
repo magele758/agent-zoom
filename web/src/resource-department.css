@@ -29,3 +29,9 @@
 .rc-fees summary { cursor: pointer; }
 .rc-fees ul { padding: 0; list-style: none; }
 .rc-fees li { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.rc-tool-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.rc-tool-fee { font: 500 12px var(--digits); color: var(--muted); }
+.rc-usage-box { margin-top: 10px; padding: 8px 10px; background: var(--raise); border-left: 2px solid #285640; font-size: 12.5px; line-height: 1.5; color: var(--ink); display: grid; gap: 3px; }
+.rc-diag { margin-top: 10px; padding: 9px 11px; background: var(--tint); border-left: 2px solid var(--accent); font-size: 12.5px; line-height: 1.5; color: var(--ink); display: grid; gap: 6px; }
+.rc-diag button { justify-self: start; font-size: 12.5px; padding: 4px 10px; background: var(--inset); }
+.rc-subtle-note { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
