@@ -1,11 +1,26 @@
 # 第一次使用 OPC OS
 
-## 打开本机工作台
+## 一键拉起 OPC 全栈工作台（推荐）
 
-在本仓库运行 `npm run opc:start`，打开启动器显示的本机地址。首次使用 CLI 可运行 `npm run opc -- connect data/zoom-local/submit.env`。
+如果你想一次启动 OPC OS 本体、自动拉起商业伴生服务（Commerce / GTM / Ops / Data Analysis）并纳管公司 7 层全景资产，直接运行：
 
-- [工作索引](http://127.0.0.1:52328/#activity-index?view=agents)按来源列出本机 coding agent。点一条可看工作目录和关联仓库。在索引或总览打开时，每 15 秒读取一次活动。Herdr 自报的执行状态、Agent Hub 的最近活动和仅由进程确认的在线线索分别显示。
-- [仓库索引](http://127.0.0.1:52328/#activity-index?view=repos)汇合当前 GitHub 账号、自有与协作仓库、近期公开贡献、本机 Git 与 worktree。正式服务每 15 分钟更新索引和已纳管公开仓库的 Issue、PR、Release，也可以手动刷新。点仓库读取 README、根目录或搜索已提交内容。项目的业务归属沿用项目目录中的登记。
+```sh
+npm run opc:up
+npm run opc:stack -- status   # 查看 6 大服务健康状态、1 号试点就绪度与经营指标
+npm run opc:verify            # 演练一次端到端首单商业闭环（UTM获客 -> 激活 -> 离线License -> DuckDB漏斗）
+npm run opc:stack -- stop     # 停止由 stack 自动拉起的附属后台服务
+```
+
+命令行会打印本机商业驾驶舱（`/#commercial`）、公司业务线（`/#business-lines`）和统一消息列表（`/#inbox`）地址，并自动执行 `opc-os connect`。也可通过 `npm run opc -- commercial overview|bootstrap|ensure|closed-loop|sync-analytics|playbook <模板ID>` 直接操控商业闭环。
+
+## 仅启动本机 OPC OS 工作台
+
+若只需要 OPC OS 主体与持久项目库，运行 `npm run opc:start`，打开启动器显示的本机地址。首次使用 CLI 可运行 `npm run opc -- connect data/zoom-local/submit.env`。
+
+- [组织数字孪生](http://127.0.0.1:52328/#digital-twin)将决策脑枢、多 Agent 产研工坊、商业四部、十三阶价值流与底层微服务映射为实时全息沙盘（支持昆仑夜航 / 宣纸堪舆双风格、双闭环价值流与 35 个全功能星图检索），点击任意舱室一键直达。
+- [商业与治理部](http://127.0.0.1:52328/#commercial)提供一键纳管 7 层 18 项资产、拉起 6 大伴生服务、演练首单闭环、签发/验签 Ed25519 离线 License、生成门面与 UTM 推广包、分诊客服工单及同步 DuckDB 漏斗。
+- [会话与仓库索引（本机会话）](http://127.0.0.1:52328/#activity-index?view=agents)按来源列出本机 coding agent。点一条可看工作目录和关联仓库。在索引、总览或数字孪生打开时，每 15 秒读取一次活动。Herdr 自报的执行状态、Agent Hub 的最近活动和仅由进程确认的在线线索分别显示。
+- [会话与仓库索引（仓库视图）](http://127.0.0.1:52328/#activity-index?view=repos)汇合当前 GitHub 账号、自有与协作仓库、近期公开贡献、本机 Git 与 worktree。正式服务每 15 分钟更新索引和已纳管公开仓库的 Issue、PR、Release，也可以手动刷新。点仓库读取 README、根目录或搜索已提交内容。项目的业务归属沿用项目目录中的登记。
 - [委派台](http://127.0.0.1:52328/#delegations)保存常用执行人和办理说明。可逐条指派，也可开启后续待办的自动委派。订阅收件箱的具名 coding agent 可直接接到通知，其他 CLI 按指定名称认领。Agent Home 使用选中的 Bot 接单。执行人可直接办结普通问题，需要你确认时带着建议与证据回到「待我处理」。
 
 ## 在临时项目里走一遍
@@ -19,7 +34,7 @@ npm run opc:preview
 1. 打开「全局看板」。点「店铺运营」，打开合成草稿的实验。点「本轮资产」里的 ChromeGate Gateway 可查看实际引用的原仓版本和接口。返回实验，选「到 Zoom 处理复盘」，写下继续、调整或暂停的理由，再点「返回经营实验」。
 2. 在实验中选「从观察提出研发特性」，指定项目 `Demo/Greeting` 和某条观察。打开候选能回到这份证据。示例公司只有一个绑定了工作树的研发项目。
 3. 在「研发选题」里查看排在前面的问候语修复。项目开启自动选题后一次选择一项。打开计划，检查本版执行者、依赖和验收条件。在 Zoom 批准后，真实 Herdr 和两个独立 Codex 会话会依次实现、评审。手动确认最终验收。
-4. 想从阶段直接发起工作时，进入「产品进程 → 测试组」，选择 Demo 下的 Greeting，可编辑测试目标、材料和验收方法。给 coding agent 的工作单由其原会话认领；给 Home Bot 的工作单要选定具体 Bot 并点击派工。房间讨论另从「Bot 讨论室」点名。
+4. 想从阶段直接发起工作时，进入「产品进程 → 测试组」，选择 Demo 下的 Greeting，可编辑测试目标、材料和验收方法。给 coding agent 的工作单由其原会话认领；给 Home Bot 的工作单要选定具体 Bot 并点击派工。房间讨论另从「项目讨论室」点名。
 5. 打开「开源能力」→ ChromeGate Gateway，查看「店铺实验 / 草稿检查」引用的真实提交。点开演示维护需求，从 Zoom 要求修改、拒绝或批准，返回原需求看反馈。演示中的 ChromeGate 保留为未绑定工作树的维护项目，批准后可以在该项目看到维护候选。[复用命令与来源](reuse.md)
 6. 关闭预览用 Ctrl-C。无须启动 Herdr 的版本可用 `npm run build && npm run opc:demo -- --interactive`，这时界面会标明本地演示执行器。
 

@@ -1,6 +1,6 @@
 # 验证到了哪里
 
-以下运行结果来自 2026 年 11 月 20 日已有的本机验收。本地首版增加自动选题、公司业务线、项目房间和工作投入。各项验证使用的数据分别注明。[返回产品导读](../OPC_OS_PRODUCT_INTENT.md) · [看执行流程图](flows.html#execution)
+以下运行结果整合自 2026 年 11 月 20–21 日的本机验收。当前版本已覆盖 7 层商业闭环中枢、公司四部（商业与治理/安全/运维/资源成本）、组织数字孪生全息沙盘、全站委派、自动选题、业务线打法库、项目讨论室与工作投入。各项验证使用的数据分别注明。[返回产品导读](../OPC_OS_PRODUCT_INTENT.md) · [看执行流程图](flows.html#execution) · [看商业闭环图](flows.html#commercial)
 
 ## 哪些真跑过
 
@@ -49,3 +49,12 @@
 - `node --test scripts/delegation-flow.test.mjs` 启动独立服务，从另一个目录通过本机 CLI 提问、按指定名字认领，中途重启服务，再交回带证据的答复。测试还启用后续待办的自动办理，让执行者对一条审批提交建议，由测试操作者回答原问题。
 - `node scripts/activity-index-browser.mjs` 检查桌面与窄屏的索引、仓库内容、委派入口、办理方式、委派台状态筛选、频道委派工单链接、原审批、想法 ↔ 项目讨论室 ↔ 阶段工作单双向跳转，以及阶段工单租约超时后的重新开放认领。浏览器用例使用固定返回，真实本机仓库和 Bot 都可以从正式界面只读核对。
 - 工作流验收与清理：`npm run test:workflow`、`npm run test:opc`、`npm run test:zoom` 与 `npm run test:browser` 在退出后自动清理各自创建的 Herdr 终端/空间与临时目录（加 `--keep` 可保留现场）；最终验收默认清理临时 worktree 与 Herdr 终端并保留回执与差异，另提供 `opc-os cleanup <run-id>` 和 `npm run workflow:cleanup` 手动收尾。
+
+## 商业闭环、公司四部与组织数字孪生（2026-11-21）
+
+| 能力域 | 验证内容与产物 |
+| --- | --- |
+| 全量自动化测试与类型检查 | `npm run typecheck`（服务端 + 前端双 tsconfig）通过；`npm test` **247 项测试全部通过**（含商业中枢、安全/运维/资源部门、工作流 DAG、全站委派、项目讨论室、开源能力复用、工作索引与频道协议）。 |
+| 7 层商业闭环与伴生服务 | `src/commercial.test.ts` 与 `npm run opc:verify` 验证 18 项 L0–L6 蓝图资产一键纳管、5 套业务线打法库立项、6 大伴生服务健康探针与端到端首单闭环（UTM 获客 → 激活 → MoR 订单入账 → Ed25519 离线 OPCL1 签发验签 → DuckDB 17 列 Trace 漏斗同步）。[商业驾驶舱截图](../../data/opc-validation/opc-commercial-cockpit.png) |
+| 公司四部与全局看板修复 | `src/security-department.test.ts`、`src/operations-department.test.ts`、`src/resource-department.test.ts` 覆盖安全评审/整改复审、服务端点健康检查与版本台账、Agent Hub 额度窗口与手动订阅账单；全局看板多列对齐与 13 阶表头已完成浏览器截图回归。[全局看板截图](../../data/opc-validation/overview-fixed.png) |
+| 组织数字孪生全息沙盘 | 浏览器验证 `#digital-twin` 三透镜（全息空间沙盘 22 舱室、双闭环价值流、35 入口全功能星图）、昆仑夜航与宣纸堪舆双画布风格、信号回路筛选及十三阶全生命周期价值传送带。[夜航沙盘](../../data/opc-validation/digital-twin-night.png) · [宣纸沙盘](../../data/opc-validation/digital-twin-paper.png) · [双闭环视图](../../data/opc-validation/digital-twin-loops.png) · [全功能星图](../../data/opc-validation/digital-twin-atlas.png) |

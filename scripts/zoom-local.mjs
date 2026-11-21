@@ -109,7 +109,7 @@ function workflowConfig(service) {
 async function start() {
   process.chdir(root);
   const local = config();
-  const links = "全局看板 " + local.origin + "/\n消息列表 " + local.origin + "/#inbox\n项目目录 " + local.origin + "/#projects";
+  const links = "全局看板 " + local.origin + "/\nAgent Home 群聊 " + local.origin + "/#home-room\n项目目录 " + local.origin + "/#projects";
   if (await running(local)) {
     console.log(links + "\n当前OPC OS已在运行");
     return;

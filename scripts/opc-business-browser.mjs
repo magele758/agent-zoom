@@ -72,12 +72,9 @@ try {
   await trial.getByRole("link", { name: /为选填规则增加回归样例/ }).click();
   await page.getByRole("link", { name: "回到提出特性的经营实验 ↗" }).click();
   await trial.getByRole("button", { name: "提交复盘" }).click();
-  await trial.getByRole("link", { name: "到 Zoom 处理复盘 ↗" }).click();
-  await page.getByRole("radio", { name: "调整" }).check();
-  await page.getByLabel("回复原任务").fill("补两份样例，再核对误报");
-  await page.getByRole("button", { name: "发送回复" }).click();
-  await expect(page.getByRole("button", { name: "发送回复" })).toHaveCount(0);
-  await page.getByRole("link", { name: "返回经营实验" }).click();
+  await trial.getByRole("radio", { name: "调整" }).check();
+  await trial.getByLabel("复盘结论与理由").fill("补两份样例，再核对误报");
+  await trial.getByRole("button", { name: "保存复盘决定" }).click();
   await expect(trial).toContainText("已决定 · 调整");
   await page.setViewportSize({ width: 390, height: 820 });
   await expect(trial).toBeVisible();
@@ -87,11 +84,11 @@ try {
   await page.getByLabel("指定 agent（可选）").fill("grok");
   await page.getByRole("button", { name: "登记阶段任务" }).click();
   await expect(page.locator(".sd-work")).toContainText("等待认领 · grok");
-  await page.locator(".sd-work").getByRole("link", { name: "原任务与反馈 ↗" }).click();
-  await expect(page.locator(".zo-paper")).toContainText("产品进程");
+  await page.locator(".sd-work").getByRole("link", { name: "到群聊讨论 ↗" }).click();
+  await expect(page.getByRole("heading", { name: "Agent Home 群聊", exact: true })).toBeVisible();
   assert.deepEqual(errors, []);
   console.log(
-    "通过：总览 → 新经营线 → 插件实验 → 证据 → 研发候选 → 原实验 → Zoom 复盘。手机阶段工作单成功接入指定 coding agent 的认领队列。",
+    "通过：总览 → 新经营线 → 插件实验 → 证据 → 研发候选 → 原实验 → 页内复盘 → Agent Home 群聊。手机阶段工作单成功接入指定 coding agent 的认领队列。",
   );
 } finally {
   clearTimeout(deadline);

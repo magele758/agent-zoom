@@ -1,19 +1,16 @@
 # OPC OS
 
-OPC OS 是一人公司的经营中控。全局看板汇集所有业务线与待决事项。研发可以从一条日志、Issue 或新版说明自动选题，经审批进入 Herdr。探索中的店铺运营可以先用 Chrome 插件做一轮实验，在 Zoom 复盘，再把需要开发的能力交给原项目。
+OPC OS 是一人公司（OPC）的 7 层操作系统与经营中控。首页「全局看板」汇集实时工作现场、多条公司业务线、四个公司部门、跨 Agent 待决事项与「产品 × 十三阶段」矩阵；「组织数字孪生」将决策脑枢、多 Agent 产研工坊、商业四部、十三阶价值流与六大伴生微服务映射为可交互全息沙盘（支持昆仑夜航 / 宣纸堪舆双风格、双闭环价值流与 35 入口全功能星图）。供给侧支持从每日复盘、GitHub Issue 或客服工单自动选题并经 Zoom 审批交 Herdr 隔离实现与独立评审；商业侧由「商业与治理部」打通 1 号变现试点、MoR 收银与 Ed25519 离线 License、GTM 门面与 UTM 获客、Ops 工单分诊及 DuckDB 漏斗毛利复盘。
 
-[首次启动与两条演示路线](docs/product/start.md) · [产品功能分册](docs/OPC_OS_PRODUCT_INTENT.md) · [可点击的业务流程图](docs/product/flows.html#lines) · [界面设计稿](docs/product/opc-workbench.html)
+[首次启动与一键全栈](docs/product/start.md) · [7 层架构蓝图](docs/product/opc-7-layer-blueprint.md) · [产品功能分册](docs/OPC_OS_PRODUCT_INTENT.md) · [可点击的业务与商业流程图](docs/product/flows.html#lines) · [界面设计稿（全能力原型）](docs/product/opc-workbench.html)
 
 立项先查自己的开源库。使用方登记已验证的接口和固定版本；功能不足时，把影响和验收条件送到 Zoom，批准后由原仓维护项目承接。[仓库协作与实际示例](docs/product/reuse.md)
 
-全局看板的安全部门跟进各项目的评审与整改，运维部门查看服务可达性和版本更新，资源成本部门汇总 Token 套餐余量及订阅费用。委派任务时也能打开额度记录。[公司部门使用说明](docs/product/company.md#公司部门)
+全局看板与侧栏的「公司部门」统筹四个跨线部门：**商业与治理部**（7 层 18 项资产一键纳管、1 号商业试点、6 大伴生服务自启动网格、Ed25519 离线授权、门面合规 UTM、客服工单分诊与 5 套业务线打法库）、**安全部门**（发版评审与整改复审）、**运维部门**（服务端点探针与升级台账）与**资源成本部门**（Agent Hub 套餐余量与订阅账单）。[公司四部使用说明](docs/product/company.md#公司部门)
 
+「会话与仓库索引」每 15 秒扫描本机活跃 coding agent 会话并聚合 GitHub 与本地 Git/Worktree 仓库。「委派台」设置具名 coding agent 或 Agent Home Bot 的默认办理方式。普通答复回原任务，需本人批准的事项带着证据进入 Zoom。[委派与页面流转](docs/product/flows.html#delegation)
 
-OPC OS Zoom 的首页是全局看板。上方是各个 coding agent 等你决定的问题，下方按「项目 × 十三个阶段」排列事项。点一个节点就进入相应范围，点一条消息可以查看证据、回复原问题或审批具体版本。
-
-「工作索引」按本机会话、Git 工作目录和 GitHub 账号关系查找项目。「委派台」设置具名 coding agent 或 Agent Home Bot 的办理方式。普通答复回原任务，需本人批准的事项带着证据进入 Zoom。[委派与页面流转](docs/product/flows.html#delegation)
-
-运行 `npm run zoom:local` 启动持久的本机项目库，打开打印的地址。使用「项目目录」可以从一个空项目开始，或用 `opc-os project sync owner/repo --product 产品名` 同步 GitHub 公开仓库的维护记录。第一次接入这个本机服务时运行 `opc-os connect data/zoom-local/submit.env`。
+一键拉起 OPC OS 本体、自动启动商业/分析伴生服务并纳管公司 7 层全景可运行 `npm run opc:up`（查看状态 `npm run opc:stack -- status`，执行端到端首单商业闭环自检 `npm run opc:verify`，停止附属服务 `npm run opc:stack -- stop`）。若仅启动本机持久项目库，运行 `npm run opc:start`（或 `npm run zoom:local`）打开打印的地址。使用「项目目录」可以从一个空项目开始，或用 `opc-os project sync owner/repo --product 产品名` 同步 GitHub 公开仓库的维护记录，也可用 `opc-os commercial overview|bootstrap|ensure|closed-loop|sync-analytics|playbook <模板ID>` 直接操控商业闭环。第一次接入这个本机服务时运行 `opc-os connect data/zoom-local/submit.env`。
 
 要让这个本机实例接管 Herdr 执行，可在 `data/zoom-local/service.env` 中设置 `WORKFLOW_CONFIG` 指向正式仓库的执行配置，再重新启动服务。[Herdr 项目配置](docs/WORKFLOW_UPGRADE.md)
 

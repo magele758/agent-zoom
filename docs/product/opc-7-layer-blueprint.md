@@ -1,6 +1,6 @@
 # AI-Native OPC（一人公司）7 层操作系统蓝图与职责边界
 
-这份架构卡定义了本公司全部代码资产在 **供给侧（造产品 + 跑 Agent）**、**需求与资金侧（获客 + 收银授权 + 客服遥测）** 与 **分析决策侧（经营本体 + 漏斗毛利复盘）** 的统一分层、职责边界和两条核心业务闭环。[返回产品导读](../OPC_OS_PRODUCT_INTENT.md) · [打开商业与公司治理台](/#commercial)
+这份架构卡定义了本公司全部代码资产在 **供给侧（造产品 + 跑 Agent）**、**需求与资金侧（获客 + 收银授权 + 客服遥测）** 与 **分析决策侧（经营本体 + 漏斗毛利复盘）** 的统一分层、职责边界和两条核心业务闭环。[返回产品导读](../OPC_OS_PRODUCT_INTENT.md) · [商业闭环流程图](flows.html#commercial) · [界面设计稿](opc-workbench.html#commercial) · [打开商业与公司治理台](/#commercial)
 
 ---
 
@@ -31,7 +31,7 @@ L3 · 外部执行手脚与确定性验收层（受控 Actuator & QA）
      └─ chromegate：内部重度网页采集、剪藏与发布工作台
           ▲
 L2 · 公司中枢与产研协作控制面（OPC 总控 + 工程工厂）
-     ├─ agent-zoom（OPC OS）：公司总览、业务线、13 阶段进程、跨 Agent 统一 Zoom 审批与商业联动
+     ├─ agent-zoom（OPC OS）：全局看板、组织数字孪生（35 锚点全息沙盘）、业务线、公司四部、13 阶段进程、跨 Agent Zoom 审批与商业联动
      ├─ hyper-vibekanban：异步 Issue 看板、Squad DAG 与 Git Worktree 并行编码交付流水线
      └─ agent-term：Founder 原生终端驾驶舱与本地高危操作物理审批兜底
           ▲
@@ -89,3 +89,16 @@ L0 · 单机统一数据底座（Storage Substrate）
 
 1. **同一时期只指定 1 个「1 号变现试点」**：在跑通「门面 → 获客 → 激活 → 收款发码 → 客服 → `data_analysis` 复盘」全闭环前，冻结新建底层基础设施仓库。
 2. **薄胶水 + 强契约**：收银税务交由 MoR 托管，客户端坚持本地优先与 Ed25519 离线验签，所有经营事实统一沉淀回本机 SQLite 与 DuckDB。
+
+---
+
+## 五、一键拉起与闭环自检
+
+```sh
+npm run opc:up                 # 启动 OPC OS + 自动拉起 Commerce(:52331) / GTM(:52332) / Ops(:52333) / data_analysis(:8000) 并纳管 18 项 7 层资产
+npm run opc:stack -- status    # 查看 6 大服务健康度、1 号商业试点就绪度与核心指标
+npm run opc:verify             # 端到端自检：UTM 获客 -> 激活 -> 订单与 Ed25519 离线 License -> DuckDB 漏斗同步
+npm run opc:stack -- stop      # 停止由 stack 自动拉起的附属伴生服务
+```
+
+命令行亦支持 `opc-os commercial overview|bootstrap|ensure|closed-loop|sync-analytics|playbook <模板ID>`，或在浏览器打开 `/#commercial`（商业与治理部）与 `/#digital-twin`（组织数字孪生）直接操作。[首次启动与命令说明](start.md)

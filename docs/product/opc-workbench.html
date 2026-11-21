@@ -1,17 +1,1677 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OPC OS · 界面设计稿</title>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>OPC OS · 界面设计稿（全能力原型）</title>
 <style>
-:root{--paper:#faf8f1;--ink:#222c28;--muted:#606658;--line:#c9c9ba;--moss:#245c48;--rust:#984b30;--rail:#222d29;font:15px/1.6 "Instrument Sans","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--paper)}
-*{box-sizing:border-box}body{margin:0}a{color:var(--moss);text-underline-offset:4px}a:focus-visible{outline:3px solid #b85429;outline-offset:3px}h1,h2,h3,p{margin:0}h1,h2,h3,.name{font-family:"Songti SC","Noto Serif CJK SC",serif}.shell{min-height:100vh;display:grid;grid-template-columns:202px 1fr}aside{background:var(--rail);color:#fffaf0;padding:34px 18px}.word{display:block;font:700 30px/1.2 Georgia,serif;letter-spacing:.02em;margin:0 8px 8px}aside p{margin:0 8px 45px;color:#c2c9bd;font-size:13px}nav a{display:block;padding:8px 12px;color:inherit;text-decoration:none}nav a[aria-current]{background:#394840;box-shadow:inset 3px 0 #e3ad77}main{padding:clamp(24px,4vw,62px);width:min(1230px,100%);min-width:0}header.bar{display:flex;justify-content:space-between;gap:12px;align-items:center;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:12px;font-size:13px}section.page{display:none}section.page:target{display:block}body:not(:has(.page:target)) #overview{display:block}.heading{padding:22px 0 26px}h1{font-weight:650;font-size:clamp(38px,5vw,63px);line-height:1.16}.heading p{margin-top:9px;color:var(--muted)}.pair{display:grid;grid-template-columns:1fr 1fr;gap:clamp(12px,3vw,38px)}article,.band{border-top:2px solid var(--ink);padding:15px 0 22px}h2{font-size:26px;font-weight:600}.pair p,.band p{margin:6px 0 14px}.row{padding:12px 0;border-top:1px solid var(--line);display:flex;align-items:center;gap:16px}.row span,.eyebrow{font-size:13px;color:var(--muted)}.row strong{font-weight:600}.row a:last-child{margin-left:auto}.control{background:var(--moss);color:white;padding:7px 13px;text-decoration:none;display:inline-block}.metric{font:600 25px Georgia,serif;color:var(--moss)}.layout{display:grid;grid-template-columns:minmax(230px,1fr) minmax(270px,1.16fr);gap:clamp(15px,4vw,54px)}ol{margin:5px 0;padding-left:23px}li{padding:8px 0;border-bottom:1px solid var(--line)}.small{font-size:13px;color:var(--muted)}.state{color:var(--rust)}footer{margin-top:16px;border-top:1px solid var(--line);padding-top:12px;color:var(--muted);font-size:13px}
-@media(max-width:740px){.shell{display:block}aside{padding:10px 16px}.word{font-size:23px;margin:0}aside p{display:none}nav{display:flex;flex-wrap:wrap;gap:4px 13px;margin-top:5px}nav a{padding:2px 3px;font-size:13px}nav a[aria-current]{box-shadow:inset 0 -2px #e3ad77;background:none}.pair,.layout{grid-template-columns:1fr}.row{gap:8px;flex-wrap:wrap}}
-</style></head><body><div class="shell"><aside><span class="word" lang="en">OPC OS</span><p>一人公司工作台</p><nav aria-label="设计稿导航"><a href="#overview">公司总览</a><a href="#ideas">信息与想法</a><a href="#research">研发选题</a><a href="#capabilities">开源能力</a><a href="#shop">店铺运营</a><a href="#plan">计划与交付</a><a href="#worklog">工作投入</a></nav></aside>
-<main><header class="bar"><span>产品设计 / 操作界面</span><span>示例数据 · 仅供走查</span></header>
-<section class="page" id="overview"><div class="heading"><h1>公司总览</h1><p>从一条业务线开始，或直接处理等你决定的事项。</p></div><div class="pair"><article><h2>研发与产品</h2><p>从新特性、用户问题和升级需求中，选出下一件值得做的事。</p><a class="control" href="#research">查看研发选题 →</a></article><article><h2>店铺运营</h2><p>用已有 Chrome 插件试一项经营假设，带回店铺采用与交易证据。</p><a href="#shop">打开经营实验 →</a></article></div><div class="band"><h2>今日工作</h2><div class="row"><span>daily-review-learning</span><a href="#ideas">从今日阅读形成想法 →</a></div><div class="row"><span>Agent Hub</span><a href="#worklog">把今天的工作归入项目 →</a></div></div><div class="band"><h2>待我处理</h2><div class="row"><span>PageLens</span><strong>确认发布前检查的修复计划</strong><a href="#plan">查看 r1 →</a></div></div></section>
-<section class="page" id="research"><div class="heading"><h1>研发选题</h1><p>研发与产品 / PageLens</p></div><div class="layout"><article><h2>候选与在途</h2><div class="row"><span>项目问题</span><strong>修复发布前缺失字段检查</strong></div><div class="row"><span>功能吸收</span><strong>把失败样例收入重放库</strong></div><div class="row"><span>依赖升级</span><strong>验证新版浏览器兼容性</strong></div></article><article><p class="eyebrow">已选入计划</p><h2>修复发布前缺失字段检查</h2><p>两个复现样例都能触发同一种错误。影响面高，复现步骤明确。</p><div class="row"><span>影响</span><b>高</b><span>把握</span><b>高</b><span>投入</span><b>低</b></div><p class="small">依据 · 报告者的 Issue、失败样例、验收条件</p><a href="#capabilities">先查看已有能力 →</a>　<a class="control" href="#plan">打开待批计划 →</a></article></div><footer>开启项目的自动选题后，合格线索进入候选。每次只推进一个在途计划，执行前保留版本审批。</footer></section>
-<section class="page" id="plan"><div class="heading"><p class="eyebrow">研发与产品 / PageLens / 计划 r1</p><h1>修复发布前检查</h1><p class="state">待你确认计划</p></div><div class="pair"><article><h2>交付顺序</h2><ol><li>用原始样例复现，列出验收条件。</li><li>在隔离工作树中修复，提交差异和测试结果。</li><li>独立评审，复测失败时将问题退回实现者。</li></ol></article><article><h2>本次决定</h2><p>批准 r1、要求修改或拒绝。你能在同一个任务里查看各版计划、意见和交付证据。</p><p class="small">发布需要另行授权。处理结果回到原任务和 Zoom。</p><a href="#research">返回该项目的选题 →</a></article></div></section>
-<section class="page" id="shop"><div class="heading"><h1>店铺运营</h1><p>探索中的业务线 / 店铺上架实验</p></div><div class="pair"><article><h2>本次验证</h2><p>发布前检查能否减少店员在上架时的返工？选定一个店铺、一组商品，记录使用插件前后的返工次数。</p><div class="row"><span>共用资产</span><strong>商品资料与发布检查插件</strong></div></article><article><h2>经营证据</h2><p>核对店铺反馈、实际用过插件的记录、首单与复购凭据。无法归因的交易先留待核实。</p><div class="row"><span>下一步</span><strong>根据真实使用结果决定是否继续</strong></div></article></div><footer>经营实验可引用研发已交付的插件。需要新增能力时，再单独提交研发线索。</footer></section>
-<section class="page" id="ideas"><div class="heading"><h1>信息与想法</h1><p>公司 / daily-review-learning</p></div><div class="layout"><article><h2>阅读摘录</h2><p>在商品资料处理中，多次返工集中在少数必填字段。原资料保留在当天日记。</p><div class="row"><span>来源</span><strong>当日店铺流程观察</strong></div></article><article><h2>把检查前移</h2><p>这个想法可能用在两个产品。先选一个具体项目验证。</p><div class="row"><span>PageLens / 上架检查</span><a href="#research">进入研发选题 →</a></div><div class="row"><span>店铺工具 / 选品运营</span><a href="#shop">进入经营实验 →</a></div></article></div></section>
-<section class="page" id="worklog"><div class="heading"><h1>工作投入</h1><p>个人 Agent Hub / 当日日报</p></div><div class="pair"><article><h2>当天公开事项</h2><p>你选择日期后，OPC OS 显示当天看板的工作标题、主线与状态。</p><div class="row"><span>已完成</span><strong>检查店铺商品草稿</strong></div></article><article><h2>归入哪个项目</h2><div class="row"><span>产品 / 项目</span><strong>店铺工具 / 选品运营</strong></div><div class="row"><span>业务线</span><a href="#shop">店铺运营 ↗</a></div><p>同一日期的同一事项重读后沿用你的归属。从已关联记录可以回原日期复查。</p></article></div></section>
-<section class="page" id="capabilities"><div class="heading"><p class="eyebrow">项目目录 / 开源能力</p><h1>草稿校验</h1><p>固定版本 v1.2.0 · 维护仓库 example/draft-lint</p></div><div class="pair"><article><h2>直接复用此版本</h2><p>店铺项目可以调用已有的字段校验命令。保存后在项目档案中可查到原仓、具体版本和用途。</p><div class="row"><span>调用入口</span><code>draft-lint check</code></div><a href="#shop">回到使用方的店铺实验 →</a></article><article><h2>向维护项目提需求</h2><p>如果当前版本缺少规格编号检查，写下受影响的项目与验收办法，经 Zoom 审批后交原仓补齐。</p><div class="row"><span>验收办法</span><strong>非法编号应定位到具体行号</strong></div><a href="#capability-review">查看维护需求审批 →</a></article></div></section>
-<section class="page" id="capability-review"><div class="heading"><p class="eyebrow">Zoom / example/draft-lint / r2</p><h1>增加规格编号检查</h1></div><div class="pair"><article><h2>本版待决定</h2><p>使用方提出需要，维护方负责实现。批准后进入维护项目的研发候选，生成的工程计划还需独立审批。</p><a href="#research">打开维护项目的候选 →</a></article><article><h2>反馈历史</h2><div class="row"><span>r1　要求修改</span><strong>请说明空编号的处理。</strong></div><div class="row"><span>r2　补充验收</span><strong>空编号与非法编号均返回行号。</strong></div><p>退回后可修订，也可记录限制并改用现有版本。采用其他版本解决已批需求时，使用方勾选对应需求，附上实际调用的验证依据。</p><a href="#capabilities">返回能力版本 →</a></article></div></section>
-</main></div><script>function sync(){const id=location.hash||'#overview';for(const link of document.querySelectorAll('nav a')){if(link.hash===id)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current')}}addEventListener('hashchange',sync);sync()</script></body></html>
+:root{
+  --paper:#faf8f1;--card:#ffffff;--tint:#f3efe3;--ink:#1f2926;--muted:#5d655a;
+  --line:#d5d2c5;--line-strong:#222c28;--rail:#1e2926;--rail-hover:#2b3a35;--rail-active:#33453f;
+  --moss:#245c48;--moss-bg:#e8f1ec;--rust:#984b30;--rust-bg:#f9ede6;--gold:#c9964e;--gold-bg:#f7f0e0;--blue:#2c5475;--blue-bg:#e9f1f7;
+  --serif:"Songti SC","STIX Two Text","Noto Serif CJK SC",Georgia,serif;
+  --sans:"Instrument Sans","Source Sans 3","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  font:14.5px/1.6 var(--sans);color:var(--ink);background:var(--paper);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink)}
+a{color:var(--moss);text-underline-offset:3px}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2.5px solid #b85429;outline-offset:2px}
+h1,h2,h3,h4,p{margin:0}
+h1,h2,h3,.serif{font-family:var(--serif)}
+code{font:12.5px/1.4 var(--mono);background:var(--tint);padding:2px 6px;border-radius:3px}
+
+/* Shell & Sidebar */
+.shell{min-height:100vh;display:grid;grid-template-columns:236px minmax(0,1fr)}
+aside.rail{background:var(--rail);color:#edf1ea;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;border-right:1px solid #141c1a}
+.brand-head{position:relative;padding:24px 18px 16px;background:
+  radial-gradient(120% 90% at 85% 0%,rgba(227,173,119,.2),transparent 58%),
+  linear-gradient(160deg,#2c3c37 0%,#1a2421 70%,#16201d 100%);
+  border-bottom:1px solid rgba(255,255,255,.08);overflow:hidden}
+.brand-head svg.peaks{position:absolute;inset:0;width:100%;height:100%;opacity:.22;pointer-events:none}
+.brand-head .word{position:relative;display:block;font:700 28px/1.15 Georgia,var(--serif);letter-spacing:.04em;color:#fffaf0}
+.brand-head .sub{position:relative;margin-top:4px;font-size:12px;color:#b8c4bc}
+.rail-scroll{flex:1;overflow-y:auto;padding:10px 10px 16px;scrollbar-width:thin;scrollbar-color:#3a4b45 transparent}
+.nav-group{margin:12px 0 4px;padding:0 10px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#8fa096;text-transform:uppercase}
+.rail nav a{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:4px;color:#dce3dc;text-decoration:none;font-size:13.5px;transition:background .12s,color .12s}
+.rail nav a:hover{background:var(--rail-hover);color:#fff}
+.rail nav a[aria-current="page"]{background:var(--rail-active);color:#fffaf0;font-weight:600;box-shadow:inset 3px 0 #e3ad77}
+.rail nav a .ico{width:15px;height:15px;flex:none;opacity:.82}
+.rail nav a .cnt{margin-left:auto;font:600 11px/1 var(--mono);padding:2px 6px;border-radius:10px;background:rgba(255,255,255,.1);color:#d7dfd9}
+.rail nav a .cnt.hot{background:rgba(227,125,85,.28);color:#ffd1bc}
+.rail-foot{border-top:1px solid rgba(255,255,255,.1);padding:10px;display:grid;gap:4px;background:#18221f}
+.rail-foot a{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:4px;color:#cfd9d1;text-decoration:none;font-size:13px}
+.rail-foot a:hover{background:var(--rail-hover);color:#fff}
+.rail-foot a[aria-current="page"]{background:var(--rail-active);color:#fffaf0;box-shadow:inset 3px 0 #e3ad77}
+
+/* Main area */
+main.stage{min-width:0;padding:0 clamp(18px,3.2vw,46px) 52px;width:min(1340px,100%)}
+header.topbar{position:sticky;top:0;z-index:20;background:rgba(250,248,241,.94);backdrop-filter:blur(8px);
+  display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);padding:12px 0;font-size:12.5px;color:var(--muted)}
+.top-left{display:flex;align-items:center;gap:10px;min-width:0}
+.menu-btn{display:none;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:5px 10px;border-radius:4px;font:inherit;cursor:pointer}
+.route-tag{font:600 12px/1.2 var(--mono);color:var(--moss);background:var(--moss-bg);padding:3px 7px;border-radius:3px}
+.top-links{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.top-links a{text-decoration:none;color:var(--muted)}
+.top-links a:hover{color:var(--moss);text-decoration:underline}
+.badge-demo{background:var(--tint);border:1px solid var(--line);padding:2px 8px;border-radius:3px;font-size:12px;color:var(--ink)}
+
+/* Pages */
+section.page{display:none;padding-top:18px}
+section.page.active{display:block}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;padding:6px 0 18px}
+.page-head h1{font-weight:650;font-size:clamp(30px,3.8vw,46px);line-height:1.15;letter-spacing:-.02em}
+.page-head .sub{margin-top:6px;color:var(--muted);max-width:74ch}
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+/* Buttons & Pills */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:4px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);text-decoration:none;font:500 13px/1.2 var(--sans);cursor:pointer;transition:border-color .12s,background .12s}
+.btn:hover{border-color:var(--ink)}
+.btn.primary{background:var(--moss);border-color:var(--moss);color:#fff}
+.btn.primary:hover{background:#1b4939}
+.btn.rust{background:var(--rust);border-color:var(--rust);color:#fff}
+.btn.rust:hover{background:#7d3a23}
+.btn[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:600;border:1px solid var(--line);background:var(--tint);color:var(--ink)}
+.pill.ok{background:var(--moss-bg);border-color:#b7d4c6;color:var(--moss)}
+.pill.warn,.pill.rust{background:var(--rust-bg);border-color:#e3c1b2;color:var(--rust)}
+.pill.gold{background:var(--gold-bg);border-color:#e1cca3;color:#7a5318}
+.pill.blue{background:var(--blue-bg);border-color:#b8cfe0;color:var(--blue)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#99a39b;flex:none}
+.dot.on{background:#2d8c5f}
+.dot.alert{background:#c84c2b}
+.dot.gold{background:#c9964e}
+
+/* Editorial bands & grids */
+.band{border-top:2px solid var(--line-strong);padding:16px 0 22px;margin-top:8px}
+.band-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.band-head h2{font-size:22px;font-weight:650}
+.band-head small,.muted{color:var(--muted);font-size:13px}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.split{display:grid;grid-template-columns:minmax(250px,.88fr) minmax(320px,1.35fr);gap:22px;align-items:start}
+.card{background:var(--card);border:1px solid var(--line);border-radius:5px;padding:14px 16px}
+.card-link{display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:5px;padding:14px 16px;transition:border-color .12s,transform .12s}
+.card-link:hover{border-color:var(--moss);transform:translateY(-1px)}
+.card-link strong{display:flex;justify-content:space-between;align-items:center;font-family:var(--serif);font-size:18px;margin-bottom:5px;color:var(--ink)}
+.card-link strong span{color:var(--rust);font-family:var(--sans);font-size:14px}
+.card-link p{color:var(--muted);font-size:13px}
+.card-link .meta{margin-top:8px;font-size:12px;color:var(--rust)}
+.row{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+.row:first-of-type{border-top:none}
+.row .tag{font-size:12px;color:var(--muted);min-width:92px}
+.row .right{margin-left:auto;font-size:13px;color:var(--muted)}
+.kpi-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:10px 0 18px}
+.kpi-strip.six{grid-template-columns:repeat(6,minmax(0,1fr))}
+.kpi-strip.six .kpi{padding:10px 11px}
+.kpi-strip.six .kpi strong{font-size:21px}
+@media(max-width:1180px){.kpi-strip.six{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:640px){.kpi-strip.six{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.kpi{background:var(--card);border:1px solid var(--line);border-top:2px solid var(--ink);padding:12px 14px;border-radius:4px}
+.kpi span{display:block;font-size:12px;color:var(--muted)}
+.kpi strong{display:block;margin:4px 0 2px;font:700 24px/1.2 var(--mono);color:var(--ink)}
+.kpi small{font-size:12px;color:var(--muted)}
+.quick-links{display:flex;gap:14px;flex-wrap:wrap;padding:10px 0 4px;font-size:13px}
+.quick-links a{text-decoration:none;color:var(--moss);font-weight:500}
+.quick-links a:hover{text-decoration:underline}
+
+/* Tables */
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:5px;background:var(--card)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{background:var(--tint);font-weight:600;color:var(--ink);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.matrix th,.matrix td{text-align:center;padding:7px 6px;font-size:12px}
+.matrix th:first-child,.matrix td:first-child{text-align:left;padding-left:12px;font-weight:600;white-space:nowrap}
+.matrix .grp{background:#ece7d8;border-bottom:1px solid #c9c3b0;color:var(--ink);font-size:11.5px;letter-spacing:.04em}
+.matrix td a{display:inline-block;min-width:24px;padding:2px 5px;border-radius:3px;text-decoration:none;font:600 12px var(--mono);color:var(--muted)}
+.matrix td a.hit{background:var(--moss-bg);color:var(--moss)}
+.matrix td a.hit:hover{background:var(--moss);color:#fff}
+
+/* Segmented tabs */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--card)}
+.seg button{border:none;border-right:1px solid var(--line);background:transparent;color:var(--ink);padding:6px 12px;font:500 13px var(--sans);cursor:pointer}
+.seg button:last-child{border-right:none}
+.seg button[aria-pressed="true"],.seg button[aria-selected="true"]{background:var(--ink);color:#fff}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin-bottom:14px}
+.tabs button{border:1px solid transparent;border-bottom:2px solid transparent;background:none;padding:8px 13px;font:600 13.5px var(--sans);color:var(--muted);cursor:pointer;margin-bottom:-1px}
+.tabs button[aria-selected="true"]{color:var(--moss);border-bottom-color:var(--moss);background:var(--moss-bg)}
+
+/* Digital Twin Canvas */
+.dt-shell{border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:12px 0 18px}
+.dt-shell[data-theme="night"]{background:#121b19;color:#edf2ec;border-color:#263733}
+.dt-shell[data-theme="paper"]{background:#f7f3e8;color:var(--ink);border-color:#cfc8b4}
+.dt-bar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid rgba(150,165,155,.2);font-size:12px}
+.dt-circuits{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.dt-circuits button{border:1px solid rgba(170,185,175,.35);background:transparent;color:inherit;padding:4px 9px;border-radius:3px;font-size:12px;cursor:pointer}
+.dt-circuits button[aria-pressed="true"]{background:#e3ad77;border-color:#e3ad77;color:#18211e;font-weight:600}
+.dt-svg-wrap{overflow-x:auto;padding:10px}
+svg.dt-svg{width:100%;min-width:820px;height:auto;display:block}
+.dt-node{cursor:pointer;transition:opacity .15s}
+.dt-node[data-dim="true"]{opacity:.24}
+.dt-hud{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid rgba(150,165,155,.22);background:rgba(0,0,0,.16)}
+.dt-shell[data-theme="paper"] .dt-hud{background:#efe9da}
+.dt-hud strong{font-family:var(--serif);font-size:18px;margin-right:8px}
+.dt-hud p{font-size:13px;opacity:.85;margin-top:3px}
+.conveyor{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:6px;margin-top:10px}
+.stage-chip{display:block;text-decoration:none;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:7px 8px;color:var(--ink);font-size:12px}
+.stage-chip:hover{border-color:var(--moss)}
+.stage-chip .num{display:flex;justify-content:space-between;font:600 11px var(--mono);color:var(--muted);margin-bottom:3px}
+.stage-chip.hot{border-left:3px solid var(--rust)}
+.stage-chip.active{border-left:3px solid var(--moss)}
+.stage-chip strong{display:block;font-size:12.5px}
+
+/* Zoom 3-pane inbox */
+.inbox-grid{display:grid;grid-template-columns:280px minmax(0,1fr);gap:18px;align-items:start}
+.msg-list{border:1px solid var(--line);border-radius:5px;background:var(--card);overflow:hidden}
+.msg-item{display:block;width:100%;text-align:left;border:none;border-bottom:1px solid var(--line);background:transparent;padding:11px 13px;cursor:pointer;font:inherit;color:inherit}
+.msg-item:last-child{border-bottom:none}
+.msg-item:hover{background:#f7f4ea}
+.msg-item[aria-current="true"]{background:#eef4f0;box-shadow:inset 3px 0 var(--moss)}
+.msg-item .m-top{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:3px}
+.msg-item .m-title{font-weight:600;font-size:13.5px;display:block;margin-bottom:3px}
+.msg-item .m-path{font-size:11.5px;color:var(--muted)}
+.letter{background:var(--card);border:1px solid var(--line);border-top:3px solid var(--moss);border-radius:5px;padding:20px 22px}
+.letter.pending{border-top-color:var(--rust)}
+.letter h2{font-size:24px;margin:6px 0 8px}
+.letter .body{margin:12px 0;white-space:pre-line;line-height:1.7}
+.decision-box{background:var(--tint);border:1px solid var(--line);border-radius:4px;padding:12px 14px;margin:14px 0}
+.history-list{margin:10px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}
+.history-list li{padding:5px 0;border-bottom:1px dashed var(--line)}
+
+/* Progress & Checklist */
+.progress{height:8px;background:#e4e0d2;border-radius:99px;overflow:hidden;margin:8px 0 14px}
+.progress i{display:block;height:100%;background:linear-gradient(90deg,var(--moss),#3f8c6e)}
+.checklist{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+.checklist li{border:1px solid var(--line);border-radius:4px;padding:10px 12px;background:var(--card);font-size:13px}
+.checklist li.done{background:var(--moss-bg);border-color:#b8d4c6}
+.checklist li strong{display:block;margin-bottom:3px}
+.checklist li small{color:var(--muted);font-size:12px}
+
+/* Channels & Workflow lanes */
+.chan-grid{display:grid;grid-template-columns:180px minmax(0,1fr) 260px;gap:14px;align-items:start}
+.chat-log{border:1px solid var(--line);border-radius:5px;background:var(--card);padding:14px;display:grid;gap:12px}
+.chat-msg{border-left:2px solid var(--line);padding-left:11px}
+.chat-msg.agent{border-left-color:var(--moss)}
+.chat-msg.inst{border-left-color:var(--rust)}
+.chat-meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--muted);margin-bottom:4px}
+.chat-meta strong{color:var(--ink)}
+.lanes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.lane{border-top:2px solid var(--line-strong);padding-top:10px}
+.lane h3{font-size:15px;margin-bottom:10px;display:flex;justify-content:space-between}
+.wf-card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:11px 12px;margin-bottom:10px;font-size:13px}
+.wf-card.hot{border-color:var(--rust);background:#fffaf7}
+
+/* Search input */
+.search-input{width:100%;max-width:520px;padding:8px 12px;border:1px solid var(--line);border-radius:4px;background:var(--card);font:inherit;color:var(--ink)}
+.meter{height:6px;background:#e5e1d4;border-radius:99px;overflow:hidden;margin-top:6px}
+.meter i{display:block;height:100%;background:var(--moss)}
+.meter.warn i{background:var(--rust)}
+
+footer.page-foot{margin-top:20px;border-top:1px solid var(--line);padding-top:12px;font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+
+@media(max-width:980px){
+  .shell{display:block}
+  header.topbar{position:static}
+  aside.rail{position:fixed;inset:0 auto 0 0;width:260px;z-index:40;transform:translateX(-110%);visibility:hidden;transition:transform .18s ease,visibility .18s;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  aside.rail.open{transform:translateX(0);visibility:visible}
+  .menu-btn{display:inline-flex}
+  .grid-2,.grid-3,.grid-4,.split,.inbox-grid,.chan-grid,.lanes{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail" id="rail" aria-label="OPC OS 主导航">
+    <div class="brand-head">
+      <svg class="peaks" viewBox="0 0 240 100" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0 90 L42 38 L78 65 L126 18 L175 58 L208 30 L240 72 L240 100 L0 100 Z" fill="#fffaf0"/>
+      </svg>
+      <span class="word" lang="en">OPC OS</span>
+      <div class="sub">一人公司操作系统 · 界面设计稿</div>
+    </div>
+    <div class="rail-scroll">
+      <nav aria-label="功能分区">
+        <div class="nav-group">总控与待办</div>
+        <a href="#overview"><span class="ico">▦</span>全局看板</a>
+        <a href="#digital-twin"><span class="ico">◈</span>组织数字孪生</a>
+        <a href="#inbox"><span class="ico">✉</span>全部消息<span class="cnt">7</span></a>
+        <a href="#pending"><span class="ico">◷</span>待我处理<span class="cnt hot">3</span></a>
+        <a href="#handled"><span class="ico">✓</span>已处理<span class="cnt">4</span></a>
+        <a href="#delegations"><span class="ico">⇄</span>委派台<span class="cnt">2</span></a>
+
+        <div class="nav-group">经营与公司部门</div>
+        <a href="#business-lines"><span class="ico">↗</span>公司业务线</a>
+        <a href="#commercial"><span class="ico">◆</span>商业与治理部</a>
+        <a href="#security-department"><span class="ico">⬡</span>安全部门</a>
+        <a href="#operations-department"><span class="ico">∿</span>运维部门</a>
+        <a href="#resource-department"><span class="ico">▤</span>资源成本部门</a>
+        <a href="#growth"><span class="ico">◔</span>渠道转化</a>
+
+        <div class="nav-group">产研与资产复用</div>
+        <a href="#ideas"><span class="ico">✦</span>信息与想法</a>
+        <a href="#opportunities"><span class="ico">◎</span>研发选题</a>
+        <a href="#projects"><span class="ico">▣</span>项目目录</a>
+        <a href="#product"><span class="ico">☰</span>产品进程</a>
+        <a href="#capabilities"><span class="ico">⌘</span>开源能力</a>
+        <a href="#home-room"><span class="ico">#</span>项目讨论室</a>
+
+        <div class="nav-group">现场与投入</div>
+        <a href="#activity-index"><span class="ico">◉</span>会话与仓库索引</a>
+        <a href="#worklog"><span class="ico">◫</span>工作投入</a>
+      </nav>
+    </div>
+    <div class="rail-foot" aria-label="协作与流水线引擎">
+      <a href="#channels"><span>#</span>昆仑多 Agent 频道</a>
+      <a href="#workflows"><span>▦</span>工作流看板</a>
+    </div>
+  </aside>
+
+  <main class="stage">
+    <header class="topbar">
+      <div class="top-left">
+        <button type="button" class="menu-btn" id="menu-toggle" aria-expanded="false">☰ 菜单</button>
+        <span id="crumb">总控与待办 / 全局看板</span>
+        <span class="route-tag" id="route-tag">#overview</span>
+      </div>
+      <div class="top-links">
+        <a href="../OPC_OS_PRODUCT_INTENT.md">产品导读</a>
+        <a href="opc-7-layer-blueprint.md">7 层蓝图</a>
+        <a href="flows.html">交互流程图</a>
+        <span class="badge-demo">2026-11-21 · 与当前代码能力对齐</span>
+      </div>
+    </header>
+
+    <!-- 1. 全局看板 -->
+    <section class="page" id="overview">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">总控与待办 · 首页</div>
+          <h1>全局看板</h1>
+          <p class="sub">一屏汇聚实时工作现场、多条公司业务线、公司四部治理、待裁决事项、产品 × 十三阶段全生命周期矩阵与最近仓库维护。</p>
+        </div>
+        <div class="actions">
+          <a class="btn primary" href="#digital-twin">打开组织数字孪生 ↗</a>
+          <a class="btn rust" href="#pending">处理 3 条待办 →</a>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head">
+          <h2>工作现场</h2>
+          <a href="#activity-index">打开完整索引 ↗</a>
+        </div>
+        <div class="kpi-strip">
+          <div class="kpi"><span>执行中</span><strong>1</strong><small>Herdr · pagelens-interpret</small></div>
+          <div class="kpi"><span>等待中</span><strong>2</strong><small>待人工审批与确认</small></div>
+          <div class="kpi"><span>本机会话及进程</span><strong>24</strong><small>Antigravity / Codex / Grok / Claude</small></div>
+          <div class="kpi"><span>纳管与索引仓库</span><strong>237</strong><small>含 18 项 L0–L6 蓝图核心资产</small></div>
+        </div>
+        <div class="card">
+          <div class="row"><span class="pill ok">执行中</span><strong>Codex CLI · t6r</strong><span>隔离 worktree 修复离线 License 验签边界</span><span class="right">magele758/pagelens-interpret</span></div>
+          <div class="row"><span class="pill blue">近期活动</span><strong>Antigravity · agy</strong><span>更新 OPC OS 界面原型与 7 层文档</span><span class="right">magele758/agent-zoom</span></div>
+          <div class="row"><span class="pill">空闲</span><strong>Grok CLI · t1d</strong><span>学习与认知工作区就绪</span><span class="right">magele758/learn-agent</span></div>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head">
+          <h2>公司业务线</h2>
+          <a href="#business-lines">管理业务线与打法库 ↗</a>
+        </div>
+        <div class="grid-2">
+          <a class="card-link" href="#business-lines" data-line="rd">
+            <strong>技术研发 <span>↗</span></strong>
+            <p>从日记启发、GitHub Issue 与线上工单回流中自动选题，经 Zoom 审批交 Herdr 隔离编码与独立评审。</p>
+            <div class="meta">3 个候选选题 · 1 份待批计划</div>
+          </a>
+          <a class="card-link" href="#business-lines" data-line="flagship">
+            <strong>旗舰插件商业变现（1 号试点）<span>↗</span></strong>
+            <p>聚焦 PageLens 同传跑通「高转化门面 → UTM 获客 → 核心动作激活 → MoR 离线 License 收款 → DuckDB 漏斗复盘」。</p>
+            <div class="meta">1 轮实验进行中 · 闭环就绪度 86%</div>
+          </a>
+          <a class="card-link" href="#business-lines" data-line="opencore">
+            <strong>Open-Core 开发者商业线 <span>↗</span></strong>
+            <p>围绕 audiobook 与 hyper-vibekanban 将开源 Star 转化为免配置桌面包与远程协作 Pro 授权。</p>
+            <div class="meta">1 轮定价对照实验</div>
+          </a>
+          <a class="card-link" href="#business-lines" data-line="shop">
+            <strong>店铺运营 <span>↗</span></strong>
+            <p>复用 PageLens Agent 与 ChromeGate 人工确认闸门，小范围验证跨境商品草稿预检与净流入。</p>
+            <div class="meta">1 轮实验 · 1 轮待复盘 · 3 笔收支凭据</div>
+          </a>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head">
+          <h2>公司部门</h2>
+          <small>四个跨产品、跨业务线职能部门</small>
+        </div>
+        <div class="grid-2">
+          <a class="card-link" href="#commercial">
+            <strong>商业与治理部 <span>↗</span></strong>
+            <p>统筹 L0–L6 7 层资产地图、1 号变现试点、6 大伴生服务网格、Ed25519 离线授权、门面合规与 DuckDB 漏斗。</p>
+          </a>
+          <a class="card-link" href="#security-department">
+            <strong>安全部门 <span>↗</span></strong>
+            <p>查看发版前安全评审、最小权限边界核查，跟进整改发现与复审结论。</p>
+          </a>
+          <a class="card-link" href="#operations-department">
+            <strong>运维部门 <span>↗</span></strong>
+            <p>实时探测 6 大公司服务在线状态与延迟，追踪项目服务版本升级与验证结果。</p>
+          </a>
+          <a class="card-link" href="#resource-department">
+            <strong>资源成本部门 <span>↗</span></strong>
+            <p>汇总 Agent Hub 采集的各 AI 工具套餐余量、重置时间窗口与手动登记的订阅账单。</p>
+          </a>
+        </div>
+        <div class="quick-links">
+          <a href="#digital-twin">组织数字孪生 ↗</a>
+          <a href="#delegations">委派台与默认办理方式 ↗</a>
+          <a href="#ideas">从信息到想法 ↗</a>
+          <a href="#capabilities">开源能力 ↗</a>
+          <a href="#worklog">查看个人工作投入 ↗</a>
+          <a href="#home-room">项目讨论室 ↗</a>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head">
+          <h2>待我处理 <span class="pill rust">3</span></h2>
+          <a href="#pending">打开待办收件箱 ↗</a>
+        </div>
+        <div class="card">
+          <div class="row"><span class="pill rust">计划审批</span><strong>PageLens / pagelens-interpret · 确认离线 License 验签修复计划 r1</strong><a class="right" href="#pending" data-open-msg="m1">查看 r1 ↗</a></div>
+          <div class="row"><span class="pill rust">维护需求</span><strong>ChromeGate / chromegate-gateway · r2 增加实验编号回执关联</strong><a class="right" href="#capability-review">查看审批 ↗</a></div>
+          <div class="row"><span class="pill warn">经营复盘</span><strong>店铺运营 · 10 款草稿预检实验复盘决定</strong><a class="right" href="#pending" data-open-msg="m3">给出决定 ↗</a></div>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head">
+          <h2>产品与阶段</h2>
+          <a href="#projects">打开项目目录 ↗</a>
+        </div>
+        <div class="table-wrap">
+          <table class="matrix" aria-label="各产品十三个阶段的任务数">
+            <thead>
+              <tr>
+                <th rowspan="2">产品</th>
+                <th class="grp" colspan="4">产品定义（01–04）</th>
+                <th class="grp" colspan="5">交付与运行（05–09）</th>
+                <th class="grp" colspan="4">市场与财务（10–13）</th>
+              </tr>
+              <tr>
+                <th>信息</th><th>Idea</th><th>PRD</th><th>设计</th>
+                <th>开发</th><th>测试</th><th>发布</th><th>运维</th><th>Trace</th>
+                <th>GTM</th><th>获客</th><th>营收</th><th>记账</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>全公司</td>
+                <td><a class="hit" href="#stage" data-stage="research">3</a></td>
+                <td><a class="hit" href="#stage" data-stage="idea">4</a></td>
+                <td><a class="hit" href="#stage" data-stage="prd">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="design">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="development">5</a></td>
+                <td><a class="hit" href="#stage" data-stage="testing">3</a></td>
+                <td><a class="hit" href="#stage" data-stage="release">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="operations">4</a></td>
+                <td><a class="hit" href="#stage" data-stage="trace">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="gtm">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="acquisition">3</a></td>
+                <td><a class="hit" href="#stage" data-stage="revenue">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="accounting">1</a></td>
+              </tr>
+              <tr>
+                <td>PageLens</td>
+                <td><a class="hit" href="#stage" data-stage="research">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="idea">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="prd">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="design">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="development">3</a></td>
+                <td><a class="hit" href="#stage" data-stage="testing">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="release">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="operations">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="trace">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="gtm">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="acquisition">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="revenue">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="accounting">1</a></td>
+              </tr>
+              <tr>
+                <td>OPC 商业套件</td>
+                <td><a href="#stage" data-stage="research">—</a></td>
+                <td><a href="#stage" data-stage="idea">—</a></td>
+                <td><a class="hit" href="#stage" data-stage="prd">1</a></td>
+                <td><a href="#stage" data-stage="design">—</a></td>
+                <td><a class="hit" href="#stage" data-stage="development">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="testing">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="release">1</a></td>
+                <td><a class="hit" href="#stage" data-stage="operations">2</a></td>
+                <td><a href="#stage" data-stage="trace">—</a></td>
+                <td><a href="#stage" data-stage="gtm">—</a></td>
+                <td><a class="hit" href="#stage" data-stage="acquisition">1</a></td>
+                <td><a href="#stage" data-stage="revenue">—</a></td>
+                <td><a href="#stage" data-stage="accounting">—</a></td>
+              </tr>
+              <tr>
+                <td>OPC 分析与内核</td>
+                <td><a class="hit" href="#stage" data-stage="research">2</a></td>
+                <td><a class="hit" href="#stage" data-stage="idea">2</a></td>
+                <td><a href="#stage" data-stage="prd">—</a></td>
+                <td><a href="#stage" data-stage="design">—</a></td>
+                <td><a href="#stage" data-stage="development">—</a></td>
+                <td><a href="#stage" data-stage="testing">—</a></td>
+                <td><a href="#stage" data-stage="release">—</a></td>
+                <td><a class="hit" href="#stage" data-stage="operations">1</a></td>
+                <td><a href="#stage" data-stage="trace">—</a></td>
+                <td><a href="#stage" data-stage="gtm">—</a></td>
+                <td><a href="#stage" data-stage="acquisition">—</a></td>
+                <td><a href="#stage" data-stage="revenue">—</a></td>
+                <td><a href="#stage" data-stage="accounting">—</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. 组织数字孪生 -->
+    <section class="page" id="digital-twin">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">总控与待办 · 实时全息沙盘</div>
+          <h1>组织数字孪生</h1>
+          <p class="sub">将一人公司（OPC）的决策脑枢、多 Agent 产研工坊、商业四部、十三阶价值流与六大伴生微服务映射为可交互数字孪生体——悬停透视链路，单击直达任意模块。</p>
+        </div>
+        <div class="actions">
+          <div class="seg" role="group" aria-label="孪生透镜">
+            <button type="button" data-dt-lens="spatial" aria-pressed="true">全息空间沙盘</button>
+            <button type="button" data-dt-lens="loops" aria-pressed="false">双闭环价值流</button>
+            <button type="button" data-dt-lens="atlas" aria-pressed="false">全功能星图 (35)</button>
+          </div>
+          <div class="seg" id="dt-theme-seg" role="group" aria-label="画布风格">
+            <button type="button" data-dt-theme="night" aria-pressed="true">昆仑夜航</button>
+            <button type="button" data-dt-theme="paper" aria-pressed="false">宣纸堪舆</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpi-strip six">
+        <div class="kpi"><span>待裁决闸门</span><strong style="color:var(--rust)">3</strong><small>7 条总消息 · 4 已归档</small></div>
+        <div class="kpi"><span>自治委派与流水线</span><strong>3</strong><small>2 在办委派 · 1 运行工作流</small></div>
+        <div class="kpi"><span>昆仑多 Agent 协同</span><strong>4 / 6</strong><small>4 活跃频道 · 3 实时在线</small></div>
+        <div class="kpi"><span>业务线与实验</span><strong>5 线 · 4 轮</strong><small>6 个研发候选选题</small></div>
+        <div class="kpi"><span>1 号变现闭环</span><strong style="color:var(--moss)">86%</strong><small>PageLens · 12 张有效离线授权</small></div>
+        <div class="kpi"><span>微服务神经底座</span><strong>6 / 6</strong><small>24 本机会话 · 237 索引仓库</small></div>
+      </div>
+
+      <div id="dt-lens-spatial">
+        <div class="dt-shell" id="dt-shell" data-theme="night">
+          <div class="dt-bar">
+            <div class="dt-circuits" role="group" aria-label="信号回路筛选">
+              <span>信号回路：</span>
+              <button type="button" data-circuit="all" aria-pressed="true">全部神经回路</button>
+              <button type="button" data-circuit="decision" aria-pressed="false">创始人决策与委派</button>
+              <button type="button" data-circuit="rd" aria-pressed="false">多 Agent 产研与交付</button>
+              <button type="button" data-circuit="commercial" aria-pressed="false">商业变现与公司治理</button>
+              <button type="button" data-circuit="runtime" aria-pressed="false">现场会话与底座遥测</button>
+            </div>
+            <span>悬停舱室透视路由 · 点击任意舱室直达对应页面</span>
+          </div>
+          <div class="dt-svg-wrap"><svg class="dt-svg" id="dt-svg" viewBox="0 0 1200 685" role="img" aria-label="OPC 全息组织数字孪生拓扑图"></svg></div>
+          <div class="dt-hud" id="dt-hud">
+            <div><strong id="dt-hud-title">待我处理</strong><span class="pill rust" id="dt-hud-zone">脑枢 · 裁决闸门</span><p id="dt-hud-desc">需创始人拍板、答复或放行的高优事项闸门</p></div>
+            <a class="btn primary" id="dt-hud-go" href="#pending">直达 待我处理 ↗</a>
+          </div>
+        </div>
+      </div>
+
+      <div id="dt-lens-loops" hidden>
+        <div class="band">
+          <div class="band-head"><h2>闭环 A · 情报立项 → 多 Agent 产研 → 安全发布交付链（供给侧）</h2></div>
+          <div class="grid-3">
+            <a class="card-link" href="#ideas"><strong>A1 · 信息与想法 <span>↗</span></strong><p>daily-review-learning 日记全文阅读、Learn Agent 与想法孵化</p></a>
+            <a class="card-link" href="#opportunities"><strong>A2 · 研发选题 <span>↗</span></strong><p>按 影响 × 把握 ÷ 工作量 排序并衔接自动选题</p></a>
+            <a class="card-link" href="#channels"><strong>A3 · 昆仑多 Agent 频道 <span>↗</span></strong><p>异构模型群聊、7 种身份方案评审与招投标</p></a>
+            <a class="card-link" href="#workflows"><strong>A4 · 工作流与委派台 <span>↗</span></strong><p>版本化 DAG 审批、Herdr 隔离 Worktree 编码与独立评审</p></a>
+            <a class="card-link" href="#security-department"><strong>A5 · 安全部门门禁 <span>↗</span></strong><p>发版前最小权限核查、整改跟踪与复审</p></a>
+            <a class="card-link" href="#capabilities"><strong>A6 · 开源能力沉淀 <span>↗</span></strong><p>登记固定 Commit/Tag 版本供跨业务线复用</p></a>
+          </div>
+        </div>
+        <div class="band">
+          <div class="band-head"><h2>闭环 B · 产品门面 → UTM 获客 → 离线授权收银 → DuckDB 复盘链（商业侧）</h2></div>
+          <div class="grid-3">
+            <a class="card-link" href="#business-lines"><strong>B1 · 公司业务线 <span>↗</span></strong><p>5 套标准化打法库与多轮经营实验假设</p></a>
+            <a class="card-link" href="#stage" data-stage="gtm"><strong>B2 · 门面与合规 <span>↗</span></strong><p>opc-gtm-kit 生成高转化着陆页、隐私声明与多平台 UTM 稿</p></a>
+            <a class="card-link" href="#growth"><strong>B3 · 渠道转化报表 <span>↗</span></strong><p>按渠道追踪 获客 → 激活 → 首单 → 复购 与原始凭据下钻</p></a>
+            <a class="card-link" href="#commercial"><strong>B4 · 商业与治理部 <span>↗</span></strong><p>MoR 收银 Webhook 与 Ed25519 离线 OPCL1 License 签发验签</p></a>
+            <a class="card-link" href="#operations-department"><strong>B5 · 运维与客服遥测 <span>↗</span></strong><p>6 大伴生引擎探针、opc-ops-kit 激活遥测与工单分诊</p></a>
+            <a class="card-link" href="#resource-department"><strong>B6 · 算力成本与 DuckDB <span>↗</span></strong><p>扣减 Token / 基础设施成本核算净毛利并同步 data_analysis</p></a>
+          </div>
+        </div>
+      </div>
+
+      <div id="dt-lens-atlas" hidden>
+        <div class="band">
+          <div class="band-head">
+            <h2>全功能星图目录（22 功能舱室 + 13 阶段工作单 = 35 个直达入口）</h2>
+            <input type="search" class="search-input" id="atlas-search" placeholder="筛选全部 35 个功能舱室与阶段（如：商业、安全、频道、PRD、记账…）">
+          </div>
+          <div class="grid-3" id="atlas-grid"></div>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head"><h2>十三阶全生命周期价值传送带</h2><a href="#product">打开产品进程总表 ↗</a></div>
+        <div class="conveyor" id="dt-conveyor"></div>
+      </div>
+    </section>
+
+    <!-- 3. Zoom 统一消息收件箱（全部 / 待我处理 / 已处理共用三栏结构） -->
+    <section class="page" id="inbox">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">总控与待办 · Zoom 统一收件箱</div>
+          <h1 id="inbox-heading">全部消息</h1>
+          <p class="sub">跨 coding agent、自治工作流、项目讨论室、经营实验与原仓维护需求的统一消息列表；阅读和归档不替代版本审批。</p>
+        </div>
+        <div class="actions">
+          <div class="seg" role="group" aria-label="消息范围">
+            <button type="button" data-inbox-filter="all" aria-pressed="true">全部消息 (7)</button>
+            <button type="button" data-inbox-filter="pending" aria-pressed="false">待我处理 (3)</button>
+            <button type="button" data-inbox-filter="handled" aria-pressed="false">已处理 (4)</button>
+          </div>
+          <a class="btn" href="#delegations">委派方式 ↗</a>
+        </div>
+      </div>
+      <div class="inbox-grid">
+        <div class="msg-list" id="msg-list" aria-label="消息列表"></div>
+        <article class="letter pending" id="msg-detail" aria-label="消息详情"></article>
+      </div>
+    </section>
+
+    <!-- 4. 委派台 -->
+    <section class="page" id="delegations">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">总控与待办 · 全站委派中枢</div>
+          <h1>委派台</h1>
+          <p class="sub">从任意消息、项目、业务线或仓库发起稳定委派工单，指定具名 coding agent CLI 或 Agent Home Bot，并配置后续待办的默认办理方式。</p>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#resource-department">派单前核对算力额度 ↗</a>
+        </div>
+      </div>
+      <div class="split">
+        <div class="card">
+          <div class="eyebrow">自动路由配置</div>
+          <h2>默认办理方式</h2>
+          <p class="muted" style="margin:6px 0 12px">启用后，新进入 Zoom 的待处理事项自动按以下规则分派；需本人批准的事项由执行者交回建议与证据后仍回到「待我处理」。</p>
+          <div class="row"><span class="tag">办理通道</span><strong>coding-agent CLI（订阅收件箱）</strong></div>
+          <div class="row"><span class="tag">默认执行人</span><strong>codex-live</strong></div>
+          <div class="row"><span class="tag">自动办理</span><span class="pill ok">已开启（仅对后续新待办生效）</span></div>
+          <div class="row"><span class="tag">默认说明</span><span>先核对原仓库测试与关联文档，普通咨询可直接办结，涉及审批或发布仅整理建议。</span></div>
+        </div>
+        <div class="card">
+          <div class="band-head" style="margin-bottom:8px"><h2>委派工单追踪</h2><span class="pill blue">2 在办 · 1 待本人决定</span></div>
+          <div class="row"><span class="pill ok">正在办理</span><div><strong>核对 PageLens 商店隐私合规清单</strong><br><small class="muted">执行人 codex-live · 来源 商业与治理部 · 租约有效</small></div><a class="right" href="#commercial">原事项 ↗</a></div>
+          <div class="row"><span class="pill rust">待本人决定</span><div><strong>评审 chromegate-gateway 实验回执扩展方案</strong><br><small class="muted">执行人 Agent Home / OpsBot · 已附建议与影响面</small></div><a class="right" href="#capability-review">去批复 ↗</a></div>
+          <div class="row"><span class="pill">已交回</span><div><strong>汇总本周每日复盘中的 Agent 评测条目</strong><br><small class="muted">执行人 grok-cli · 已写回原消息并归档</small></div><a class="right" href="#ideas">回原处 ↗</a></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. 公司业务线 -->
+    <section class="page" id="business-lines">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">经营与公司部门 · 多业务线组合</div>
+          <h1>公司业务线</h1>
+          <p class="sub">每条业务线独立记录目标、标准步骤、共用资产、多轮经营实验及多币种收支凭据；实验观察可一键转为研发候选，复盘决定走 Zoom。</p>
+        </div>
+        <div class="actions">
+          <a class="btn primary" href="#commercial">从商业打法库一键立项 ↗</a>
+          <a class="btn" href="#worklog">查看本线工作投入 ↗</a>
+        </div>
+      </div>
+      <div class="split">
+        <div class="msg-list" id="line-list" aria-label="业务线列表"></div>
+        <div class="card" id="line-detail"></div>
+      </div>
+    </section>
+
+    <!-- 6. 商业与治理部 -->
+    <section class="page" id="commercial">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">经营与公司部门 · 商业闭环驾驶舱</div>
+          <h1>商业闭环与公司治理</h1>
+          <p class="sub">串联 L0–L6 七层架构：把供给侧产研工厂与 L5 收银离线授权、GTM 门面合规、客服遥测及 L4 DuckDB 经营分析合为一体。</p>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn">1. 一键纳管公司全景</button>
+          <button type="button" class="btn primary">2. 一键拉起依赖服务</button>
+          <button type="button" class="btn rust">3. 一键跑通首单闭环</button>
+          <button type="button" class="btn">同步 DuckDB 漏斗</button>
+        </div>
+      </div>
+
+      <div class="kpi-strip">
+        <div class="kpi"><span>净营收（扣除退款与算力成本）</span><strong style="color:var(--moss)">$326.40</strong><small>毛利率 93.8% · 总收款 $348.00</small></div>
+        <div class="kpi"><span>订单与离线 License</span><strong>12 / 12</strong><small>累计订单数 / 有效 Ed25519 授权</small></div>
+        <div class="kpi"><span>试点转化漏斗（获客→激活→首单）</span><strong>340 → 98 → 12</strong><small>复购 3 人 · 候补私域 64 人</small></div>
+        <div class="kpi"><span>客户工单与线上稳定度</span><strong>1 待办</strong><small>待发版回访 2 单 · 无崩溃率 99.6%</small></div>
+      </div>
+
+      <div class="band">
+        <div class="band-head">
+          <h2>1 号商业试点与聚焦铁律</h2>
+          <span class="pill rust">聚焦铁律生效：闭环跑通前冻结新开底层基建库</span>
+        </div>
+        <div class="card">
+          <div class="row" style="padding-top:0">
+            <div><strong>当前聚焦：PageLens / pagelens-interpret</strong> <span class="pill ok">$29 买断 / $19 年付</span><p class="muted" style="margin-top:4px">聚焦 1 号商业试点：跑通着陆页、UTM 获客、有效激活、离线 License 收银到 data_analysis 毛利漏斗复盘的完整闭环。</p></div>
+            <strong class="right" style="color:var(--moss);font-size:16px">闭环就绪度 86%</strong>
+          </div>
+          <div class="progress"><i style="width:86%"></i></div>
+          <ul class="checklist">
+            <li class="done"><strong>✓ 1. 7 层架构与公司项目台账归档</strong><small>已登记 18 个子项目，全部完成 L0–L6 层级标注</small></li>
+            <li class="done"><strong>✓ 2. 高转化产品门面与商店隐私合规底板</strong><small>opc-gtm-kit (:52332) 已生成着陆页与隐私合规声明</small></li>
+            <li class="done"><strong>✓ 3. 带参 (UTM) 渠道获客与私域候补打通</strong><small>累计归因获客 340 人 · Waitlist 64 人</small></li>
+            <li class="done"><strong>✓ 4. 客户端去隐私遥测与有效激活回流</strong><small>opc-ops-kit (:52333) 已回流 98 位核心动作激活</small></li>
+            <li class="done"><strong>✓ 5. MoR 收银网关与 Ed25519 离线 License 签发</strong><small>opc-commerce-kit (:52331) 公钥就绪 · 12 张 OPCL1 授权</small></li>
+            <li class="done"><strong>✓ 6. 首笔订单入账与净毛利核算</strong><small>已按币种扣除 LLM Token 与基础设施成本核算毛利</small></li>
+            <li><strong>7. 客服分诊闭环与 data_analysis 漏斗洞察</strong><small>DuckDB 17 列标准 Trace 同步与工单发版回访待终验</small></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head"><h2>OPC 六大伴生服务联动网格</h2><small>命令：<code>npm run opc:up</code> / <code>npm run opc:verify</code></small></div>
+        <div class="grid-3">
+          <div class="card"><div class="row" style="padding:0 0 6px"><span class="dot on"></span><strong>OPC Commerce Kit</strong><span class="pill right">L5</span></div><p class="muted">MoR Webhook + Ed25519 离线 License + 毛利台账 · <code>:52331</code> · 3ms</p></div>
+          <div class="card"><div class="row" style="padding:0 0 6px"><span class="dot on"></span><strong>OPC GTM Kit</strong><span class="pill right">L5</span></div><p class="muted">产品门面着陆页 + 隐私合规 + UTM 归因与多平台改编 · <code>:52332</code> · 2ms</p></div>
+          <div class="card"><div class="row" style="padding:0 0 6px"><span class="dot on"></span><strong>OPC Ops Kit</strong><span class="pill right">L5</span></div><p class="muted">统一客服工单分诊（联动研发/Zoom）+ 去隐私遥测 · <code>:52333</code> · 2ms</p></div>
+          <div class="card"><div class="row" style="padding:0 0 6px"><span class="dot on"></span><strong>data_analysis</strong><span class="pill right">L4</span></div><p class="muted">DuckDB + Palantir Ontology + 多步漏斗/RFM 复盘 · <code>:8000</code> · 11ms</p></div>
+          <div class="card"><div class="row" style="padding:0 0 6px"><span class="dot on"></span><strong>Agent Home</strong><span class="pill right">L1</span></div><p class="muted">ppeng-agent-bot 常驻数字员工房间与 Goal Ledger · <code>:37070</code> · 5ms</p></div>
+          <div class="card"><div class="row" style="padding:0 0 6px"><span class="dot on"></span><strong>Agent Hub</strong><span class="pill right">L1</span></div><p class="muted">个人工作看板公开日报与套餐额度快照源 · <code>:28790</code> · 4ms</p></div>
+        </div>
+      </div>
+
+      <div class="band">
+        <div class="band-head"><h2>商业操作与 7 层资产地图</h2></div>
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" data-cm-tab="layers" aria-selected="true">OPC 7 层全景地图（L6→L0）</button>
+          <button type="button" role="tab" data-cm-tab="license" aria-selected="false">离线 License 签发与验签</button>
+          <button type="button" role="tab" data-cm-tab="gtm" aria-selected="false">门面·合规·多平台 UTM 改编</button>
+          <button type="button" role="tab" data-cm-tab="support" aria-selected="false">统一客服工单分诊</button>
+        </div>
+        <div class="card" id="cm-tab-panel"></div>
+      </div>
+    </section>
+
+    <!-- 7. 安全部门 -->
+    <section class="page" id="security-department">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">经营与公司部门 · 风险护栏</div>
+          <h1>安全部门</h1>
+          <p class="sub">按项目登记发版前安全评审范围（权限边界、密钥隔离、离线验签与隐私合规），保留原发现、整改证据与复审历史。</p>
+        </div>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h2>审查记录 <span class="pill">3</span></h2>
+          <div class="row"><span class="pill rust">待整改</span><div><strong>PageLens / pagelens-interpret · v0.9 权限清单</strong><br><small class="muted">需收窄 host_permissions 声明并补齐离线验签失败降级测试</small></div></div>
+          <div class="row"><span class="pill ok">通过</span><div><strong>OPC 商业套件 / opc-commerce-kit · Webhook 验签</strong><br><small class="muted">HMAC 恒时比对与幂等 eventId 去重复核通过</small></div></div>
+          <div class="row"><span class="pill ok">通过</span><div><strong>OPC 分析与内核 / chromegate-gateway · cgk_ 令牌</strong><br><small class="muted">发布/付款强制人工弹窗确认不可被参数绕过</small></div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">评审详情 · 整改与复审</div>
+          <h2>PageLens v0.9 商店发布前安全评审</h2>
+          <div class="row"><span class="tag">评审范围</span><span>manifest.json 权限边界、Ed25519 公钥内置、遥测字段脱敏</span></div>
+          <div class="row"><span class="tag">发现项 #1</span><span class="pill rust">高</span><span>去除未使用的 <code>tabs</code> 全域权限，改为按当前活动标签页 <code>activeTab</code>。</span></div>
+          <div class="row"><span class="tag">发现项 #2</span><span class="pill gold">中</span><span>遥测 payload 禁止携带完整页面 URL，仅上报域名哈希与匿名激活事件。</span></div>
+          <div class="row"><span class="tag">整改流转</span><a href="#opportunities">关联研发候选修复 →</a>　<a href="#projects">返回项目目录 ↗</a></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8. 运维部门 -->
+    <section class="page" id="operations-department">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">经营与公司部门 · 可用性与版本台账</div>
+          <h1>运维部门</h1>
+          <p class="sub">实时探查全公司 6 大伴生服务在线可达性与响应延迟，并维护各项目服务的当前版本、目标版本、异常恢复与升级验证记录。</p>
+        </div>
+      </div>
+      <div class="band">
+        <div class="band-head"><h2>公司服务健康检查</h2><span class="pill ok">6 / 6 在线</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>服务</th><th>层级</th><th>端点</th><th>状态</th><th>延迟</th><th>摘要</th></tr></thead>
+            <tbody>
+              <tr><td>OPC Commerce Kit</td><td>L5</td><td><code>http://127.0.0.1:52331</code></td><td><span class="pill ok">在线</span></td><td>3ms</td><td>12 笔订单 · 12 张有效授权</td></tr>
+              <tr><td>OPC GTM Kit</td><td>L5</td><td><code>http://127.0.0.1:52332</code></td><td><span class="pill ok">在线</span></td><td>2ms</td><td>340 次归因 · 64 人候补</td></tr>
+              <tr><td>OPC Ops Kit</td><td>L5</td><td><code>http://127.0.0.1:52333</code></td><td><span class="pill ok">在线</span></td><td>2ms</td><td>1 张待办工单 · 98 位激活用户</td></tr>
+              <tr><td>data_analysis (DuckDB)</td><td>L4</td><td><code>http://127.0.0.1:8000</code></td><td><span class="pill ok">在线</span></td><td>11ms</td><td>17 列标准 Trace 漏斗引擎就绪</td></tr>
+              <tr><td>Agent Home (ppeng)</td><td>L1</td><td><code>http://127.0.0.1:37070</code></td><td><span class="pill ok">在线</span></td><td>5ms</td><td>常驻数字员工房间在线</td></tr>
+              <tr><td>Agent Hub</td><td>L1</td><td><code>http://127.0.0.1:28790</code></td><td><span class="pill ok">在线</span></td><td>4ms</td><td>公开日报与额度快照可读</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="band">
+        <div class="band-head"><h2>项目服务台账与版本升级</h2></div>
+        <div class="card">
+          <div class="row"><span class="pill ok">已验证</span><strong>PageLens / pagelens-interpret</strong><span>v0.8.4 → v0.9.0-rc1 · Chrome Web Store 预检通过</span><span class="right">2026-11-21</span></div>
+          <div class="row"><span class="pill blue">计划升级</span><strong>OPC 分析与内核 / agent-zoom</strong><span>v0.1.0 · 新增组织数字孪生与商业闭环中枢</span><span class="right">247/247 测试通过</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 9. 资源成本部门 -->
+    <section class="page" id="resource-department">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">经营与公司部门 · 算力与订阅台账</div>
+          <h1>资源成本部门</h1>
+          <p class="sub">汇总 Agent Hub 采集的各 AI 编程套餐短时与周额度窗口、重置时间，以及手工登记的其他月/年付订阅费用，便于派单前核对余量。</p>
+        </div>
+        <div class="actions"><a class="btn" href="#delegations">返回委派台选执行者 ↗</a></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="band-head" style="margin-bottom:8px"><h2>工具额度（Agent Hub 快照）</h2><small>可一键重读或重新采集</small></div>
+          <div class="row"><div style="flex:1"><strong>Codex · 5 小时窗口</strong><div class="meter"><i style="width:74%"></i></div></div><span class="right">余量 74% · 2h 后重置</span></div>
+          <div class="row"><div style="flex:1"><strong>Claude Max · 周额度窗口</strong><div class="meter"><i style="width:62%"></i></div></div><span class="right">余量 62% · 周一重置</span></div>
+          <div class="row"><div style="flex:1"><strong>Grok CLI · 高频额度</strong><div class="meter warn"><i style="width:18%"></i></div></div><span class="right" style="color:var(--rust)">余量 18% · 今日 20:00 重置</span></div>
+          <div class="row"><div style="flex:1"><strong>Antigravity · 模型配额</strong><div class="meter"><i style="width:88%"></i></div></div><span class="right">余量 88% · 正常</span></div>
+        </div>
+        <div class="card">
+          <div class="band-head" style="margin-bottom:8px"><h2>手动登记的订阅账单</h2><span class="pill gold">月均折合 $189</span></div>
+          <div class="row"><strong>Cloudflare / 域名与静态托管</strong><span>年付 · 门面与着陆页</span><span class="right">$12 / 年</span></div>
+          <div class="row"><strong>MoR 收银手续费（按单扣减）</strong><span>Lemon Squeezy / Paddle</span><span class="right">5% + $0.50 / 单</span></div>
+          <div class="row"><strong>推理 API 备用额度</strong><span>按量计费 · 冲抵产品毛利</span><span class="right">本月已用 $18.40</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 10. 渠道转化 -->
+    <section class="page" id="growth">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">经营与公司部门 · 增长报告</div>
+          <h1>渠道转化</h1>
+          <p class="sub">按产品与首次获客渠道统计「获客 → 激活 → 首单 → 复购」累计去重人数与相邻转化率；点击人数可核对原始客户与订单凭据。</p>
+        </div>
+        <div class="actions"><a class="btn primary" href="#commercial">在商业驾驶舱同步 DuckDB ↗</a></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>渠道（产品：PageLens）</th><th>获客</th><th>激活（转化率）</th><th>首单（转化率）</th><th>复购（转化率）</th></tr></thead>
+          <tbody>
+            <tr><td><strong>小红书内容首发 (xiaohongshu)</strong></td><td>160</td><td>52 (32.5%)</td><td>7 (13.5%)</td><td>2 (28.6%)</td></tr>
+            <tr><td><strong>轻工具导流条 (lead_magnet)</strong></td><td>110</td><td>26 (23.6%)</td><td>3 (11.5%)</td><td>1 (33.3%)</td></tr>
+            <tr><td><strong>GitHub Release / 社群</strong></td><td>70</td><td>20 (28.6%)</td><td>2 (10.0%)</td><td>0 (0.0%)</td></tr>
+            <tr style="background:var(--tint)"><td><strong>总计（去重客户）</strong></td><td><strong>340</strong></td><td><strong>98 (28.8%)</strong></td><td><strong>12 (12.2%)</strong></td><td><strong>3 (25.0%)</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="band">
+        <div class="band-head"><h2>原始凭据抽样与未计入漏斗核查</h2><small>命令：<code>opc-os growth record</code> / <code>opc-os growth report</code></small></div>
+        <div class="card">
+          <div class="row"><span class="pill ok">首单</span><strong>cust_891 · 订单 ORD-20261121-012</strong><span>来源 opc-commerce-kit Webhook · 渠道 xiaohongshu</span><span class="right">$29.00 USD</span></div>
+          <div class="row"><span class="pill warn">未计入漏斗</span><strong>cust_ext_09 · 订单 ORD-DIRECT-099</strong><span>原因：missing_acquisition（缺少前置获客事件，保留待核实）</span><span class="right">独立留档</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 11. 信息与想法 -->
+    <section class="page" id="ideas">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">产研与资产复用 · 认知源头</div>
+          <h1>信息与想法</h1>
+          <p class="sub">直读 daily-review-learning 每日复盘全文，送入 Learn Agent 深化理解，写下「想验证什么」并关联多个产品，一键派给项目研发或研究工作单。</p>
+        </div>
+      </div>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" data-idea-tab="daily" aria-selected="true">今日日记原文 (2026-11-21)</button>
+        <button type="button" role="tab" data-idea-tab="learn" aria-selected="false">Learn Agent 主动学习</button>
+        <button type="button" role="tab" data-idea-tab="saved" aria-selected="false">已保存想法与关联产品 (3)</button>
+      </div>
+      <div class="card" id="idea-panel"></div>
+    </section>
+
+    <!-- 12. 研发选题 -->
+    <section class="page" id="opportunities">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">产研与资产复用 · 候选池与自动选题</div>
+          <h1>研发选题</h1>
+          <p class="sub">汇集日记启发、GitHub Issue/Release、店铺观察与客服工单缺陷；按「影响 × 把握 ÷ 工作量」排序，项目开启自动选题后每次只推进一份待批计划。</p>
+        </div>
+        <div class="actions">
+          <span class="pill ok">自动选题：已开启（PageLens / pagelens-interpret）</span>
+          <a class="btn primary" href="#workflows">打开当前待批计划 r1 →</a>
+        </div>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h2>项目候选与在途</h2>
+          <div class="row"><span class="pill ok">已选入计划</span><div><strong>离线 License 验签时钟偏移容错修复</strong><br><small class="muted">评分 20.0（影响 5 × 把握 4 ÷ 工作量 1）· 来源：客服工单 #T-42</small></div></div>
+          <div class="row"><span class="pill blue">排队中</span><div><strong>将失败字段样例收入确定性重放库</strong><br><small class="muted">评分 12.0（影响 4 × 把握 3 ÷ 工作量 1）· 来源：daily-review-learning</small></div></div>
+          <div class="row"><span class="pill">排队中</span><div><strong>店铺草稿提交前校验规格编号格式</strong><br><small class="muted">评分 7.5（影响 3 × 把握 5 ÷ 工作量 2）· 来源：店铺运营观察</small></div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">已选入待批计划 · r1</div>
+          <h2>离线 License 验签时钟偏移容错修复</h2>
+          <p class="muted" style="margin:6px 0 12px">两条跨境用户工单复现同一问题：本机时区与系统时钟误差超过 5 分钟时离线激活误报过期。影响面高、复现确定、改动小。</p>
+          <div class="row"><span class="tag">评估打分</span><span>影响 <b>5</b> · 把握 <b>4</b> · 工作量 <b>1</b></span></div>
+          <div class="row"><span class="tag">来源出处</span><span>opc-ops-kit 工单 #T-42 + 复现单测用例</span></div>
+          <div class="row"><span class="tag">复用检查</span><a href="#capabilities">已核对 opc-commerce-kit OPCL1 v1.1.0 规范 ✓</a></div>
+          <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+            <a class="btn primary" href="#workflows">查看待批计划 r1 →</a>
+            <a class="btn" href="#pending">去 Zoom 审批 ↗</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 13. 项目目录 -->
+    <section class="page" id="projects">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">产研与资产复用 · 资产架与 7 层档案</div>
+          <h1>项目目录</h1>
+          <p class="sub">管理全部产品族与子项目档案，标注 L0–L6 层级与领域，同步公开 GitHub 仓库的 Issue/PR/Release 快照，登记跨项目版本复用。</p>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="row" style="padding-top:0"><strong>PageLens</strong><span class="pill ok">L6 · 旗舰产品族</span><a class="right" href="#product">查看进程 ↗</a></div>
+          <div class="row"><span class="tag">pagelens-interpret</span><span>视频同传与中文配音（1 号变现试点）· 3 Issue · v0.8.4</span></div>
+          <div class="row"><span class="tag">pagelens-agent</span><span>网页结构化提取与电商表单侧栏 · 复用 chromegate-gateway</span></div>
+          <div class="row"><span class="tag">部门联动</span><a href="#security-department">安全评审 ↗</a>　<a href="#operations-department">运维台账 ↗</a></div>
+        </div>
+        <div class="card">
+          <div class="row" style="padding-top:0"><strong>OPC 商业套件</strong><span class="pill blue">L5 · 商业化平面</span><a class="right" href="#commercial">商业驾驶舱 ↗</a></div>
+          <div class="row"><span class="tag">opc-commerce-kit</span><span>MoR 收银 Webhook + Ed25519 离线授权 + FinOps 毛利</span></div>
+          <div class="row"><span class="tag">opc-gtm-kit</span><span>着陆页、商店隐私合规底板、UTM 归因与多平台改编</span></div>
+          <div class="row"><span class="tag">opc-ops-kit</span><span>统一工单分诊与去隐私激活/崩溃遥测</span></div>
+        </div>
+        <div class="card">
+          <div class="row" style="padding-top:0"><strong>OPC 分析与内核</strong><span class="pill gold">L4–L0 · 底座</span><a class="right" href="#capabilities">开源能力 ↗</a></div>
+          <div class="row"><span class="tag">data_analysis</span><span>L4 · DuckDB + Palantir Ontology 经营分析与漏斗</span></div>
+          <div class="row"><span class="tag">chromegate-gateway</span><span>L3 · 最小权限令牌与无模型确定性 verify 网关</span></div>
+          <div class="row"><span class="tag">agent-zoom / ppeng / strata</span><span>L2 总控 · L1 常驻数字员工 · L0 Rust 事务存储</span></div>
+        </div>
+        <div class="card">
+          <div class="row" style="padding-top:0"><strong>Open-Core 与流量钩子</strong><span class="pill">L6 · 矩阵产品</span><a class="right" href="#business-lines">对应业务线 ↗</a></div>
+          <div class="row"><span class="tag">audiobook / hyper-vibekanban</span><span>开发者与 Prosumer Open-Core 变现线</span></div>
+          <div class="row"><span class="tag">Rubiks-Cube / bazi-ziwei</span><span>零成本自然流量钩子（挂载 UTM 导流条）</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 14. 产品进程（13 阶段） -->
+    <section class="page" id="product">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">产研与资产复用 · 十三阶全生命周期</div>
+          <h1>产品进程</h1>
+          <p class="sub">按「公司方向 → 产品定义 → 交付与运行 → 市场与财务」四个章节组织 13 个生命周期阶段；点进任意阶段即打开对应的阶段工作单。</p>
+        </div>
+        <div class="actions"><a class="btn" href="#growth">查看渠道转化 ↗</a></div>
+      </div>
+      <div class="grid-2" id="product-chapters"></div>
+    </section>
+
+    <!-- 14b. 阶段工作单 (StageDesk) -->
+    <section class="page" id="stage">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow" id="stage-eyebrow">产品进程 / 阶段工作单</div>
+          <h1 id="stage-title">06 · 测试组</h1>
+          <p class="sub" id="stage-sub">按产品与项目创建结构化阶段工作单，支持派发给 coding agent CLI 独占认领或直接派工给具名 Agent Home Bot。</p>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#product">← 返回产品进程</a>
+          <a class="btn primary" href="#inbox">查看本阶段消息 ↗</a>
+        </div>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h2>本阶段工作单</h2>
+          <div class="row"><span class="pill ok">coding-agent</span><div><strong>独立复测 PageLens 离线 License 验签用例</strong><br><small class="muted">认领者 claude-cli · 已附 3 组边界测试输出与截图凭据</small></div></div>
+          <div class="row"><span class="pill blue">agent-home</span><div><strong>核对发版前商店隐私声明条款一致性</strong><br><small class="muted">具名 Bot：ComplianceBot · 已派工并保留房间回执</small></div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">双轨派工契约</div>
+          <h2>执行方式与验收凭据</h2>
+          <div class="row"><span class="tag">CLI 认领</span><code>opc-os stage list --stage testing --wait</code></div>
+          <div class="row"><span class="tag">独占租约</span><span>认领获取 <code>claimId</code>，长任务续租，超时自动重开</span></div>
+          <div class="row"><span class="tag">Home Bot</span><span>明确选定房间与 Bot 成员后派工，带来源引用返回原讨论</span></div>
+          <div class="row"><span class="tag">交付门槛</span><span>提交 <code>done</code> 必须附 <code>--evidence</code> 证据引用</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 15. 开源能力 -->
+    <section class="page" id="capabilities">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">产研与资产复用 · 跨仓固定版本复用</div>
+          <h1>开源能力</h1>
+          <p class="sub">立项先查自己的开源库：采用方锁定具体 Commit SHA 或 Release Tag 直接复用并登记验证；存在缺口时提交版本化维护需求，经 Zoom 审批交原仓补齐。</p>
+        </div>
+        <div class="actions"><a class="btn rust" href="#capability-review">查看待审维护需求 (r2) →</a></div>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h2>已登记固定版本能力（首批 6 项）</h2>
+          <div class="row"><span class="pill ok">已验证</span><div><strong>ChromeGate Gateway · 场景预检与受控执行</strong><br><small class="muted">magele758/chromegate-gateway @ de40180 · <code>verify --dry-run</code></small></div></div>
+          <div class="row"><span class="pill ok">已验证</span><div><strong>OPC Commerce Kit · Ed25519 离线验签</strong><br><small class="muted">magele758/opc-commerce-kit @ v1.1.0 · <code>OPCL1</code></small></div></div>
+          <div class="row"><span class="pill blue">已引用</span><div><strong>PageLens Agent · 电商表单提取</strong><br><small class="muted">magele758/pagelens-agent · 被店铺运营业务线引用</small></div></div>
+          <div class="row"><span class="pill">可复用</span><div><strong>audiobook / learn-agent / ppeng-agent-bot</strong><br><small class="muted">Index-TTS 分段、主动学习引擎与 @ppeng/agent-loop 内核</small></div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">采用与缺口分流</div>
+          <h2>ChromeGate Gateway 场景预检</h2>
+          <p class="muted" style="margin:6px 0 12px">店铺运营业务线与 PageLens 均复用固定提交 <code>de40180</code> 的预检命令；当需要按实验编号关联回执时，走维护需求审批而不私自魔改。</p>
+          <div class="row"><span class="tag">调用入口</span><code>node native/cli.mjs verify scenarios/identity.json --dry-run</code></div>
+          <div class="row"><span class="tag">采用方登记</span><span>店铺运营 / 10 款草稿预检 · 预检输出已入档</span></div>
+          <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+            <a class="btn primary" href="#capability-review">打开维护需求审批 r2 →</a>
+            <a class="btn" href="#business-lines">回到店铺实验 ↗</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 15b. 维护需求审批 -->
+    <section class="page" id="capability-review">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Zoom / magele758/chromegate-gateway / r2</div>
+          <h1>增加实验编号回执关联</h1>
+          <p class="sub">批准维护需求与批准维护方工程计划分为两次决策：先在 Zoom 同意立项交给原仓，再在维护项目独立审批具体工程计划。</p>
+        </div>
+        <div class="actions"><a class="btn" href="#capabilities">← 返回开源能力</a></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h2>本版待决定（r2）</h2>
+          <p class="muted" style="margin:6px 0 12px">使用方（店铺运营）提出缺口，维护方（ChromeGate）负责实现。批准后进入维护项目的研发候选，维护方绑定本地工作树后起草工程计划再另行审批。</p>
+          <div class="row"><span class="tag">受影响项目</span><strong>店铺运营 / 草稿预检实验</strong></div>
+          <div class="row"><span class="tag">验收办法</span><span>两个实验共用同一场景文件时，返回 JSON 回执仍能按 <code>trialId</code> 准确区分且定位到具体行号。</span></div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <a class="btn primary" href="#opportunities">批准并送入维护项目候选 →</a>
+            <a class="btn" href="#pending">在待我处理中查看原消息 ↗</a>
+          </div>
+        </div>
+        <div class="card">
+          <h2>版本反馈历史</h2>
+          <div class="row"><span class="pill warn">r1 · 要求修改</span><strong>请补充空编号与并发场景下的定位约定。</strong></div>
+          <div class="row"><span class="pill ok">r2 · 修订送审</span><strong>明确空编号报错行号，并在回执顶层透传 <code>trialId</code>。</strong></div>
+          <p class="muted" style="margin-top:10px;font-size:13px">退回后可修订重提，或记录接受限制改用原版；维护方交付固定版本后，采用方在原候选核验复测结果并关闭缺口。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 16. 项目讨论室 -->
+    <section class="page" id="home-room">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">产研与资产复用 · Agent Home 桥接</div>
+          <h1>项目讨论室</h1>
+          <p class="sub">把 OPC OS 频道与常驻数字员工 Agent Home（ppeng-agent-bot）活动房间绑定，点名具名 Bot 讨论，关键提问以「待我答复：」同步 Zoom，必要时显式转为阶段工作单。</p>
+        </div>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h2>已绑定房间与成员</h2>
+          <div class="row"><span class="pill ok">在线</span><div><strong>PageLens 发布评审室</strong><br><small class="muted">Agent Home 房间 #room-pl · 成员：ResearchBot, GrowthBot</small></div></div>
+          <div class="row"><span class="pill blue">已同步</span><div><strong>商业试点运营室</strong><br><small class="muted">Agent Home 房间 #room-biz · 成员：OpsBot, FinanceBot</small></div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">双向回执讨论流</div>
+          <h2>@ResearchBot 核对同传扩展内存占用样例</h2>
+          <div class="chat-log" style="margin-top:10px">
+            <div class="chat-msg"><div class="chat-meta"><strong>创始人</strong><span>10:42</span></div><div>@ResearchBot 结合 11 月 21 日复盘摘录，核对 60 分钟长视频后台预处理的内存峰值。</div></div>
+            <div class="chat-msg agent"><div class="chat-meta"><strong>ResearchBot</strong><span class="pill blue">Agent Home</span><span>10:44 · 已同步 Zoom</span></div><div>已完成 3 段样例测量，分段缓冲上限 180MB。待我答复：是否把默认分段时长从 30s 调整为 20s 以降低首字延迟？</div></div>
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <a class="btn primary" href="#stage" data-stage="research">显式转为阶段工作单 →</a>
+            <a class="btn" href="#inbox">在 Zoom 查看原消息 ↗</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 17. 会话与仓库索引 -->
+    <section class="page" id="activity-index">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">现场与投入 · 本机与 GitHub 统一透视</div>
+          <h1>会话与仓库索引</h1>
+          <p class="sub">每 15 秒刷新本机活跃 coding agent 会话（区分 Herdr / Agent Hub / 进程线索），并聚合 GitHub 账号自有与协作仓库、本机 Git Worktree，支持直接查看 README 与库内搜索。</p>
+        </div>
+      </div>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" data-act-tab="agents" aria-selected="true">本机编码 Agent 会话 (24)</button>
+        <button type="button" role="tab" data-act-tab="repos" aria-selected="false">GitHub 与本机仓库索引 (237)</button>
+      </div>
+      <div class="card" id="act-panel"></div>
+    </section>
+
+    <!-- 18. 工作投入 -->
+    <section class="page" id="worklog">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">现场与投入 · Agent Hub 公开日报归集</div>
+          <h1>工作投入</h1>
+          <p class="sub">按日期读取本机 Agent Hub 公开工作摘要，将具体事项手动关联到「产品 / 子项目」与可选业务线；同一日期重读保留人工归属，便于复盘真实投入。</p>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h2>Agent Hub 日报（2026-11-21）</h2>
+          <div class="row"><span class="pill ok">已完成</span><div><strong>打通 OPC 7 层商业闭环中枢与 6 大伴生服务自启动</strong><br><small class="muted">主线：OPC OS 商业治理</small></div><span class="right">已关联</span></div>
+          <div class="row"><span class="pill ok">已完成</span><div><strong>新增组织数字孪生全息沙盘与 35 个直达锚点</strong><br><small class="muted">主线：OPC OS 界面升级</small></div><span class="right">已关联</span></div>
+          <div class="row"><span class="pill blue">进行中</span><div><strong>核对 10 款跨境测试商品草稿预检结果</strong><br><small class="muted">主线：店铺运营实验</small></div><span class="right">待归属</span></div>
+        </div>
+        <div class="card">
+          <h2>已关联的投入归属</h2>
+          <div class="row"><span class="tag">产品 / 项目</span><strong>OPC 分析与内核 / agent-zoom</strong></div>
+          <div class="row"><span class="tag">关联业务线</span><a href="#business-lines">技术研发 ↗</a></div>
+          <div class="row"><span class="tag">口径说明</span><span>专注时段、会话跨度与模型用量源自本机 Agent Hub，营收与成本另按商业台账与账单对账。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 19. 昆仑多 Agent 频道 -->
+    <section class="page" id="channels">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">底部引擎入口 · 异构模型协同工作区</div>
+          <h1>昆仑多 Agent 协作频道</h1>
+          <p class="sub">人与真实 coding agent（Codex / Claude / Antigravity / Grok / Cursor / ppeng）共处同一频道：7 种多身份分组、@ 直派、8 秒招投标、等级路由、并行方案、按角色流水线、辅助协调 Agent SDK 与本地桌面通信。</p>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#inbox">返回消息列表</a>
+          <a class="btn primary" href="#workflows">切换工作流看板 →</a>
+        </div>
+      </div>
+      <div class="chan-grid">
+        <div class="card">
+          <h3 style="margin-bottom:8px">频道与私聊</h3>
+          <div class="row" style="padding:6px 0"><strong># 大厅</strong><span class="right">默认</span></div>
+          <div class="row" style="padding:6px 0"><strong># pagelens-发布</strong><span class="pill rust right">2</span></div>
+          <div class="row" style="padding:6px 0"><strong># commercial-闭环</strong></div>
+          <div class="row" style="padding:6px 0"><span class="muted">私聊 · @codex-live</span></div>
+        </div>
+        <div class="chat-log">
+          <div class="chat-msg inst">
+            <div class="chat-meta"><strong>创始人</strong><span class="pill rust">指令</span><span>范围：PageLens · branch main</span></div>
+            <div>@codex-live 修复离线 License 验签时钟偏移容错，补充 3 组边界单测；交付后由独立评审与测试验证。</div>
+          </div>
+          <div class="chat-msg agent">
+            <div class="chat-meta"><strong>codex-live</strong><span class="pill">codex</span><span class="pill ok">身份：实现</span><span>Lv3</span></div>
+            <div>已认领任务并在独立 worktree 完成修复，交付引用 <code>wt/license-skew-r1</code>，单测 18/18 通过，请评审。</div>
+          </div>
+          <div class="chat-msg agent">
+            <div class="chat-meta"><strong>claude</strong><span class="pill">claude-code</span><span class="pill blue">身份：评审</span><span>Lv4</span></div>
+            <div>已独立读取 diff 并运行回归测试，边界条件覆盖完整，结论：<code>pass</code>，转入测试槽位。</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:8px">任务、身份与协调</h3>
+          <div class="row"><span class="tag">状态机</span><span><code>open → working → in_review → in_test → done</code></span></div>
+          <div class="row"><span class="tag">七种身份</span><span>课题研究 / 产品 / 设计 / 架构 / 实现 / 评审 / 测试</span></div>
+          <div class="row"><span class="tag">辅助协调</span><span>嵌入 <code>@ppeng/agent-loop</code> 按需生成派发方案，确认后入队</span></div>
+          <div class="row"><span class="tag">桌面通信</span><span>可绑定本地桌面会话按分钟轮询回复，不自动认领代码任务</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 20. 工作流看板 -->
+    <section class="page" id="workflows">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">底部引擎入口 · 自治编码 DAG 与 Herdr 调度</div>
+          <h1>工作流决策与执行看板</h1>
+          <p class="sub">版本化 DAG 计划审批（r1/r2）、Runner 能力路由（Codex / Grok / agy / Cursor Agent）、Herdr 隔离 Worktree 并行实现、独立只读评审、失败返工、断线对账与最终验收一键清理。</p>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#opportunities">返回研发选题</a>
+          <a class="btn primary" href="#pending">去 Zoom 审批 →</a>
+        </div>
+      </div>
+      <div class="lanes">
+        <div class="lane">
+          <h3>待审批 <span class="pill rust">1</span></h3>
+          <div class="wf-card hot">
+            <div class="eyebrow">PageLens · 计划 r1</div>
+            <strong>修复离线 License 验签时钟偏移</strong>
+            <p class="muted" style="margin:5px 0">2 节点 DAG：Codex 实现 → Cursor 只读评审。批准前零派发。</p>
+            <span class="pill rust">轮到：你</span>
+          </div>
+        </div>
+        <div class="lane">
+          <h3>运行中 <span class="pill ok">1</span></h3>
+          <div class="wf-card">
+            <div class="eyebrow">OPC 商业套件 · 计划 r2</div>
+            <strong>补齐 DuckDB 17 列 Trace 导出</strong>
+            <p class="muted" style="margin:5px 0">Herdr pane t6r · 隔离 worktree · 正在运行项目自检。</p>
+            <span class="pill ok">轮到：agy</span>
+          </div>
+        </div>
+        <div class="lane">
+          <h3>待核对 / 返工 <span class="pill gold">0</span></h3>
+          <div class="wf-card">
+            <p class="muted">发送回执不明或测试失败的尝试会保留旧差异与测试日志，可对账封存或写下意见发起新一次 attempt。</p>
+          </div>
+        </div>
+        <div class="lane">
+          <h3>待验收 / 已完成 <span class="pill blue">2</span></h3>
+          <div class="wf-card">
+            <div class="eyebrow">agent-zoom · 已验收</div>
+            <strong>组织数字孪生与商业闭环中枢</strong>
+            <p class="muted" style="margin:5px 0">独立评审通过 · 已勾选清理临时 worktree 与 Herdr 终端，保留回执。</p>
+            <span class="pill ok">done</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="page-foot">
+      <span>OPC OS 产品界面设计稿 · 覆盖 4 大侧栏分组、22 个核心功能视图、13 阶工作单与 6 大伴生服务网格</span>
+      <span><a href="../OPC_OS_PRODUCT_INTENT.md">产品导读</a> · <a href="flows.html">交互流程图</a> · <a href="start.md">首次启动与命令</a></span>
+    </footer>
+  </main>
+</div>
+
+<script>
+const ALIASES = { research:'#opportunities', shop:'#business-lines', plan:'#workflows' };
+const CRUMBS = {
+  overview:['总控与待办','全局看板'],
+  'digital-twin':['总控与待办','组织数字孪生'],
+  inbox:['总控与待办','全部消息'],
+  pending:['总控与待办','待我处理'],
+  handled:['总控与待办','已处理'],
+  delegations:['总控与待办','委派台'],
+  'business-lines':['经营与公司部门','公司业务线'],
+  commercial:['经营与公司部门','商业与治理部'],
+  'security-department':['经营与公司部门','安全部门'],
+  'operations-department':['经营与公司部门','运维部门'],
+  'resource-department':['经营与公司部门','资源成本部门'],
+  growth:['经营与公司部门','渠道转化'],
+  ideas:['产研与资产复用','信息与想法'],
+  opportunities:['产研与资产复用','研发选题'],
+  projects:['产研与资产复用','项目目录'],
+  product:['产研与资产复用','产品进程'],
+  stage:['产研与资产复用','阶段工作单'],
+  capabilities:['产研与资产复用','开源能力'],
+  'capability-review':['产研与资产复用','维护需求审批'],
+  'home-room':['产研与资产复用','项目讨论室'],
+  'activity-index':['现场与投入','会话与仓库索引'],
+  worklog:['现场与投入','工作投入'],
+  channels:['底部引擎','昆仑多 Agent 频道'],
+  workflows:['底部引擎','工作流看板']
+};
+
+const STAGES = [
+  ['research','信息收集','公司方向',3,0,'核实日记与外部线索，保留出处与原始链接'],
+  ['idea','Idea','公司方向',4,0,'提炼可否定假设，关联一个或多个目标产品'],
+  ['prd','PRD','产品定义',2,0,'写清场景、取舍、验收样例与上线验证指标'],
+  ['design','设计稿','产品定义',1,0,'对齐关键交互、界面状态与异常恢复路径'],
+  ['development','开发组','交付与运行',5,1,'按能力分工在隔离 worktree 实现并附自测'],
+  ['testing','测试组','交付与运行',3,0,'独立复测、退回返工并留存复现凭据'],
+  ['release','发布','交付与运行',2,0,'核对候选版本、回退步骤与单独发布授权'],
+  ['operations','运维','交付与运行',4,0,'追踪服务健康、仓库 Issue/PR 与升级验证'],
+  ['trace','Trace','交付与运行',1,0,'沿一次结果串联来源、决定、执行与差异复盘'],
+  ['gtm','GTM','市场与财务',2,0,'生成着陆页、定价假设、商店隐私合规底板'],
+  ['acquisition','营销推广、获客','市场与财务',3,0,'多平台带 UTM 分发并核对渠道激活人数'],
+  ['revenue','营收','市场与财务',2,1,'核对 MoR 订单、Ed25519 授权、复购与退款'],
+  ['accounting','记账','市场与财务',1,0,'收款、退款、Token 与渠道成本对账核算净毛利']
+];
+
+// --- 1. Zoom Inbox Data & Renderer ---
+const MESSAGES = [
+  {id:'m1',pending:true,kind:'计划审批',source:'OPC 工作流',folder:'PageLens / pagelens-interpret',stage:'开发组',time:'10:52',
+   title:'确认离线 License 验签时钟偏移修复计划 r1',
+   body:'节点 1（实现）：codex-live 在独立 worktree 为 OPCL1 验签加入 ±15 分钟宽容窗口与 3 组边界单测。\n节点 2（独立评审）：cursor-agent 只读模式复核 diff 并执行全量测试。\n\n批准本版后才由 Herdr 派发执行；发布仍需另行授权。',
+   choices:['批准 r1','要求修改','拒绝'],link:['#workflows','打开完整工作流计划 ↗'],
+   history:['10:48 · OPC 自动选题 从工单 #T-42 生成候选（评分 20.0）','10:52 · 本地规划器 校验依赖与独立评审覆盖通过，生成计划 r1']},
+  {id:'m2',pending:true,kind:'维护需求审批',source:'店铺运营',folder:'ChromeGate / chromegate-gateway',stage:'PRD',time:'10:35',
+   title:'r2：场景预检回执增加 trialId 实验编号透传',
+   body:'使用方「店铺运营」两个草稿实验共用场景文件，现有 verify 输出无法按实验编号归因。\nr2 已按 r1 意见补齐空编号行号报错约定。批准后进入 ChromeGate 研发候选，工程计划另行审批。',
+   choices:['批准交维护方','要求修改','拒绝'],link:['#capability-review','查看维护需求与版本历史 ↗'],
+   history:['昨天 18:10 · r1 提交原仓缺口需求','昨天 19:05 · 创始人 要求修改：请说明空编号处理','10:35 · r2 补充验收办法后重新送审']},
+  {id:'m3',pending:true,kind:'经营复盘',source:'商业与治理部',folder:'店铺运营 / 草稿预检实验',stage:'营收',time:'09:50',
+   title:'10 款跨境商品草稿预检实验复盘决定',
+   body:'本轮实验使用 PageLens Agent + ChromeGate 预检，10 款草稿一次校验通过 9 款，单品上架耗时下降 72%。已登记 3 笔测试收支凭据。\n请决定下一轮方向：继续扩量、调整字段规则或暂停观察。',
+   choices:['继续扩量','调整规则','暂停观察'],link:['#business-lines','返回经营实验台账 ↗'],
+   history:['11-19 · 开启实验并锁定 ChromeGate de40180 版本','11-20 · 登记观察与收支凭据，提交复盘']},
+  {id:'m4',pending:false,kind:'回复',source:'ResearchBot',folder:'PageLens / 发布评审室',stage:'信息收集',time:'10:44',
+   title:'长视频后台预处理内存峰值测量结论',
+   body:'已完成 3 段 60 分钟样例测试，分段缓冲峰值 180MB，未触发扩展 OOM。相关测量数据已附于项目讨论室原帖。',
+   choices:[],link:['#home-room','打开原讨论室 ↗'],
+   history:['10:42 · 创始人 在项目讨论室点名 @ResearchBot','10:44 · ResearchBot 提交测量数据并回传 Zoom']},
+  {id:'m5',pending:false,kind:'完成',source:'codex-live',folder:'OPC 商业套件 / opc-commerce-kit',stage:'测试组',time:'昨天 22:15',
+   title:'MoR Webhook 验签与 Ed25519 离线发码闭环交付',
+   body:'全链路闭环自检（UTM 获客 → 激活 → 订单入账 → OPCL1 签发验签 → DuckDB 同步）通过，已最终验收并清理临时工作树。',
+   choices:[],link:['#commercial','查看商业驾驶舱 ↗'],
+   history:['昨天 21:40 · 批准计划 r1','昨天 22:05 · 独立评审通过','昨天 22:15 · 创始人 最终验收 done']},
+  {id:'m6',pending:false,kind:'进展',source:'GitHub 同步',folder:'OPC 分析与内核 / data_analysis',stage:'运维',time:'昨天 19:20',
+   title:'已同步最新公开仓库快照与 DuckDB 17 列 Trace 视图',
+   body:'仓库快照已刷新：0 个阻断 Issue，DuckDB 漏斗服务 (:8000) 延迟 11ms，健康检查通过。',
+   choices:[],link:['#operations-department','打开运维部门 ↗'],
+   history:['昨天 19:20 · 定时仓库索引刷新']},
+  {id:'m7',pending:false,kind:'任务登记',source:'agy',folder:'OPC 分析与内核 / agent-zoom',stage:'设计稿',time:'今天 10:17',
+   title:'组织数字孪生全息沙盘 v1 上线并打通 35 个直达锚点',
+   body:'已交付空间沙盘、双闭环价值流、全功能星图与十三阶传送带，完成昆仑夜航与宣纸堪舆双风格走查。',
+   choices:[],link:['#digital-twin','打开组织数字孪生 ↗'],
+   history:['今天 10:17 · 提交并验证全量 247 项测试通过']}
+];
+let currentInboxFilter = 'all', currentMsgId = 'm1';
+function renderInbox(filter = currentInboxFilter, msgId = currentMsgId) {
+  currentInboxFilter = filter;
+  const rows = MESSAGES.filter(m => filter === 'all' ? true : filter === 'pending' ? m.pending : !m.pending);
+  if (!rows.some(m => m.id === msgId)) msgId = rows[0]?.id || MESSAGES[0].id;
+  currentMsgId = msgId;
+  document.getElementById('inbox-heading').textContent = ({all:'全部消息',pending:'待我处理',handled:'已处理'})[filter];
+  document.querySelectorAll('[data-inbox-filter]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.inboxFilter === filter)));
+  const list = document.getElementById('msg-list');
+  list.innerHTML = rows.map(m => `<button type="button" class="msg-item" data-mid="${m.id}" aria-current="${m.id===msgId}">
+    <span class="m-top"><strong>${m.source}</strong><span>${m.time}</span></span>
+    <span class="m-title">${m.title}</span>
+    <span class="m-path">${m.pending ? '● ' : ''}${m.kind} · ${m.folder}</span>
+  </button>`).join('');
+  list.querySelectorAll('[data-mid]').forEach(btn => btn.addEventListener('click', () => renderInbox(currentInboxFilter, btn.dataset.mid)));
+  const m = MESSAGES.find(x => x.id === msgId) || rows[0];
+  const det = document.getElementById('msg-detail');
+  det.className = 'letter' + (m.pending ? ' pending' : '');
+  det.innerHTML = `
+    <div class="row" style="padding-top:0"><span class="pill ${m.pending?'rust':'ok'}">${m.pending?'待你决定':m.kind}</span><span>${m.source} · ${m.folder} · ${m.stage}</span><span class="right">${m.time}</span></div>
+    <h2>${m.title}</h2>
+    <div class="body">${m.body}</div>
+    ${m.choices.length ? `<div class="decision-box"><strong>当场决定（示例预览）：</strong><div class="actions" style="margin-top:8px">${m.choices.map((c,i)=>`<button type="button" class="btn ${i===0?'primary':''}" onclick="this.parentElement.nextElementSibling.textContent='已模拟选择「${c}」——正式环境中将带版本标识回传原任务并记录送达回执。'">${c}</button>`).join('')}</div><p class="muted" style="margin-top:8px;font-size:12.5px">阅读或归档不代替批准；也可以先点「委派」让执行者补充建议与证据。</p></div>` : ''}
+    <div class="actions" style="margin-top:10px"><a class="btn" href="${m.link[0]}">${m.link[1]}</a><a class="btn" href="#delegations">委派给数字员工核对 ↗</a></div>
+    <div style="margin-top:16px"><strong style="font-size:13px">任务历史</strong><ol class="history-list">${m.history.map(h=>`<li>${h}</li>`).join('')}</ol></div>`;
+}
+
+// --- 2. Business Lines Data ---
+const LINES = [
+  {id:'flagship',name:'旗舰插件商业变现（1 号试点）',badge:'首选现金流',mode:'经营实验',
+   goal:'让 1 号试点产品（PageLens 同传）跑通「高转化门面 → UTM 获客 → 核心动作激活 → MoR 离线 License 收款 → DuckDB 漏斗毛利复盘」闭环。',
+   steps:['opc-gtm-kit 生成产品着陆页与商店隐私合规包','多渠道带 UTM 首发内容分发','opc-ops-kit 采集首次核心价值动作（有效激活）','opc-commerce-kit 自动签发 Ed25519 离线 OPCL1 License','同步 data_analysis 核算转化率与扣除 Token 后的净毛利'],
+   assets:['PageLens 同传 (pagelens-interpret)','opc-commerce-kit · 离线授权','opc-gtm-kit · 着陆页与 UTM','opc-ops-kit · 工单与激活遥测'],
+   trial:'PageLens 同传 Pro 首发定价与离线授权闭环验证（$29 买断 / $19 年付）',
+   evidence:['收款 · +$348.00 USD（12 笔订单）','成本 · -$21.60 USD（LLM Token 与手续费）','净毛利 · $326.40 USD（毛利率 93.8%）']},
+  {id:'rd',name:'技术研发（供给侧产研工厂）',badge:'工程底座',mode:'技术研发',
+   goal:'从每日复盘启发、仓库维护问题与线上客服工单中自动选题，经 Zoom 审批与 Herdr 隔离编码、独立评审持续高质量交付。',
+   steps:['收集日记启发、Issue 与工单回流','自动选题按 影响 × 把握 ÷ 工作量 排序','Zoom 版本化审批工程计划','Herdr 隔离工作树开发与独立只读评审','确定性验收与发版用户回访'],
+   assets:['agent-zoom (OPC OS)','ppeng-agent-bot (Agent Home)','chromegate-gateway (确定性 verify)'],
+   trial:'线上 P1 工单缺陷到研发修复与提单用户回访闭环',
+   evidence:['观察 · 客服工单 #T-42 已自动转入研发候选并进入计划 r1','验证 · 247 项自动化测试全部通过']},
+  {id:'opencore',name:'Open-Core 开发者商业线',badge:'高客单复利',mode:'经营实验',
+   goal:'用高口碑开源核心吸引开发者自传播，对免配置 macOS 安装包、远程编排与团队协作能力提供付费授权。',
+   steps:['审计开源协议与商业增值模块边界','发布带演示动图的开源版本','提供免折腾桌面安装包 / 手机远程 Pro 授权','高频工单回流研发选题持续构筑壁垒'],
+   assets:['audiobook · 有声书桌面端','hyper-vibekanban · 手机远程 Agent 看板','opc-commerce-kit · 设备席位激活'],
+   trial:'audiobook macOS 免配置打包版 ($29 买断) vs 源码自建转化对比',
+   evidence:['观察 · 着陆页安装包点击率 14.2%（目标 ≥ 12%）']},
+  {id:'shop',name:'店铺运营（受控自动化）',badge:'场景现金流',mode:'经营实验',
+   goal:'复用 PageLens Agent 与 ChromeGate 人工确认闸门，在小流量跨境商品上架中验证效率提升与多币种净流入。',
+   steps:['ChromeGate 场景预检 (--dry-run)','限定商品范围生成草稿并人工弹窗确认发布','按币种登记实际收款、退款与平台费用','将表单异常观察一键转交研发候选修复'],
+   assets:['pagelens-agent · 电商表单侧栏','chromegate-gateway @ de40180 · 受控预检'],
+   trial:'跨境店铺 10 款测试商品受控草稿上架与出单核算',
+   evidence:['观察 · 10 款草稿 9 款一次通过校验，单品耗时下降 72%','收款 · +$128.00 USD / 费用 -$19.20 USD（净流入 $108.80）']},
+  {id:'lead',name:'轻工具流量漏斗（Lead Magnet）',badge:'零成本获客',mode:'经营实验',
+   goal:'用零门槛高传播度的互动轻工具承接自然搜索与社媒流量，通过嵌入式 UTM 导流条向旗舰付费产品稳定输血。',
+   steps:['上线免登录轻工具子站','挂载 opc-gtm-kit 生成的 UTM 导流条','承接 Waitlist 订阅并追踪激活归因','在增长报告核对 lead_magnet 首单贡献'],
+   assets:['Rubiks-Cube-Learn','bazi-ziwei-learning','opc-gtm-kit · Lead Magnet 导流脚本'],
+   trial:'轻工具结果页底部非打扰导流条向 PageLens 引流实验',
+   evidence:['观察 · 横幅点击率 3.1%，导流访客激活率 23.6%']}
+];
+function renderLine(id = 'flagship') {
+  const active = LINES.find(l => l.id === id) || LINES[0];
+  const list = document.getElementById('line-list');
+  list.innerHTML = LINES.map(l => `<button type="button" class="msg-item" data-lid="${l.id}" aria-current="${l.id===active.id}">
+    <span class="m-top"><strong>${l.badge}</strong><span>${l.mode}</span></span>
+    <span class="m-title">${l.name}</span>
+  </button>`).join('');
+  list.querySelectorAll('[data-lid]').forEach(b => b.addEventListener('click', () => renderLine(b.dataset.lid)));
+  document.getElementById('line-detail').innerHTML = `
+    <div class="row" style="padding-top:0"><span class="pill ok">${active.mode}</span><span class="pill gold">${active.badge}</span></div>
+    <h2 style="margin:6px 0">${active.name}</h2>
+    <p class="muted">${active.goal}</p>
+    <div class="band" style="margin-top:14px;padding-bottom:10px">
+      <div class="eyebrow">标准打法步骤</div>
+      <ol style="margin:6px 0 0;padding-left:20px">${active.steps.map(s=>`<li style="padding:3px 0">${s}</li>`).join('')}</ol>
+    </div>
+    <div class="row"><span class="tag">共用资产</span><span>${active.assets.map(a=>`<span class="pill" style="margin:2px 4px 2px 0">${a}</span>`).join('')}</span></div>
+    <div class="row"><span class="tag">当前实验</span><strong>${active.trial}</strong></div>
+    <div class="row"><span class="tag">经营证据</span><div>${active.evidence.map(e=>`<div>• ${e}</div>`).join('')}</div></div>
+    <div class="actions" style="margin-top:12px">
+      <a class="btn primary" href="#pending">到 Zoom 处理复盘 →</a>
+      <a class="btn" href="#opportunities">从观察提出研发特性 ↗</a>
+      <a class="btn" href="#capabilities">查看引用的开源能力 ↗</a>
+    </div>`;
+}
+
+// --- 3. Commercial Hub Tabs ---
+const CM_TABS = {
+  layers: `<div class="table-wrap"><table>
+    <thead><tr><th>层级</th><th>职责定位</th><th>已纳管核心资产（共 18 项）</th></tr></thead>
+    <tbody>
+      <tr><td><strong>L6</strong></td><td>对外产品矩阵（货架 / 变现载体）</td><td>pagelens-interpret（1号旗舰付费）、pagelens-agent、audiobook、Rubiks-Cube-Learn、bazi-ziwei-learning</td></tr>
+      <tr><td><strong>L5</strong></td><td>商业化与客户运营平面</td><td>opc-commerce-kit、opc-gtm-kit、opc-ops-kit、cose、magele758.github.io</td></tr>
+      <tr><td><strong>L4</strong></td><td>经营分析与业务本体层（CFO 大脑）</td><td>data_analysis（DuckDB + Arrow + Palantir Ontology / Reverse ETL）</td></tr>
+      <tr><td><strong>L3</strong></td><td>受控执行手脚与确定性验收</td><td>chromegate-gateway（cgk_ 最小权限令牌 + 人工弹窗 + 无模型 verify）</td></tr>
+      <tr><td><strong>L2</strong></td><td>公司中枢与产研协作控制面</td><td>agent-zoom（OPC OS 含组织数字孪生）、hyper-vibekanban、agent-term</td></tr>
+      <tr><td><strong>L1</strong></td><td>常驻数字员工与认知飞轮</td><td>ppeng-agent-bot（Agent Home / @ppeng/agent-loop）、learn-agent、daily-review-learning</td></tr>
+      <tr><td><strong>L0</strong></td><td>单机统一数据底座</td><td>strata（Rust 事务存储 + BM25 + HNSW 向量 + 列存）</td></tr>
+    </tbody></table></div>`,
+  license: `<h3>Ed25519 离线 License（OPCL1）签发与验签</h3>
+    <p class="muted" style="margin:6px 0 12px">MoR 支付回调自动签发离线可验密钥，客户端内置公钥离线解锁 Pro，无需依赖云端鉴权服务器。</p>
+    <div class="row"><span class="tag">产品 / 方案</span><strong>PageLens / pro_buyout（最多 2 台设备）</strong></div>
+    <div class="row"><span class="tag">示例密钥</span><code>OPCL1.eyJwcm9kdWN0IjoiUGFnZUxlbnMiLCJwbGFuIjoicHJvX2J1eW91dCJ9.Ed25519Sig...</code></div>
+    <div class="row"><span class="tag">离线验签结果</span><span class="pill ok">验签通过 · features: pro, offline_dubbing</span></div>`,
+  gtm: `<h3>产品门面 · 商店隐私合规 · 多平台 UTM 推广包</h3>
+    <p class="muted" style="margin:6px 0 12px">由 <code>opc-gtm-kit (:52332)</code> 从单一产品清单同步生成着陆页、隐私政策与 5 个内容平台的带参推广稿。</p>
+    <div class="row"><span class="tag">预览门面</span><span>产品矩阵门户 <code>:52332/preview</code> · 试点着陆页 <code>:52332/preview/pagelens-interpret</code></span></div>
+    <div class="row"><span class="tag">UTM 渠道包</span><span>小红书 / X / 即刻 / B站 / GitHub Release 自动附带 <code>utm_source</code> 与 Waitlist 归因</span></div>`,
+  support: `<h3>统一客服工单分诊（联动研发选题与 Zoom）</h3>
+    <p class="muted" style="margin:6px 0 12px"><code>opc-ops-kit (:52333)</code> 接收用户反馈，按规则自动匹配 FAQ、转为研发选题缺陷，或将退款请求升级至 Zoom 待我处理。</p>
+    <div class="row"><span class="pill rust">转研发缺陷</span><strong>#T-42 · 离线激活在系统时钟偏移时误报过期</strong><a class="right" href="#opportunities">已关联研发候选 ↗</a></div>
+    <div class="row"><span class="pill ok">发版回访</span><strong>修复发布后自动生成提单人回访通知草稿（需人工确认发送）</strong></div>`
+};
+function renderCmTab(key = 'layers') {
+  document.querySelectorAll('[data-cm-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.cmTab === key)));
+  document.getElementById('cm-tab-panel').innerHTML = CM_TABS[key];
+}
+
+// --- 4. Ideas & Activity Tabs ---
+const IDEA_TABS = {
+  daily: `<div class="row" style="padding-top:0"><strong>2026-11-21 · daily-review-learning</strong><span class="pill ok right">支持未提交改动直读</span></div>
+    <h3 style="margin:8px 0">摘录：自建确定性工作流评测与失败样例重放</h3>
+    <p class="muted">在商品资料处理与离线验签场景中，高发返工集中在极少数边界输入。把真实用户工单与失败样例沉淀为固定重放夹具，比反复改 Prompt 更稳健。</p>
+    <div class="actions" style="margin-top:12px"><a class="btn primary" href="#opportunities">保存想法并派给项目研发 →</a><a class="btn" href="#stage" data-stage="research">让 Agent 研究这个想法 ↗</a></div>`,
+  learn: `<h3>Learn Agent 主动学习接入</h3>
+    <p class="muted" style="margin:6px 0 12px">在日记原文中划选概念或论文段落，直接送入 <code>learn-agent</code> 先测理解再按依赖展开教学，消化后再决定是否立项。</p>
+    <div class="row"><span class="tag">最近导入</span><strong>Ed25519 离线签名与时钟容错边界</strong><span class="pill ok right">理解度 92%</span></div>`,
+  saved: `<h3>已保存的想法（支持一条想法关联多个产品）</h3>
+    <div class="row"><span class="pill ok">已派研发</span><div><strong>把失败样例沉淀为跨项目确定性重放库</strong><br><small class="muted">关联产品：PageLens、店铺运营 · 出处 2026-11-21.md</small></div><a class="right" href="#opportunities">查看候选 ↗</a></div>
+    <div class="row"><span class="pill blue">观察中</span><div><strong>用轻工具结果页底部横幅承接长尾搜索流量</strong><br><small class="muted">关联产品：流量钩子矩阵、PageLens</small></div><a class="right" href="#business-lines">进入实验 ↗</a></div>`
+};
+function renderIdeaTab(k = 'daily') {
+  document.querySelectorAll('[data-idea-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.ideaTab === k)));
+  document.getElementById('idea-panel').innerHTML = IDEA_TABS[k];
+}
+
+const ACT_TABS = {
+  agents: `<div class="table-wrap"><table>
+    <thead><tr><th>来源</th><th>执行者 / 会话</th><th>状态</th><th>工作目录 / 仓库</th><th>操作</th></tr></thead>
+    <tbody>
+      <tr><td>Herdr</td><td><strong>Codex CLI · t6r</strong></td><td><span class="pill ok">执行中</span></td><td><code>magele758/pagelens-interpret</code></td><td><a href="#workflows">定位看板 ↗</a></td></tr>
+      <tr><td>Agent Hub</td><td><strong>Antigravity · agy</strong></td><td><span class="pill blue">近期活动</span></td><td><code>magele758/agent-zoom</code></td><td><a href="#worklog">归入投入 ↗</a></td></tr>
+      <tr><td>进程线索</td><td><strong>Grok CLI · t1d</strong></td><td><span class="pill">空闲</span></td><td><code>magele758/learn-agent</code></td><td><a href="#delegations">委派工单 ↗</a></td></tr>
+      <tr><td>MCP 在线</td><td><strong>claude-cli</strong></td><td><span class="pill ok">等待中</span></td><td><code>magele758/opc-commerce-kit</code></td><td><a href="#channels">进入频道 ↗</a></td></tr>
+    </tbody></table></div>`,
+  repos: `<div class="table-wrap"><table>
+    <thead><tr><th>仓库</th><th>关系 / 可见性</th><th>本地 Worktree</th><th>业务归属</th><th>操作</th></tr></thead>
+    <tbody>
+      <tr><td><strong>magele758/agent-zoom</strong></td><td>自有 · 公开</td><td>主检出 (main)</td><td>OPC 分析与内核 (L2)</td><td><a href="#projects">项目档案 ↗</a></td></tr>
+      <tr><td><strong>magele758/pagelens-interpret</strong></td><td>自有 · 公开</td><td>主检出 + 1 worktree</td><td>PageLens (L6 · 1 号试点)</td><td><a href="#commercial">试点进度 ↗</a></td></tr>
+      <tr><td><strong>magele758/chromegate-gateway</strong></td><td>自有 · 公开</td><td>主检出 (main)</td><td>OPC 分析与内核 (L3)</td><td><a href="#capabilities">复用能力 ↗</a></td></tr>
+      <tr><td><strong>magele758/data_analysis</strong></td><td>自有 · 公开</td><td>主检出 (main)</td><td>OPC 分析与内核 (L4)</td><td><a href="#operations-department">服务探针 ↗</a></td></tr>
+    </tbody></table></div>`
+};
+function renderActTab(k = 'agents') {
+  document.querySelectorAll('[data-act-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.actTab === k)));
+  document.getElementById('act-panel').innerHTML = ACT_TABS[k];
+}
+
+// --- 5. Product 13-stage chapters & StageDesk ---
+function renderProductChapters() {
+  const groups = ['公司方向','产品定义','交付与运行','市场与财务'];
+  document.getElementById('product-chapters').innerHTML = groups.map(g => {
+    const items = STAGES.filter(s => s[2] === g);
+    return `<div class="card"><div class="band-head" style="margin-bottom:6px"><h2>${g}</h2>${g==='公司方向'?'<a href="#ideas">日记与想法 ↗</a>':''}</div>
+      ${items.map(s => {
+        const idx = String(STAGES.indexOf(s)+1).padStart(2,'0');
+        return `<div class="row"><span class="pill">${idx}</span><strong>${s[1]}</strong><span class="muted">${s[3]} 项任务${s[4]?` · ${s[4]} 待处理`:''}</span><a class="right" href="#stage" data-stage="${s[0]}">阶段工作单 →</a></div>`;
+      }).join('')}
+    </div>`;
+  }).join('');
+}
+function setStage(stepId = 'testing') {
+  const s = STAGES.find(x => x[0] === stepId) || STAGES[5];
+  const idx = String(STAGES.indexOf(s)+1).padStart(2,'0');
+  document.getElementById('stage-eyebrow').textContent = `产品进程 / ${s[2]} / 阶段 ${idx}`;
+  document.getElementById('stage-title').textContent = `${idx} · ${s[1]}`;
+  document.getElementById('stage-sub').textContent = `${s[5]}。本页支持创建并追踪面向 coding agent CLI 或 Agent Home Bot 的阶段工作单。`;
+}
+
+// --- 6. Digital Twin Interactive SVG (22 chambers + 4 circuits + Night/Paper) ---
+const DT_NODES = [
+  {id:'overview',zone:'脑枢 · 总控',c:'decision',t:'全局看板',s:'业务线、四部与阶段总表',m:'10 产品域',href:'#overview',x:40,y:44,w:208,h:72,st:'ok'},
+  {id:'pending',zone:'脑枢 · 裁决闸门',c:'decision',t:'待我处理',s:'创始人拍板与审批放行',m:'3 待裁决',href:'#pending',x:268,y:44,w:208,h:72,st:'alert'},
+  {id:'inbox',zone:'脑枢 · 信息总线',c:'decision',t:'全部消息',s:'全公司 Agent 汇报总流',m:'7 条信号',href:'#inbox',x:496,y:44,w:208,h:72,st:'active'},
+  {id:'handled',zone:'脑枢 · 决策归档',c:'decision',t:'已处理',s:'已审批与闭环历史归档',m:'4 已归档',href:'#handled',x:724,y:44,w:208,h:72,st:'ok'},
+  {id:'delegations',zone:'脑枢 · 调度中枢',c:'decision',t:'委派台',s:'派单、在办追踪与对账',m:'2 在办 / 3 总计',href:'#delegations',x:952,y:44,w:208,h:72,st:'active'},
+
+  {id:'ideas',zone:'产研左翼 · 认知源头',c:'rd',t:'信息与想法',s:'每日复盘日记与立项孵化',m:'3 条想法',href:'#ideas',x:40,y:186,w:254,h:74,st:'active'},
+  {id:'opportunities',zone:'产研左翼 · 候选池',c:'rd',t:'研发选题',s:'价值评估排序与自动派发',m:'6 候选特性',href:'#opportunities',x:316,y:186,w:254,h:74,st:'active'},
+  {id:'business',zone:'经营右翼 · 战略主线',c:'commercial',t:'公司业务线',s:'5 套打法与经营实验账本',m:'5 业务线 · 4 实验',href:'#business-lines',x:630,y:186,w:254,h:74,st:'active'},
+  {id:'commercial',zone:'经营右翼 · 变现总控',c:'commercial',t:'商业与治理部',s:'7 层地图、1 号试点与离线授权',m:'试点 86% · 12 授权',href:'#commercial',x:906,y:186,w:254,h:74,st:'active'},
+
+  {id:'projects',zone:'产研左翼 · 资产架',c:'rd',t:'项目目录',s:'产品与仓库档案',m:'18 蓝图资产',href:'#projects',x:40,y:310,w:168,h:74,st:'ok'},
+  {id:'product',zone:'产研左翼 · 阶段章节',c:'rd',t:'产品进程',s:'十三阶章节导航',m:'13 阶全链路',href:'#product',x:221,y:310,w:168,h:74,st:'active'},
+  {id:'capabilities',zone:'产研左翼 · 复用库',c:'rd',t:'开源能力',s:'跨仓版本与复用',m:'6 项能力',href:'#capabilities',x:402,y:310,w:168,h:74,st:'ok'},
+  {id:'growth',zone:'经营右翼 · GTM 漏斗',c:'commercial',t:'渠道转化',s:'获客 → 激活 → 首单 → 复购',m:'获客 340 · 首单 12',href:'#growth',x:630,y:310,w:254,h:74,st:'ok'},
+  {id:'security',zone:'经营右翼 · 风险护栏',c:'commercial',t:'安全部门',s:'权限核查、安全评审与复核',m:'1 待整改 / 3',href:'#security-department',x:906,y:310,w:254,h:74,st:'alert'},
+
+  {id:'channels',zone:'执行场 · 异构群聊',c:'rd',t:'昆仑频道',s:'异构模型群聊评审',m:'4 频道 · 3 在线',href:'#channels',x:40,y:434,w:168,h:74,st:'active'},
+  {id:'workflows',zone:'执行场 · 自治流水线',c:'rd',t:'工作流看板',s:'计划审批与证据包',m:'1 运行 / 4',href:'#workflows',x:221,y:434,w:168,h:74,st:'active'},
+  {id:'homeroom',zone:'执行场 · 房间桥接',c:'rd',t:'项目讨论室',s:'Agent Home 桥接',m:'双向回执同步',href:'#home-room',x:402,y:434,w:168,h:74,st:'ok'},
+  {id:'operations',zone:'经营右翼 · 可用性',c:'commercial',t:'运维部门',s:'端点健康探针与升级台账',m:'6/6 在线 · 2 台账',href:'#operations-department',x:630,y:434,w:254,h:74,st:'ok'},
+  {id:'resources',zone:'经营右翼 · 算力财务',c:'commercial',t:'资源成本部门',s:'模型套餐余量与续费账单',m:'4 套餐监控',href:'#resource-department',x:906,y:434,w:254,h:74,st:'ok'},
+
+  {id:'activity',zone:'底座 · 实时工作现场',c:'runtime',t:'会话与仓库索引',s:'扫描本机活跃编码会话与 GitHub 仓库',m:'24 会话 · 237 仓库',href:'#activity-index',x:40,y:578,w:356,h:78,st:'active'},
+  {id:'worklog',zone:'底座 · 时间能量账本',c:'runtime',t:'工作投入',s:'按日期与业务线归集真实投入',m:'14 条投入绑定',href:'#worklog',x:422,y:578,w:356,h:78,st:'ok'},
+  {id:'substrate',zone:'底座 · 六大伴生引擎总线',c:'runtime',t:'OPC 伴生微服务神经簇',s:'Commerce · GTM · Ops · DuckDB · Home · Hub',m:'6 / 6 引擎健康在线',href:'#commercial',x:804,y:578,w:356,h:78,st:'ok'}
+];
+const DT_EDGES = [
+  ['overview','pending','decision'],['pending','inbox','decision'],['inbox','handled','decision'],['pending','delegations','decision'],
+  ['overview','ideas','rd'],['overview','business','commercial'],['delegations','workflows','rd'],['delegations','commercial','commercial'],
+  ['ideas','opportunities','rd'],['opportunities','projects','rd'],['opportunities','product','rd'],['projects','capabilities','rd'],
+  ['product','workflows','rd'],['channels','workflows','rd'],['workflows','homeroom','rd'],
+  ['business','commercial','commercial'],['commercial','growth','commercial'],['commercial','security','commercial'],['growth','operations','commercial'],['security','resources','commercial'],
+  ['channels','activity','runtime'],['workflows','worklog','runtime'],['operations','substrate','runtime'],['resources','substrate','runtime'],['activity','worklog','runtime']
+];
+let dtTheme = 'night', dtCircuit = 'all', dtFocus = 'pending';
+const CC = {
+  decision:{night:'#f08c5b',paper:'#a13b22'},
+  rd:{night:'#5bd69f',paper:'#245c48'},
+  commercial:{night:'#ebd9b4',paper:'#85581f'},
+  runtime:{night:'#78b6eb',paper:'#2c5475'}
+};
+function renderDigitalTwin() {
+  const isN = dtTheme === 'night';
+  document.getElementById('dt-shell').dataset.theme = dtTheme;
+  const map = new Map(DT_NODES.map(n => [n.id, n]));
+  const pal = {
+    grid:isN?'rgba(210,224,216,.05)':'rgba(42,46,40,.06)',
+    zBg:isN?'rgba(255,255,255,.025)':'rgba(255,253,247,.65)',
+    zSt:isN?'rgba(232,183,123,.2)':'rgba(130,124,108,.35)',
+    zLb:isN?'rgba(232,219,195,.68)':'#5c594f',
+    fill:isN?'#1b2826':'#fffdf8',
+    sel:isN?'#253835':'#f6ecdc',
+    st:isN?'#3b514d':'#bfb9a8',
+    ttl:isN?'#f7f4eb':'#1f2926',
+    sub:isN?'#9db0a9':'#5d655a',
+    mbg:isN?'rgba(12,18,17,.68)':'#efeae0'
+  };
+  let html = `<defs><pattern id="g" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0L0 0 0 30" fill="none" stroke="${pal.grid}"/></pattern></defs><rect width="1200" height="685" fill="url(#g)"/>`;
+  const zones = [
+    [24,14,1152,116,'ZONE I · 创始人决策脑枢与调度总控（FOUNDER CORTEX & DISPATCH BUS）'],
+    [24,152,562,374,'ZONE II · 产研资产库与昆仑多 AGENT 协同工坊（R&D & SWARM FOUNDRY）'],
+    [614,152,562,374,'ZONE III · 商业变现与公司四部治理平面（COMMERCIAL & GOVERNANCE）'],
+    [24,546,1152,124,'ZONE IV · 现场编码会话、工时能量账本与六大微服务神经底座（RUNTIME & SUBSTRATE）']
+  ];
+  for (const [x,y,w,h,lb] of zones) {
+    html += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="3" fill="${pal.zBg}" stroke="${pal.zSt}" stroke-dasharray="4 4"/><text x="${x+14}" y="${y+19}" fill="${pal.zLb}" font-size="11" font-weight="600">${lb}</text>`;
+  }
+  for (const [from,to,c] of DT_EDGES) {
+    const a = map.get(from), b = map.get(to);
+    const ax=a.x+a.w/2, ay=a.y+a.h/2, bx=b.x+b.w/2, by=b.y+b.h/2;
+    const hot = (dtCircuit==='all'||dtCircuit===c) && (from===dtFocus||to===dtFocus);
+    const dim = dtCircuit!=='all' && dtCircuit!==c;
+    const stroke = CC[c][dtTheme];
+    let d;
+    if (Math.abs(a.y-b.y)<10) d = `M ${a.x+a.w} ${ay} L ${b.x} ${by}`;
+    else { const midY = Math.round((a.y+a.h+b.y)/2); d = `M ${ax} ${a.y+a.h} L ${ax} ${midY} L ${bx} ${midY} L ${bx} ${b.y}`; }
+    html += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${hot?2.4:1.3}" opacity="${dim?.12:hot?.95:.42}"/>`;
+  }
+  for (const n of DT_NODES) {
+    const accent = CC[n.c][dtTheme];
+    const sel = n.id === dtFocus;
+    const dim = dtCircuit!=='all' && dtCircuit!==n.c;
+    const dot = n.st==='alert'?(isN?'#ff7a59':'#a13b22'):n.st==='active'?(isN?'#5ce0a0':'#245c48'):(isN?'#d8b47c':'#6d6654');
+    html += `<a class="dt-node" href="${n.href}" data-nid="${n.id}" data-dim="${dim}">
+      <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="3" fill="${sel?pal.sel:pal.fill}" stroke="${sel?accent:pal.st}" stroke-width="${sel?2:1}"/>
+      <rect x="${n.x}" y="${n.y}" width="3.5" height="${n.h}" rx="1.5" fill="${accent}"/>
+      <circle cx="${n.x+15}" cy="${n.y+21}" r="3.8" fill="${dot}"/>
+      <text x="${n.x+25}" y="${n.y+25}" fill="${pal.ttl}" font-size="${n.w<190?13.5:15}" font-weight="700" font-family="Songti SC,Georgia,serif">${n.t}</text>
+      <text x="${n.x+n.w-10}" y="${n.y+23}" text-anchor="end" fill="${accent}" font-size="11.5">↗</text>
+      <text x="${n.x+14}" y="${n.y+44}" fill="${pal.sub}" font-size="11">${n.s}</text>
+      <rect x="${n.x+12}" y="${n.y+n.h-21}" width="${n.w-24}" height="15" rx="2" fill="${pal.mbg}"/>
+      <text x="${n.x+17}" y="${n.y+n.h-10}" fill="${n.st==='alert'?dot:accent}" font-size="10.5" font-weight="600" font-family="ui-monospace,monospace">${n.m}</text>
+    </a>`;
+  }
+  const svg = document.getElementById('dt-svg');
+  svg.innerHTML = html;
+  svg.querySelectorAll('[data-nid]').forEach(el => {
+    el.addEventListener('mouseenter', () => { dtFocus = el.dataset.nid; updateHud(); });
+  });
+  updateHud();
+}
+function updateHud() {
+  const n = DT_NODES.find(x => x.id === dtFocus) || DT_NODES[0];
+  document.getElementById('dt-hud-title').textContent = n.t;
+  document.getElementById('dt-hud-zone').textContent = `${n.zone} · ${n.m} · ${n.href}`;
+  document.getElementById('dt-hud-desc').textContent = n.s;
+  const go = document.getElementById('dt-hud-go');
+  go.href = n.href; go.textContent = `直达 ${n.t} ↗`;
+}
+function renderAtlas(q = '') {
+  const term = q.trim().toLowerCase();
+  const items = [
+    ...DT_NODES.map(n => ({g:n.zone,t:n.t,d:n.s,m:n.m,href:n.href})),
+    ...STAGES.map((s,i) => ({g:'十三阶工作单',t:`${String(i+1).padStart(2,'0')} · ${s[1]}阶段台`,d:s[5],m:`${s[3]} 任务`,href:'#stage',stage:s[0]}))
+  ].filter(it => !term || (it.g+it.t+it.d+it.href).toLowerCase().includes(term));
+  document.getElementById('atlas-grid').innerHTML = items.map(it => `<a class="card-link" href="${it.href}" ${it.stage?`data-stage="${it.stage}"`:''}>
+    <div class="row" style="padding:0 0 4px"><small class="muted">${it.g}</small><span class="pill right">${it.m}</span></div>
+    <strong>${it.t} <span>↗</span></strong><p>${it.d}</p>
+  </a>`).join('');
+}
+function renderConveyor() {
+  document.getElementById('dt-conveyor').innerHTML = STAGES.map((s,i) => `<a class="stage-chip ${s[4]?'hot':'active'}" href="#stage" data-stage="${s[0]}">
+    <span class="num"><span>${String(i+1).padStart(2,'0')}</span><span>${s[4]?s[4]+'待办':s[3]}</span></span>
+    <strong>${s[1]}</strong>
+  </a>`).join('');
+}
+
+// --- 7. Routing & Wire-up ---
+function syncRoute() {
+  let raw = location.hash || '#overview';
+  if (ALIASES[raw.slice(1)]) { raw = ALIASES[raw.slice(1)]; history.replaceState(null, '', raw); }
+  const key = raw.slice(1) || 'overview';
+  const targetPage = (key === 'pending' || key === 'handled') ? 'inbox' : key;
+  document.querySelectorAll('section.page').forEach(p => p.classList.toggle('active', p.id === targetPage));
+  if (key === 'inbox') renderInbox('all', currentMsgId);
+  if (key === 'pending') renderInbox('pending', currentMsgId);
+  if (key === 'handled') renderInbox('handled', currentMsgId);
+  const navKey = key === 'stage' ? 'product' : key === 'capability-review' ? 'capabilities' : key;
+  document.querySelectorAll('aside.rail a').forEach(a => {
+    if (a.hash === '#' + navKey) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  const [grp, title] = CRUMBS[key] || ['OPC OS','全局看板'];
+  document.getElementById('crumb').textContent = `${grp} / ${title}`;
+  document.getElementById('route-tag').textContent = `#${key}`;
+  document.getElementById('rail').classList.remove('open');
+  document.getElementById('menu-toggle').setAttribute('aria-expanded', 'false');
+}
+
+// Event bindings
+document.getElementById('menu-toggle').addEventListener('click', () => {
+  const rail = document.getElementById('rail');
+  const open = rail.classList.toggle('open');
+  document.getElementById('menu-toggle').setAttribute('aria-expanded', String(open));
+});
+document.querySelectorAll('[data-inbox-filter]').forEach(b => b.addEventListener('click', () => {
+  const f = b.dataset.inboxFilter;
+  location.hash = f === 'all' ? '#inbox' : '#' + f;
+}));
+document.querySelectorAll('[data-cm-tab]').forEach(b => b.addEventListener('click', () => renderCmTab(b.dataset.cmTab)));
+document.querySelectorAll('[data-idea-tab]').forEach(b => b.addEventListener('click', () => renderIdeaTab(b.dataset.ideaTab)));
+document.querySelectorAll('[data-act-tab]').forEach(b => b.addEventListener('click', () => renderActTab(b.dataset.actTab)));
+document.querySelectorAll('[data-dt-lens]').forEach(b => b.addEventListener('click', () => {
+  const l = b.dataset.dtLens;
+  document.querySelectorAll('[data-dt-lens]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.dtLens === l)));
+  document.getElementById('dt-lens-spatial').hidden = l !== 'spatial';
+  document.getElementById('dt-lens-loops').hidden = l !== 'loops';
+  document.getElementById('dt-lens-atlas').hidden = l !== 'atlas';
+  document.getElementById('dt-theme-seg').hidden = l !== 'spatial';
+}));
+document.querySelectorAll('[data-dt-theme]').forEach(b => b.addEventListener('click', () => {
+  dtTheme = b.dataset.dtTheme;
+  document.querySelectorAll('[data-dt-theme]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.dtTheme === dtTheme)));
+  renderDigitalTwin();
+}));
+document.querySelectorAll('[data-circuit]').forEach(b => b.addEventListener('click', () => {
+  dtCircuit = b.dataset.circuit;
+  document.querySelectorAll('[data-circuit]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.circuit === dtCircuit)));
+  renderDigitalTwin();
+}));
+document.getElementById('atlas-search').addEventListener('input', e => renderAtlas(e.target.value));
+document.addEventListener('click', e => {
+  const stageEl = e.target.closest('[data-stage]');
+  if (stageEl) setStage(stageEl.dataset.stage);
+  const lineEl = e.target.closest('[data-line]');
+  if (lineEl) renderLine(lineEl.dataset.line);
+  const msgEl = e.target.closest('[data-open-msg]');
+  if (msgEl) currentMsgId = msgEl.dataset.openMsg;
+});
+
+// Init
+renderProductChapters();
+renderInbox('all', 'm1');
+renderLine('flagship');
+renderCmTab('layers');
+renderIdeaTab('daily');
+renderActTab('agents');
+renderConveyor();
+renderAtlas('');
+renderDigitalTwin();
+addEventListener('hashchange', syncRoute);
+syncRoute();
+</script>
+</body>
+</html>

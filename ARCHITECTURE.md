@@ -1,4 +1,17 @@
-# 工位：技术方案
+# OPC OS（工位）：技术方案
+
+> **2026-11-21 架构总览**：本仓库已从最初的「昆仑多 Agent 频道与黑板协议」演进为 **OPC OS（一人公司经营中控）**，在同一 Hono + SQLite + React/Vite 单体服务上分层承载 6 大子系统，并与外部伴生服务组成 L0–L6 7 层蓝图（详见 [7 层架构蓝图](docs/product/opc-7-layer-blueprint.md) 与 [界面设计稿](docs/product/opc-workbench.html)）：
+>
+> 1. **总控与全息观测（`web/src/Overview.tsx`, `DigitalTwin.tsx`, `ActivityIndex.tsx`, `src/server/company-activity-index.ts`, `company-agents-index.ts`, `company-repos-index.ts`）**：全局看板、组织数字孪生（3 透镜 / 22 舱室 + 13 阶 = 35 锚点）与每 15 秒刷新的本机会话/GitHub 仓库索引。
+> 2. **Zoom 统一消息、阶段工作单与全站委派（`src/server/zoom*.ts`, `stage-work.ts`, `delegation.ts`, `delegated-agent.ts`, `home-room.ts`, `web/src/ZoomInbox.tsx`, `StageDesk.tsx`, `Delegation.tsx`, `HomeRoom.tsx`）**：汇聚所有 coding agent、工作流审批、原仓需求、经营复盘与 Agent Home 讨论室提问，支持默认办理方式、独占租约认领与断线对账。
+> 3. **公司目录、研发自动选题与开源能力复用（`src/server/company.ts`, `company-journal.ts`, `company-learn.ts`, `projects.ts`, `project-profiles.ts`, `autonomy.ts`, `repo-capabilities.ts`, `reuse-admission.ts`）**：直读 `daily-review-learning` 与 Learn Agent、按「影响 × 把握 ÷ 工作量」自动选题、固定 Commit/Tag 复用登记及原仓维护需求版本化审批。
+> 4. **自治工作流与 Herdr 调度（`src/server/workflow/*.ts`, `scripts/workflow-*.mjs`）**：版本化 DAG 计划、审批前零派发、Codex / Grok / agy / Cursor Agent 执行器路由、Herdr 隔离 worktree 并行实现、独立只读评审、失败返工与最终验收清理。
+> 5. **商业闭环、公司四部与伴生微服务网格（`src/server/commercial.ts`, `business.ts`, `growth.ts`, `security-department.ts`, `operations-department.ts`, `resource-department.ts`, `worklog.ts`, `scripts/opc-stack.mjs`）**：商业与治理部（18 项 7 层资产纳管、1 号试点、5 套业务线打法库、6 大伴生引擎自启动与健康探针：`opc-commerce-kit :52331` / `opc-gtm-kit :52332` / `opc-ops-kit :52333` / `data_analysis :8000` / `Agent Home :37070` / `Agent Hub :28790`）、安全/运维/资源成本三部、渠道转化台账与 Agent Hub 工作投入归集。
+> 6. **昆仑多 Agent 频道与黑板引擎（`src/server/logic.ts`, `pipeline.ts`, `coordinator.ts`, `mcp.ts`, `web/src/App.tsx`）**：下文详细说明该底层频道、认领、投标、多身份、流水线与 MCP 协议设计。
+
+---
+
+## 昆仑多 Agent 频道与黑板协议
 
 人和 coding agent 在同一个频道里协作。服务器只做协调：消息、成员、任务槽位、唤醒。代码和密钥留在成员自己的机器上。
 

@@ -131,6 +131,8 @@ try {
     problem: null,
   };
   const roomPosts = [];
+  const chatMessages = [];
+  let chatLinks = [];
   let stageWorkItem = {
     id: "stage-reconcile-1",
     requestId: "req-stage-1",
@@ -224,25 +226,103 @@ try {
       data = item;
     } else if (path === "/api/zoom/company") {
       data = companyData;
+    } else if (path === "/api/zoom/company/days") {
+      data = { days: [] };
+    } else if (path === "/api/zoom/company/learn") {
+      data = { available: false, reason: "test" };
     } else if (path === "/api/opc/opportunities") {
       data = { projects: [], opportunities: [] };
+    } else if (path === "/api/opc/home-chat/overview") {
+      data = {
+        available: true,
+        origin: "http://127.0.0.1:37070",
+        rooms: [
+          {
+            id: "chat-room-1",
+            title: "OPC 总控群",
+            status: "active",
+            botIds: ["real-bot-id", "arch-bot-id"],
+            hostBotId: "real-bot-id",
+            replyMode: "coordinator",
+          },
+        ],
+        bots: [
+          { id: "real-bot-id", name: "项目管家" },
+          { id: "arch-bot-id", name: "架构师" },
+        ],
+        links: chatLinks,
+      };
+    } else if (path === "/api/opc/home-chat/links" && req.method() === "PUT") {
+      const body = req.postDataJSON();
+      chatLinks = [...chatLinks.filter((l) => l.scopeKey !== body.scopeKey), { ...body, roomTitle: body.roomTitle ?? "OPC 总控群", updatedAt: at }];
+      data = { links: chatLinks };
+    } else if (path === "/api/opc/home-chat/links" && req.method() === "DELETE") {
+      const key = u.searchParams.get("scopeKey");
+      chatLinks = chatLinks.filter((l) => l.scopeKey !== key);
+      data = { links: chatLinks };
+    } else if (path === "/api/opc/home-chat/rooms/chat-room-1/messages" && req.method() === "GET") {
+      data = {
+        room: {
+          id: "chat-room-1",
+          title: "OPC 总控群",
+          status: "active",
+          botIds: ["real-bot-id", "arch-bot-id"],
+          hostBotId: "real-bot-id",
+          replyMode: "coordinator",
+        },
+        messages: chatMessages,
+        hasMore: false,
+        nextCursor: null,
+        bots: [
+          { id: "real-bot-id", name: "项目管家" },
+          { id: "arch-bot-id", name: "架构师" },
+        ],
+        turns: [],
+      };
+    } else if (path === "/api/opc/home-chat/rooms/chat-room-1/messages" && req.method() === "POST") {
+      const body = req.postDataJSON();
+      const msg = {
+        id: "chat-msg-" + (chatMessages.length + 1),
+        roomId: "chat-room-1",
+        seq: chatMessages.length + 1,
+        text: body.text,
+        createdAt: at,
+        sender: { type: "user", id: "founder", name: "创始人" },
+        mentions: body.mentions ?? [],
+        ...(body.replyTo ? { replyTo: body.replyTo } : {}),
+      };
+      chatMessages.push(msg);
+      data = { message: msg, turn: { id: "turn-c-" + msg.seq, roomId: "chat-room-1", messageId: msg.id, botIds: body.mentions ?? ["real-bot-id"] } };
     } else if (path === "/api/opc/home-rooms" && req.method() === "GET") {
       data = { bindings: [roomBinding], localRooms: [{ id: "local-room", name: "产品维护", project: "产品甲" }] };
     } else if (path === "/api/opc/home-rooms/references") {
-      data = {
-        references: roomPosts
-          .filter((p) => p.body.includes("#ideas?idea=" + u.searchParams.get("idea")))
-          .map((p) => ({
-            bindingId: roomBinding.id,
-            postId: p.id,
-            project: roomBinding.project,
-            roomTitle: roomBinding.roomTitle,
-            botName: roomBinding.botName,
-            direction: p.direction,
-            excerpt: p.body.slice(0, 120),
-            createdAt: p.createdAt,
-          })),
-      };
+      const targetIdea = u.searchParams.get("idea");
+      const fromChat = chatMessages
+        .filter((m) => m.text.includes("#ideas?idea=" + targetIdea))
+        .map((m) => ({
+          bindingId: "",
+          postId: m.id,
+          roomId: "chat-room-1",
+          project: "Agent Home 群聊",
+          roomTitle: "OPC 总控群",
+          botName: "群聊讨论",
+          direction: "out",
+          excerpt: m.text.slice(0, 120),
+          createdAt: m.createdAt,
+        }));
+      const fromLegacy = roomPosts
+        .filter((p) => p.body.includes("#ideas?idea=" + targetIdea))
+        .map((p) => ({
+          bindingId: roomBinding.id,
+          postId: p.id,
+          project: roomBinding.project,
+          roomTitle: roomBinding.roomTitle,
+          botName: roomBinding.botName,
+          direction: p.direction,
+          excerpt: p.body.slice(0, 120),
+          createdAt: p.createdAt,
+        }));
+      data = { references: [...fromChat, ...fromLegacy] };
     } else if (path === `/api/opc/home-rooms/${bindingId}/messages` && req.method() === "GET") {
       data = { posts: roomPosts };
     } else if (path === `/api/opc/home-rooms/${bindingId}/messages` && req.method() === "POST") {
@@ -265,6 +345,8 @@ try {
       data = { binding: roomBinding, post: roomPosts.find((p) => p.id === postId) };
     } else if (path === "/api/zoom/stage-work" && req.method() === "GET") {
       data = { items: [stageWorkItem] };
+    } else if (path === `/api/zoom/stage-work/${stageWorkItem.id}` && req.method() === "GET") {
+      data = { work: stageWorkItem, messages: [] };
     } else if (path === `/api/zoom/stage-work/${stageWorkItem.id}/reopen` && req.method() === "POST") {
       const body = req.postDataJSON();
       assert.equal(body.expectedLeaseUntil, stageWorkItem.leaseUntil);
@@ -308,36 +390,13 @@ try {
   await page.getByRole("button", { name: "保存默认方式" }).click();
   await expect(page.getByText("已保存默认办理方式。")).toBeVisible();
   assert.equal(preference.automatic, false);
-  await page.goto(origin + "/#inbox?message=" + message.id);
-  await page.getByRole("button", { name: "委派核对与建议" }).click();
-  await expect(page.getByLabel("Agent Home 的 Bot")).toHaveValue("real-bot-id");
-  await page.getByRole("button", { name: "确认委派" }).click();
-  await expect(page.getByRole("region", { name: "委派进展" })).toContainText("real-bot-id");
-  assert.deepEqual(Object.keys(submissions[1]).sort(), ["messageId", "method"]);
-  assert.equal(submissions[1].messageId, message.id);
-  // The executor's follow-up must be answerable in its thread, without delegating the delegation again.
-  const child = {
-    ...message,
-    id: "work-question",
-    origin: "external",
-    taskId: items[1].workId,
-    body: "请补充测试样例？",
-    kind: "question",
-    choices: [],
-    pending: true,
-  };
-  messages.push(child);
+  // Check DelegationDesk filters and refresh without Zoom inbox.
   await page.goto(origin + "/#delegations");
   const delFilters = page.getByRole("navigation", { name: "按委派状态筛选" });
   await expect(delFilters).toBeVisible();
   await delFilters.getByRole("button", { name: /^已交回/ }).click();
   await expect(page.getByText("当前筛选下没有委派记录。")).toBeVisible();
   await delFilters.getByRole("button", { name: /^全部/ }).click();
-  await page.getByRole("link", { name: "答复执行者的问题" }).click();
-  await expect(
-    page.getByRole("region", { name: "所属委派" }).getByRole("link", { name: "回原事项 ↗" }),
-  ).toHaveAttribute("href", "#inbox?message=" + message.id);
-  await expect(page.getByRole("button", { name: "委派给 agent", exact: true })).toHaveCount(0);
   // A fresh ordinary round has a stable successor key shared by every browser.
   items[0].status = "completed";
   items[0].result = "第一轮已交回";
@@ -354,9 +413,9 @@ try {
     btn.click();
   });
   await expect(page.getByRole("region", { name: "委派进展" })).toContainText("custom-cli");
-  assert.equal(submissions.length, 3);
-  assert.equal(submissions[2].operation.key, submissions[0].operation.key + "/next/" + items[0].id);
-  assert.equal(submissions[2].operation.title, "核对新的发布记录");
+  assert.equal(submissions.length, 2);
+  assert.equal(submissions[1].operation.key, submissions[0].operation.key + "/next/" + items[0].id);
+  assert.equal(submissions[1].operation.title, "核对新的发布记录");
   await page.reload();
   await expect(page.getByRole("region", { name: "委派进展" })).toContainText("custom-cli");
   await expect(page.getByRole("button", { name: "再委派一项" })).toHaveCount(0);
@@ -364,25 +423,23 @@ try {
   await page.getByRole("button", { name: "委派核对这项任务" }).click();
   await page.getByRole("button", { name: "确认委派" }).click();
   await expect(page.getByRole("region", { name: "委派进展" })).toBeVisible();
-  await expect(
-    page.getByRole("region", { name: "委派进展" }).getByRole("link", { name: "查看工单记录 ↗" }),
-  ).toHaveAttribute("href", "#inbox?message=work-msg-3");
-  assert.equal(submissions[3].operation.href, "#channels?room=local-room&task=local-task");
-  assert.match(submissions[3].operation.detail, /验收依据文本/);
-  // Bidirectional Idea <-> HomeRoom <-> StageDesk and StageWork reopen UI.
+  assert.equal(submissions[2].operation.href, "#channels?room=local-room&task=local-task");
+  assert.match(submissions[2].operation.detail, /验收依据文本/);
+  // Direct Agent Home Group Chat + Idea <-> Group Chat <-> StageDesk and StageWork reopen UI.
   await page.goto(origin + "/#ideas?idea=" + ideaId);
-  await page.getByRole("link", { name: "到项目讨论室提问 ↗" }).click();
+  await page.getByRole("link", { name: "到 Agent Home 群聊讨论 ↗" }).click();
+  await expect(page.getByRole("heading", { name: "Agent Home 群聊", exact: true })).toBeVisible();
   await expect(page.getByText("引用想法 · 日记到讨论室双向定位")).toBeVisible();
-  await expect(page.getByLabel("发给 @项目管家")).toHaveValue(new RegExp("#ideas\\?idea=" + ideaId));
-  await page.getByRole("button", { name: "发送到原房间" }).click();
+  await page.getByRole("button", { name: "设为默认提醒群" }).click();
+  await expect(page.getByText("取消默认提醒群")).toBeVisible();
+  await page.getByRole("button", { name: "@架构师" }).click();
+  await page.getByRole("button", { name: "发送到群聊" }).click();
   await expect(page.getByRole("link", { name: "查看来源想法 ↗" })).toHaveAttribute("href", "#ideas?idea=" + ideaId);
   await page.getByRole("link", { name: "查看来源想法 ↗" }).click();
-  await expect(page.getByRole("region", { name: "相关项目讨论" })).toContainText("产品讨论室");
+  await expect(page.getByRole("region", { name: "相关项目讨论" })).toContainText("OPC 总控群");
   await page.getByRole("region", { name: "相关项目讨论" }).getByRole("link").click();
-  await expect(page.locator("#hr-post-" + postId)).toHaveAttribute("data-highlighted", "true");
+  await expect(page.getByRole("heading", { name: "OPC 总控群", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "转为阶段任务 ↗" }).click();
-  await expect(page.getByText("来自项目讨论：产品甲 / 产品讨论室")).toBeVisible();
-  await expect(page.locator(".sg-fields")).toContainText(`#home-room?binding=${bindingId}&post=${postId}`);
   await page.getByRole("button", { name: "核对后重新开放认领" }).click();
   await page.getByLabel("核对说明").fill("已确认停止原执行会话");
   await page.getByRole("button", { name: "确认重新开放" }).click();

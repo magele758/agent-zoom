@@ -24,9 +24,9 @@ nav{display:flex;gap:29px;border-bottom:1px solid var(--line)}nav a{text-decorat
 </head>
 <body>
 <a class="skip" href="#flow-heading" id="skip">跳到当前流程</a>
-<header><div class="mast"><div class="brand"><strong>OPC OS</strong><span>产品设计</span></div><a class="guide" href="../OPC_OS_PRODUCT_INTENT.md">返回设计导读 ↗</a></div></header>
+<header><div class="mast"><div class="brand"><strong>OPC OS</strong><span>产品设计</span></div><div style="display:flex;gap:18px;align-items:center"><a class="guide" href="opc-workbench.html">界面设计稿 ↗</a><a class="guide" href="../OPC_OS_PRODUCT_INTENT.md">返回设计导读 ↗</a></div></div></header>
 <main>
-<nav aria-label="选择流程图"><a href="#lines" data-map="lines">公司业务线</a><a href="#business" data-map="business">业务流转</a><a href="#reuse" data-map="reuse">原仓协作</a><a href="#navigation" data-map="navigation">页面跳转</a><a href="#delegation" data-map="delegation">全站委派</a><a href="#execution" data-map="execution">执行与返工</a><a href="#hub" data-map="hub">个人工作账</a></nav>
+<nav aria-label="选择流程图"><a href="#lines" data-map="lines">公司业务线</a><a href="#commercial" data-map="commercial">商业闭环</a><a href="#business" data-map="business">业务流转</a><a href="#reuse" data-map="reuse">原仓协作</a><a href="#navigation" data-map="navigation">页面跳转</a><a href="#delegation" data-map="delegation">全站委派</a><a href="#execution" data-map="execution">执行与返工</a><a href="#hub" data-map="hub">个人工作账</a></nav>
 <section class="intro"><h1 id="flow-heading" tabindex="-1">OPC OS流程图</h1><p id="summary"></p></section>
 <figure class="figure" aria-labelledby="flow-heading">
 <figcaption class="tools"><span class="legend"><span class="work"><i class="symbol"></i>工作步骤</span><span class="decision"><i class="symbol"></i>人工决定</span><span class="record"><i class="symbol"></i>资料与记录</span></span><span class="hint">点选节点，查看负责人和交接内容</span></figcaption>
@@ -51,20 +51,45 @@ const maps = {
     ],
     edges:[["source","method","指定","forward"],["method","worker","派发","forward"],["worker","reply","可办结","forward"],["worker","person","需要批准","return"],["worker","check","回执不明","return"]]
   },
+  commercial: {
+    title:"从门面获客、离线授权到 DuckDB 复盘", doc:"opc-7-layer-blueprint.md",
+    summary:"对应 7 层架构的 L5/L4 商业闭环：聚焦 1 号商业试点，把门面合规、UTM 获客、MoR 离线 License、客服分诊与 DuckDB 漏斗串成一条可验证现金流。",
+    rows:["门面与获客","收银与客服","复盘与回流"],
+    nodes:[
+      ["pilot","确定 1 号试点","聚焦铁律与定价策略",0,0,"decision","你在商业与治理部","L0–L6 18 项已纳管资产与组合聚焦铁律（闭环跑通前冻结新开底层基建库）。","当前聚焦产品（如 PageLens / pagelens-interpret）、目标定价与 7 步闭环清单。"],
+      ["storefront","生成门面与合规","opc-gtm-kit 着陆页",1,0,"work","OPC GTM Kit (:52332)","产品清单、核心卖点与浏览器商店隐私政策要求。","可预览产品门面、独立着陆页与商店隐私合规底板。"],
+      ["utm","多平台带参分发","5 渠道 UTM 与 Waitlist",2,0,"work","OPC GTM Kit + cose","首发稿件、各平台 UTM 参数与私域候补表单。","跨平台带参推广包与自动归因的候补订阅名单。"],
+      ["acquire","归因获客与激活","acquired 与去隐私激活",3,0,"record","OPC GTM / Ops Kit","访客 UTM 落盘与客户端去隐私首次核心价值动作遥测。","向 OPC OS 记入 acquired 与 activated 原始事件，保留可核对来源。"],
+      ["support","客服工单分诊","opc-ops-kit 自动分流",0,1,"work","OPC Ops Kit (:52333)","来自已激活或付费用户的反馈、FAQ 咨询、缺陷报告与崩溃指纹。","自动 FAQ 答复，或按严重程度分流至研发候选 / Zoom 人工审批。"],
+      ["zoomRefund","退款与发版回访","Zoom 人工确认",1,1,"decision","你在 Zoom","需要人工拍板的退款请求、例外授权或修复发版后的提单人回访草稿。","明确决定及理由回到原工单，授权后才执行退款或发信。"],
+      ["margin","核算净毛利","扣减退款与算力成本",2,1,"record","OPC Commerce Kit","按币种统计的订单总收款、退款金额、MoR 手续费与 LLM Token 成本。","真实单位经济净营收与毛利率快照，回传商业与治理部驾驶舱。"],
+      ["billing","收银与离线发码","MoR + Ed25519 OPCL1",3,1,"work","OPC Commerce Kit (:52331)","Lemon Squeezy / Paddle / Creem 支付 Webhook 与设备席位规则。","幂等入账并自动签发 Ed25519 离线可验 OPCL1 License Key。"],
+      ["rdFeedback","缺陷转研发选题","进入自动选题候选队列",0,2,"work","OPC OS 研发选题","已确认的用户 P1 缺陷工单、复现样例与受影响版本。","进入目标项目的研发候选池，按 影响×把握÷工作量 排序等待计划审批。"],
+      ["cockpit","商业治理复盘","扩量、调价或切换试点",1,2,"decision","你在商业与治理部","7 步闭环就绪度、净毛利、工单反馈与 DuckDB 多步漏斗洞察。","决定继续放量、调整定价策略、套用下一套业务线打法或回流研发。"],
+      ["duckdb","DuckDB 漏斗洞察","17 列 Trace 同步",2,2,"record","data_analysis (:8000)","来自 OPC OS 与 L5 服务的标准 17 列 Trace 行为与订单快照。","多步转化漏斗、留存与异动洞察，结果回写 OPC OS 驾驶舱。"],
+      ["growth","渠道转化台账","按渠道下钻原始凭据",3,2,"record","OPC OS 渠道转化","按首次获客渠道归因的获客、激活、首单、复购与未计入漏斗事件。","按产品与渠道展示去重转化率，点击人数直接追溯客户与订单号。"]
+    ],
+    edges:[
+      ["pilot","storefront","立项","forward"],["storefront","utm","发布","forward"],["utm","acquire","归因","forward"],
+      ["acquire","billing","下单","forward"],["billing","margin","发码入账","forward"],["billing","growth","订单事件","forward"],
+      ["margin","duckdb","毛利数据","forward"],["growth","duckdb","17列Trace","forward"],["duckdb","cockpit","复盘","forward"],
+      ["support","zoomRefund","退款/升级","alternate"],["support","rdFeedback","P1缺陷","return"],["zoomRefund","cockpit","决定","forward"]
+    ]
+  },
   lines: {
     title:"几条业务线怎样一起经营", doc:"operating-model.md",
-    summary:"上行是可交付的研发，下行是探索中的店铺实验。点节点看谁接手、要留下什么，再沿连线去下一步。",
-    rows:["工程交付","经营实验","公司复盘"],
+    summary:"上行是供给侧研发，下行是商业变现与经营实验（含旗舰插件、Open-Core、店铺运营、轻工具导流）。公司四部跨线护航。",
+    rows:["工程交付","商业与经营实验","公司复盘与治理"],
     nodes:[
-      ["signal","日记与项目线索","引用原文、需求或问题",0,0,"record","你或 coding agent","入选的日记摘录、Issue、版本说明。","保留出处，把候选归到具体项目。"],
+      ["signal","日记、Issue 与工单","引用原文、需求或线上缺陷",0,0,"record","你、coding agent 或 Ops Kit","入选的日记摘录、GitHub Issue、版本说明与客服升级工单。","保留出处，把候选归到具体项目。"],
       ["pick","自动选下一项","按项目评估影响与投入",1,0,"work","OPC OS","已绑定工作区的项目开启自动选题。","一个在途计划。若上项未处理，其他候选继续排队。"],
-      ["confirm","计划审批","确定版本和执行者",2,0,"decision","你在 Zoom","依赖、执行者、验收条件。","批准本版后实施，修改意见回原任务。"],
-      ["deliver","实现与独立评审","保留差异、测试和结论",3,0,"record","Herdr 执行者与独立评审者","已批准的节点和工作树。","能复查的成果和最终验收。"],
-      ["trial","提出店铺实验","范围、指标、插件版本",0,1,"work","店铺线负责人","想验证的一步操作和可复用插件。","记录本轮可做什么，以及怎样算有效。"],
-      ["observe","登记观察或交易","每条凭据有出处",1,1,"record","店铺线执行者","抽查样例、实际收款、退款或费用凭据。","按业务线和币种核对结果；问题可连同依据形成研发候选。"],
-      ["review","实验复盘","继续、调整或暂停",2,1,"decision","你在 Zoom","这轮的假设、原定指标和实际结果。","意见回到原实验，可以另开下一轮。"],
-      ["company","公司总览","核对方向、投入、结果",2,2,"record","你","各业务线的原决定、工作投入和经营凭据。","继续现有业务线，或验证新的挣钱方向。"],
-      ["reuse","复用已验证资产","登记来源项目与版本",3,2,"work","采用方项目","插件、规则或其他项目交付的成果。","采用方记录用途和自己的验证。"]
+      ["confirm","计划审批","确定版本和执行者",2,0,"decision","你在 Zoom","依赖、执行者、验收条件与安全/额度核查。","批准本版后实施，修改意见回原任务。"],
+      ["deliver","实现与独立评审","保留差异、测试和结论",3,0,"record","Herdr 执行者与独立评审者","已批准的节点和隔离工作树。","能复查的成果、安全复审与最终验收。"],
+      ["trial","套用打法发起实验","范围、指标、资产与定价",0,1,"work","业务线负责人","从 5 套标准化业务线打法库立项，或自建假设与可复用资产。","记录本轮可做什么，以及怎样算有效。"],
+      ["observe","登记观察、授权或交易","每条凭据有出处",1,1,"record","业务线与 L5 伴生引擎","抽查样例、UTM 获客、离线 License 收款、退款或费用凭据。","按业务线和币种核对净流入；缺陷可一键转研发候选。"],
+      ["review","实验复盘","继续、调整或暂停",2,1,"decision","你在 Zoom","这轮的假设、原定指标、渠道转化与净毛利结果。","意见回到原实验，可以另开下一轮。"],
+      ["company","总览、数字孪生与四部","核对方向、投入与风险",2,2,"record","你（商业/安全/运维/资源部）","全局看板、组织数字孪生、工作投入、服务健康与经营凭据。","继续放量现有业务线，或验证新的挣钱方向。"],
+      ["reuse","复用已验证资产","登记来源项目与版本",3,2,"work","采用方项目","插件、离线授权套件、预检命令或其他项目交付的成果。","采用方记录用途和自己的验证。"]
     ],
     edges:[["signal","pick","入选","forward"],["pick","confirm","提交","forward"],["confirm","deliver","批准","forward"],
       ["trial","observe","取证","forward"],["observe","review","送审","forward"],["observe","pick","提议特性","return"],
@@ -119,11 +144,11 @@ const maps = {
   },
   navigation: {
     title: "从页面进入，再回到原处",
-    summary: "主动开工从公司总览进入。只处理消息时，从 Zoom 直接打开原问题或对应版本。",
+    summary: "主动开工从全局看板或组织数字孪生（35 个直达入口）进入。只处理消息时，从 Zoom 直接打开原问题或对应版本。",
     doc: "navigation.md",
     rows: ["主动开工", "只处理消息", "回看发布", "定位执行现场"],
     nodes: [
-      ["overview", "公司总览", "可点进每个节点", 0, 0, "work", "你", "全公司的信息、想法、产品、项目与待决事项。", "从具体节点继续。返回总览时恢复上次的筛选。"],
+      ["overview", "全局看板 / 数字孪生", "35 锚点一键直达", 0, 0, "work", "你", "工作现场、业务线、公司四部、13 阶矩阵与全息拓扑沙盘。", "一键进入项目、部门或阶段工作单。返回总览时恢复筛选。"],
       ["catalog", "产品目录", "展开旗下项目", 1, 0, "record", "你", "所选产品及其关联的想法。", "按层级与领域查找项目，也可创建一个尚无仓库的新项目。"],
       ["projectHome", "项目主页", "阶段与工作集中在此", 2, 0, "work", "你或 coding agent", "当前项目的目标、日记出处、仓库和阶段事项。", "可进入项目房间或选择阶段发起具体任务。"],
       ["room", "项目房间", "点名既有 Home Bot", 3, 0, "work", "你、coding agent 与已选 Bot", "从房间成员中选入 Agent Home 的 Bot，点名提问或回复原帖。", "回答留在原帖。需要交付时将结论关联到已有任务，或转为新任务。"],
@@ -312,7 +337,7 @@ function render(moveFocus = false) {
   document.querySelector('#summary').textContent=map.summary;
   const more=document.querySelector('#read-more');
   more.href=map.doc;
-  more.textContent='阅读'+({lines:'业务线',reuse:'原仓协作',business:'业务流程',navigation:'页面跳转',execution:'执行规则',hub:'个人工作账联动'})[key]+'分册 ↗';
+  more.textContent='阅读'+({lines:'业务线',commercial:'7 层商业闭环',reuse:'原仓协作',business:'业务流程',navigation:'页面跳转',delegation:'全站委派',execution:'执行规则',hub:'个人工作账联动'})[key]+'分册 ↗';
   for (const tab of document.querySelectorAll('[data-map]')) {
     if (tab.dataset.map === key) tab.setAttribute('aria-current','page');
     else tab.removeAttribute('aria-current');

@@ -90,3 +90,29 @@ opc-os project add '我的产品'
 opc-os project list
 opc-os project sync owner/repo --product '我的产品'
 ```
+
+## 商业闭环、业务线与自动选题 CLI
+
+除消息与任务协作外，`opc-os` 还提供商业治理、业务线实验与自动选题线索入口：
+
+```sh
+# 商业闭环与 7 层资产治理（配合 npm run opc:up / opc:verify）
+opc-os commercial overview
+opc-os commercial bootstrap
+opc-os commercial ensure
+opc-os commercial closed-loop [--product PageLens] [--slug pagelens-interpret] [--channel xiaohongshu]
+opc-os commercial sync-analytics [--product PageLens]
+opc-os commercial playbook <flagship-extension-monetization|open-core-prosumer|automated-shop-ops|lead-magnet-funnel|core-rd-factory>
+
+# 业务线实验、多币种凭据与复盘
+opc-os business list
+opc-os business trial <业务线ID> <JSON文件|->
+opc-os business evidence <实验ID> <JSON文件|->
+opc-os business review <实验ID>
+
+# 研发候选与来源采集（GitHub / daily-review-learning）
+opc-os opportunity list [--project 产品/项目]
+opc-os opportunity add <JSON文件|->
+opc-os sources github --repo owner/repo --project '产品/项目' [--watch 900]
+opc-os sources daily /绝对路径/YYYY-MM-DD.md --heading '小节名' --project '产品/项目'
+```
