@@ -4,3 +4,7 @@ web/dist/
 data/
 *.log
 .DS_Store
+docs/product/onboarding-video/
+.hyperframes/
+.thumbnails/
+.waveform-cache/

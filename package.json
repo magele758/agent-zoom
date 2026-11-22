@@ -29,6 +29,8 @@
     "opc:stack": "node scripts/opc-stack.mjs",
     "opc:up": "node scripts/opc-stack.mjs up",
     "opc:verify": "node scripts/opc-stack.mjs verify",
+    "opc:backup": "node scripts/opc-backup.mjs backup",
+    "opc:restore": "node scripts/opc-backup.mjs restore",
     "opc:sources": "node scripts/opc-sources.mjs",
     "opc:demo": "node scripts/opc-demo.mjs",
     "test:opc": "npm run build && node scripts/opc-business-browser.mjs",
