@@ -195,7 +195,7 @@ async function hubRequest() {
     throw Error("local hub required");
   const res = await fetch(new URL("/api/breakpoint/preview", origin), {
     redirect: "error",
-    signal: AbortSignal.timeout(12000),
+    signal: AbortSignal.timeout(4000),
   });
   if (!res.ok || !res.headers.get("content-type")?.includes("application/json")) throw Error("hub unavailable");
   return res.json();

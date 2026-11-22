@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { Hono } from "hono";
-import type { ExecutiveStatus } from "./executive-bots-types.ts";
+import type { ExecutiveMailboxResponse, ExecutiveStatus } from "./executive-bots-types.ts";
 import {
   EXECUTIVE_DEPARTMENTS,
   mergeSuperBotDescription,
@@ -40,7 +40,15 @@ function sendJson(res: ServerResponse, status: number, payload: unknown) {
 function createMockAgentHome() {
   type Bot = { id: string; name: string; title: string; description: string; hidden: boolean; functionalGroupId: string | null };
   type Group = { id: string; name: string; botIds: string[]; roomIds: string[] };
-  type Room = { id: string; title: string; status: string; botIds: string[]; hostBotId: string; replyMode: string; messages: Array<{ id: string; text: string; mentions: string[] }> };
+  type Room = {
+    id: string;
+    title: string;
+    status: string;
+    botIds: string[];
+    hostBotId: string;
+    replyMode: string;
+    messages: Array<{ id: string; text: string; mentions: string[]; createdAt: string; sender: { type: "user" | "bot"; id: string; name: string } }>;
+  };
   type Task = { id: string; requesterBotId: string; targetBotId: string; input: string; status: string; result?: string; updatedAt: string };
   type CronJob = { id: string; name: string; botId: string; roomId: string; scheduleValue: string; enabled: boolean; nextRunAt: string | null };
 
@@ -180,6 +188,11 @@ function createMockAgentHome() {
       return sendJson(res, 200, { ok: true });
     }
     const roomMsgMatch = /^\/api\/bot-rooms\/([^/]+)\/messages$/.exec(path);
+    if (roomMsgMatch && method === "GET") {
+      const room = rooms.get(decodeURIComponent(roomMsgMatch[1]));
+      if (!room) return sendJson(res, 404, { error: "not found" });
+      return sendJson(res, 200, { messages: room.messages, hasMore: false, nextCursor: null });
+    }
     if (roomMsgMatch && method === "POST") {
       const room = rooms.get(decodeURIComponent(roomMsgMatch[1]));
       if (!room) return sendJson(res, 404, { error: "not found" });
@@ -187,9 +200,15 @@ function createMockAgentHome() {
         id: `msg-${++seq}`,
         text: String(body.text ?? ""),
         mentions: Array.isArray(body.mentions) ? body.mentions.map(String) : [],
+        createdAt: new Date().toISOString(),
+        sender: { type: "user" as const, id: "user-1", name: "Founder" },
       };
       room.messages.push(msg);
       return sendJson(res, 201, { message: msg });
+    }
+    const roomTurnMatch = /^\/api\/bot-rooms\/([^/]+)\/turns$/.exec(path);
+    if (roomTurnMatch && method === "GET") {
+      return sendJson(res, 200, { turns: [] });
     }
     if (method === "GET" && path === "/api/bot-work/status") {
       return sendJson(res, 200, {
@@ -331,7 +350,17 @@ test("ExecutiveBotService bootstraps 5 dept bots + Super Bot hierarchy idempoten
     assert.equal(mock.bots.size, 6);
     assert.match(mock.bots.get("super-bot")!.description, /Original Super Bot coordinator prompt\./);
     assert.match(mock.bots.get("super-bot")!.description, /【OPC 总裁办分级管理契约】/);
+    assert.match(mock.bots.get("super-bot")!.description, /三不留/);
     assert.equal(mock.sharedContext.size, 1);
+    const groupCtx = [...mock.sharedContext.values()][0];
+    assert.match(groupCtx["opc-data-sovereignty-policy"] ?? "", /三不留/);
+    assert.match(groupCtx["opc-data-sovereignty-policy"] ?? "", /opc:backup/);
+    const opsDept = after.departments.find(d => d.id === "operations")!;
+    const secDept = after.departments.find(d => d.id === "security")!;
+    const rdBootDept = after.departments.find(d => d.id === "rd")!;
+    assert.match(mock.bots.get(opsDept.runtime.botId!)!.description, /三不留/);
+    assert.match(mock.bots.get(secDept.runtime.botId!)!.description, /三不留/);
+    assert.match(mock.bots.get(rdBootDept.runtime.botId!)!.description, /三不留/);
 
     // 3. Second bootstrap is strictly idempotent
     const boot2Res = await app.request("/api/opc/executive/bootstrap", { method: "POST" });
@@ -377,6 +406,82 @@ test("ExecutiveBotService bootstraps 5 dept bots + Super Bot hierarchy idempoten
     assert.equal(onStatus.briefCron?.enabled, true);
     assert.equal(onStatus.recentTasks.length, 1);
     assert.equal(onStatus.recentTasks[0].requesterBotId, "super-bot");
+
+    // 7. Mailbox aggregates inbound Super Bot briefs + department reports, tracks unread/read, and sends founder replies
+    room.messages.push({
+      id: "msg-bot-brief-1",
+      text: "## 今日 OPC 总裁简报\n1. 五部状态绿灯\n2. 需创始人拍板：是否批准 PageLens 定价调整？",
+      mentions: [],
+      createdAt: new Date(Date.now() + 1000).toISOString(),
+      sender: { type: "bot", id: "super-bot", name: "Super Bot" },
+    });
+    const mailRes = await app.request("/api/opc/executive/mailbox");
+    assert.equal(mailRes.status, 200);
+    const mail = (await mailRes.json()) as ExecutiveMailboxResponse;
+    assert.equal(mail.agentHomeReachable, true);
+    const inbound = mail.items.find(i => i.id === "room:msg-bot-brief-1");
+    assert.ok(inbound);
+    assert.equal(inbound.direction, "inbound");
+    assert.equal(inbound.read, false);
+    assert.equal(inbound.needsDecision, true);
+    assert.equal(inbound.subject, "今日 OPC 总裁简报");
+
+    // Mark read -> persisted
+    const readRes = await app.request(`/api/opc/executive/mailbox/${encodeURIComponent(inbound.id)}/read`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ read: true }),
+    });
+    assert.equal(readRes.status, 200);
+    const mailAfterRead = (await (await app.request("/api/opc/executive/mailbox")).json()) as ExecutiveMailboxResponse;
+    assert.equal(mailAfterRead.items.find(i => i.id === inbound.id)?.read, true);
+
+    // Founder approves directly from mailbox -> posts @super-bot reply
+    const replyRes = await app.request("/api/opc/executive/mailbox/reply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "同意按方案执行",
+        action: "approve",
+        replyToMessageId: "msg-bot-brief-1",
+      }),
+    });
+    assert.equal(replyRes.status, 200);
+    assert.match(room.messages.at(-1)!.text, /【创始人批示：批准执行】/);
+    assert.deepEqual(room.messages.at(-1)!.mentions, ["super-bot"]);
+
+    // 8. Cross-department Coding-Agent call request routes from requesting department bot -> RD bot
+    const commercialDept = after.departments.find(d => d.id === "commercial")!;
+    const rdDept = after.departments.find(d => d.id === "rd")!;
+    const commercialBot = mock.bots.get(commercialDept.runtime.botId!)!;
+    assert.ok(commercialBot.description.includes(rdDept.runtime.botId!), "non-RD department contract embeds RD botId");
+
+    const reqRes = await app.request("/api/opc/executive/coding-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requesterDept: "commercial",
+        title: "着陆页补齐 UTM 埋点",
+        repo: "opc-gtm-kit",
+        objective: "把来源参数透传至候补接口并补单元测试",
+        acceptance: "单测全绿并回传 diff",
+        priority: "high",
+      }),
+    });
+    assert.equal(reqRes.status, 201);
+    const createdReq = (await reqRes.json()) as { id: string; taskId: string; status: string };
+    assert.equal(createdReq.status, "queued");
+    const dispatchedTask = mock.tasks.find(t => t.id === createdReq.taskId)!;
+    assert.equal(dispatchedTask.requesterBotId, commercialDept.runtime.botId);
+    assert.equal(dispatchedTask.targetBotId, rdDept.runtime.botId);
+
+    // Simulate RD bot completing the coding request -> status syncs report back
+    dispatchedTask.status = "completed";
+    dispatchedTask.result = "已调度 Coding-Agent 资源组完成实现与单测，交付验收通过。";
+    const statusAfterReq = (await (await app.request("/api/opc/executive/status")).json()) as ExecutiveStatus;
+    const synced = statusAfterReq.codingRequests.find(r => r.id === createdReq.id)!;
+    assert.equal(synced.status, "completed");
+    assert.match(synced.report, /Coding-Agent 资源组/);
   } finally {
     db.close();
     await new Promise<void>(resolve => mock.server.close(() => resolve()));

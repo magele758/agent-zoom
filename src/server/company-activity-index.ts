@@ -51,8 +51,13 @@ export function addActivityIndex(app: Hono, db: DatabaseSync, people: (c: Contex
   const projects = new ProjectStore(db);
   const repos = enabled ? createRepoIndex(db) : null;
   type LiveIndex = { agents: AgentIndex; checkouts: Awaited<ReturnType<typeof readWorkspaceCheckouts>> };
+  const AGENT_FRESH_MS = 30_000;
+  const CHECKOUT_CACHE_MS = 5 * 60 * 1000;
   let agentCache: { at: number; data: LiveIndex } | undefined;
+  let checkoutCache: { key: string; at: number; data: LiveIndex["checkouts"] } | undefined;
   let fetchingAgents: Promise<LiveIndex> | undefined;
+  let lastActivity: { at: number; data: ActivityIndex } | undefined;
+  let refreshingSnapshot: Promise<ActivityIndex> | undefined;
   let maintain: IndexSource = {
     name: "已纳管仓库维护动态",
     status: "refreshing",
@@ -101,9 +106,9 @@ export function addActivityIndex(app: Hono, db: DatabaseSync, people: (c: Contex
     });
     return maintaining;
   }
-  function agents(force: boolean) {
-    if (!force && agentCache && Date.now() - agentCache.at < 15000) return Promise.resolve(agentCache.data);
-    return (fetchingAgents ??= readAgentIndex()
+  function fetchAgents(force: boolean): Promise<LiveIndex> {
+    if (fetchingAgents) return fetchingAgents;
+    fetchingAgents = readAgentIndex()
       .catch(() => ({
         agents: [],
         localWorkspaces: [],
@@ -116,17 +121,36 @@ export function addActivityIndex(app: Hono, db: DatabaseSync, people: (c: Contex
           },
         ],
       }))
-      .then(async (agents) => {
-        const result = { agents, checkouts: await readWorkspaceCheckouts(agents.localWorkspaces) };
+      .then(async (agentsResult) => {
+        const wsKey = JSON.stringify([...new Set(agentsResult.localWorkspaces)].sort());
+        let checkouts: LiveIndex["checkouts"];
+        if (!force && checkoutCache && checkoutCache.key === wsKey && Date.now() - checkoutCache.at < CHECKOUT_CACHE_MS) {
+          checkouts = checkoutCache.data;
+        } else {
+          checkouts = await readWorkspaceCheckouts(agentsResult.localWorkspaces);
+          checkoutCache = { key: wsKey, at: Date.now(), data: checkouts };
+        }
+        const result = { agents: agentsResult, checkouts };
         agentCache = { at: Date.now(), data: result };
         return result;
       })
       .finally(() => {
         fetchingAgents = undefined;
-      }));
+      });
+    return fetchingAgents;
+  }
+  function agents(force: boolean): Promise<LiveIndex> {
+    if (!force) {
+      if (agentCache && Date.now() - agentCache.at < AGENT_FRESH_MS) return Promise.resolve(agentCache.data);
+      if (agentCache) {
+        void fetchAgents(false).catch(() => {});
+        return Promise.resolve(agentCache.data);
+      }
+    }
+    return fetchAgents(force);
   }
 
-  async function latest(force = false, refreshMaintenance = false): Promise<ActivityIndex> {
+  async function compute(force = false, refreshMaintenance = false): Promise<ActivityIndex> {
     if (!repos) return { agents: [], repositories: [], sources: [inactive] };
     // Passive reads trigger stale maintenance sync in the background so Overview/Index never stalls on GitHub latency.
     const maintenanceTask = refreshMaintenance ? updateMaintenance(force) : undefined;
@@ -140,7 +164,28 @@ export function addActivityIndex(app: Hono, db: DatabaseSync, people: (c: Contex
       repositories: addLocalCheckouts(origin.repositories, live.checkouts.rows),
       sources: [...origin.sources, live.checkouts.source],
     };
-    return joinActivity(live.agents, merged, maintain, live.checkouts.workspaceRoots);
+    const joined = joinActivity(live.agents, merged, maintain, live.checkouts.workspaceRoots);
+    lastActivity = { at: Date.now(), data: joined };
+    return joined;
+  }
+
+  async function latest(force = false, refreshMaintenance = false): Promise<ActivityIndex> {
+    if (!repos) return { agents: [], repositories: [], sources: [inactive] };
+    if (!force && lastActivity) {
+      // Stale-while-revalidate: serve RAM snapshot immediately (<2ms) and refresh silently if aged > 30s.
+      if (Date.now() - lastActivity.at >= AGENT_FRESH_MS && !refreshingSnapshot) {
+        refreshingSnapshot = compute(false, refreshMaintenance)
+          .catch(() => lastActivity!.data)
+          .finally(() => { refreshingSnapshot = undefined; });
+      }
+      return lastActivity.data;
+    }
+    if (!force && refreshingSnapshot) return refreshingSnapshot;
+    const task = compute(force, refreshMaintenance).finally(() => {
+      if (refreshingSnapshot === task) refreshingSnapshot = undefined;
+    });
+    refreshingSnapshot = task;
+    return task;
   }
 
   async function repository(name: string | undefined) {
@@ -166,7 +211,33 @@ export function addActivityIndex(app: Hono, db: DatabaseSync, people: (c: Contex
   );
   return {
     sync: async () => {
-      if (repos) await Promise.all([repos(true), updateMaintenance(true)]);
+      if (!repos) return;
+      if (!lastActivity) {
+        try {
+          const localRow = db
+            .prepare("SELECT at, payload FROM opc_repo_inventory_snapshots WHERE source='local'")
+            .get() as { at?: string; payload?: string } | undefined;
+          if (localRow?.payload) {
+            const parsed = JSON.parse(localRow.payload) as { rows?: { fullName: string; paths: string[] }[] };
+            const seededRepos = addLocalCheckouts([], parsed.rows ?? []);
+            if (seededRepos.length > 0) {
+              lastActivity = {
+                at: 0,
+                data: {
+                  agents: [],
+                  repositories: seededRepos,
+                  sources: [
+                    { name: "本机索引", status: "refreshing", asOf: localRow.at ?? null, detail: "服务刚启动，正在后台刷新实时会话与最新仓库快照。" },
+                  ],
+                },
+              };
+            }
+          }
+        } catch {
+          // Ignore cold-boot seed failures.
+        }
+      }
+      await Promise.all([compute(true, false), updateMaintenance(true)]);
     },
   };
 }

@@ -6,7 +6,7 @@
 
 **平时从全局看板或组织数字孪生找机会，忙时只看 Zoom 的「待我处理」。** 入口全部指向同一份项目、业务线与任务记录，答复跟着原问题回到对应的人或会话。
 
-[首次启动与一键全栈](product/start.md)　·　[7 层架构蓝图](product/opc-7-layer-blueprint.md)　·　[界面设计稿（全能力原型）](product/opc-workbench.html)　·　[多业务线流转](product/flows.html#lines)　·　[商业闭环图](product/flows.html#commercial)　·　[业务流程图](product/flows.html#business)　·　[页面跳转](product/flows.html#navigation)　·　[全站委派](product/flows.html#delegation)　·　[审批与返工](product/flows.html#execution)　·　[Agent Hub 联动](product/flows.html#hub)
+[首次启动与一键全栈](product/start.md)　·　[三层数字员工与 Coding-Agent 资源组架构](product/executive-bot-org.md)　·　[7 层架构蓝图](product/opc-7-layer-blueprint.md)　·　[界面设计稿（全能力原型）](product/opc-workbench.html)　·　[多业务线流转](product/flows.html#lines)　·　[商业闭环图](product/flows.html#commercial)　·　[业务流程图](product/flows.html#business)　·　[页面跳转](product/flows.html#navigation)　·　[全站委派](product/flows.html#delegation)　·　[审批与返工](product/flows.html#execution)　·　[Agent Hub 联动](product/flows.html#hub)
 
 公司通过 5 套标准化业务线打法库同时经营供给研发、旗舰插件变现（1 号试点）、Open-Core、店铺运营与轻工具流量漏斗，并由**组织数字孪生**（3 透镜 + 35 个直达锚点）一屏透视全公司运行状态。[业务线与自动选题设计](product/operating-model.md) · [组织数字孪生设计稿](product/opc-workbench.html#digital-twin)
 
@@ -15,6 +15,7 @@
 | 你想看什么 | 打开哪一份 |
 | --- | --- |
 | 全公司 7 层架构怎么分层？供给侧与商业变现、离线授权、DuckDB 漏斗怎样串成闭环？ | [AI-Native OPC 7 层蓝图与职责边界](product/opc-7-layer-blueprint.md) · [商业闭环图](product/flows.html#commercial) |
+| 总裁秘书（Super Bot）、五大部门统管 Bot、Coding-Agent 资源组与总裁信箱怎么分工？ | [三层数字员工、总裁信箱与 Coding-Agent 治理架构](product/executive-bot-org.md) |
 | 全站有哪些页面与功能？如何通过组织数字孪生一屏直达 22 个功能舱室与 13 阶工作单？ | [界面设计稿（全能力原型）](product/opc-workbench.html) · [页面跳转与导航结构](product/navigation.md) |
 | 商业治理、安全复核、服务健康探针与模型套餐余量分别在哪管？ | [公司四部（商业/安全/运维/资源成本）](product/company.md#公司部门) |
 | 我的开源项目已有这项能力，谁来接入？需要扩展时由谁改？ | [复用原仓、提需求与审批](product/reuse.md) · [交接图](product/flows.html#reuse) |

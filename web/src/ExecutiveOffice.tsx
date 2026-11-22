@@ -3,6 +3,7 @@ import type {
   ExecutiveBotRuntime,
   ExecutiveDepartmentId,
   ExecutiveDepartmentView,
+  ExecutiveMailboxResponse,
   ExecutiveStatus,
 } from "../../src/executive-bots-types";
 import type { RoleBotEnsureResult, RoleBotId, RoleBotIndex } from "../../src/role-bots-types";
@@ -52,6 +53,7 @@ function formatTime(iso: string) {
 
 export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: ZoomMessage[] }) {
   const [status, setStatus] = useState<ExecutiveStatus | null>(null);
+  const [mailbox, setMailbox] = useState<ExecutiveMailboxResponse | null>(null);
   const [roleBots, setRoleBots] = useState<RoleBotIndex | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string>("");
@@ -59,15 +61,23 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
   const [notice, setNotice] = useState<{ text: string; tone: "good" | "warn"; roomId?: string } | null>(null);
   const [customOpen, setCustomOpen] = useState<Partial<Record<ExecutiveDepartmentId, boolean>>>({});
   const [customDraft, setCustomDraft] = useState<Partial<Record<ExecutiveDepartmentId, string>>>({});
+  const [reqDept, setReqDept] = useState<ExecutiveDepartmentId | "executive">("commercial");
+  const [reqTitle, setReqTitle] = useState("");
+  const [reqRepo, setReqRepo] = useState("");
+  const [reqObjective, setReqObjective] = useState("");
+  const [reqAcceptance, setReqAcceptance] = useState("");
+  const [reqPriority, setReqPriority] = useState<"high" | "normal" | "low">("normal");
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [data, roles] = await Promise.all([
+      const [data, roles, mail] = await Promise.all([
         request<ExecutiveStatus>("/api/opc/executive/status", { signal }),
         request<RoleBotIndex>("/api/opc/role-bots", { signal }).catch(() => null),
+        request<ExecutiveMailboxResponse>("/api/opc/executive/mailbox", { signal }).catch(() => null),
       ]);
       setStatus(data);
       if (roles) setRoleBots(roles);
+      if (mail) setMailbox(mail);
     } catch (err) {
       if (signal?.aborted) return;
       setNotice({ text: err instanceof Error ? err.message : "读取总裁办状态失败", tone: "warn" });
@@ -209,17 +219,59 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
         body: JSON.stringify({
           via: "agent-home",
           target: status.superBot.botId,
-          instructions: "由 Super Bot 先分拣归属部门并委派对应部门 Bot 核查执行，汇总结论与明确审批建议后再向创始人汇报。",
+          instructions: "由总裁秘书（Super Bot）先分拣归属部门并委派对应部门统管 Bot 核查执行，涉及代码/脚本统一由研发部调度 Coding-Agent 资源组，汇总结论与明确审批建议后再向创始人汇报。",
           automatic: false,
         }),
       });
       await load();
-      setNotice({ text: "已将 OPC OS 默认委派总口切换为 Super Bot。", tone: "good" });
+      setNotice({ text: "已将 OPC OS 默认委派总口切换为总裁秘书（Super Bot）。", tone: "good" });
     } catch (err) {
       setNotice({ text: err instanceof Error ? err.message : "更新默认委派失败", tone: "warn" });
     } finally {
       setBusyAction("");
     }
+  };
+
+  const submitCodingRequest = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!reqTitle.trim() || !reqObjective.trim() || busyAction) return;
+    setBusyAction("coding-request");
+    setNotice(null);
+    try {
+      const created = await request<{ id: string; requesterName: string; title: string }>(
+        "/api/opc/executive/coding-requests",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            requesterDept: reqDept,
+            title: reqTitle.trim(),
+            repo: reqRepo.trim(),
+            objective: reqObjective.trim(),
+            acceptance: reqAcceptance.trim(),
+            priority: reqPriority,
+          }),
+        },
+      );
+      setReqTitle("");
+      setReqRepo("");
+      setReqObjective("");
+      setReqAcceptance("");
+      setNotice({
+        text: `已将「${created.requesterName}」的 Coding-Agent 调用申请（${created.id} · ${created.title}）派发给研发部统管 Bot 统一排期调度。`,
+        tone: "good",
+        roomId: status?.room?.id,
+      });
+      await load();
+    } catch (err) {
+      setNotice({ text: err instanceof Error ? err.message : "提交 Coding-Agent 调用申请失败", tone: "warn" });
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const openCodingRequestFor = (deptId: ExecutiveDepartmentId) => {
+    setReqDept(deptId);
+    document.getElementById("exec-coding-pool")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const pulse = status?.companyPulse;
@@ -253,9 +305,12 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
         {notice && (
           <div className="exec-notice" role={notice.tone === "warn" ? "alert" : "status"} data-tone={notice.tone}>
             <span>{notice.text}</span>
-            {notice.roomId && (
-              <a href={chatRoomLink({ room: notice.roomId })}>前往总控群查看 ↗</a>
-            )}
+            <span style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <a href="#mailbox">前往总裁信箱查收回复与批示 ↗</a>
+              {notice.roomId && (
+                <a href={`${status?.agentHomeOrigin || "http://127.0.0.1:37070"}/#/bot`} target="_blank" rel="noreferrer">原生 Agent Home ↗</a>
+              )}
+            </span>
           </div>
         )}
 
@@ -320,9 +375,12 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
                 >
                   {busyAction === "brief" ? "正在召唤 Super Bot…" : "向 Super Bot 要今日总裁简报"}
                 </button>
+                <a className="exec-toolbar-link" href="#mailbox">
+                  打开总裁信箱（收发简报与批示） ↗
+                </a>
                 {status.room && (
-                  <a className="exec-toolbar-link" href={roomHref}>
-                    打开「{status.room.title}」 ↗
+                  <a className="exec-toolbar-link" href={`${status.agentHomeOrigin}/#/bot`} target="_blank" rel="noreferrer">
+                    原生 Agent Home 打开总控群 ↗
                   </a>
                 )}
                 {status.briefCron && (
@@ -379,34 +437,60 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
                     </button>
                   ))}
                 </div>
+                <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10, display: "grid", gap: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 13 }}>
+                      总裁信箱最新回执{mailbox?.superBotWorking ? "（Super Bot 正在整理回复…）" : ""}
+                    </strong>
+                    <a href="#mailbox" style={{ fontSize: 12.5 }}>进入总裁信箱查看全部收发并批示 ↗</a>
+                  </div>
+                  {mailbox && mailbox.items.length > 0 ? (
+                    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
+                      {mailbox.items.slice(0, 3).map(mail => (
+                        <li key={mail.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, padding: "6px 8px", background: "var(--raise)", borderRadius: 2 }}>
+                          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {!mail.read && mail.direction === "inbound" && <span style={{ color: "var(--accent)", marginRight: 5 }}>●</span>}
+                            <strong>{mail.senderName}</strong>：{mail.subject}
+                          </span>
+                          <span style={{ color: "var(--muted)", whiteSpace: "nowrap", fontSize: 11.5 }}>{formatTime(mail.createdAt)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <span style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                      发出的总裁指令与 Super Bot / 五大部门的格式化回执都会自动汇总到「总裁信箱」，支持一键批示批准/修改/拒绝。
+                    </span>
+                  )}
+                </div>
               </form>
             </section>
 
-            {/* 两层 Bot 组织架构：Tier 0 Super Bot -> Tier 1 五大部门 VP Bot */}
-            <section className="exec-block" aria-label="两层 Bot 组织架构">
+            {/* 三层 Bot 组织架构：创始人 ↔ 总裁秘书 Super Bot ↔ 五大部门统管 Bot ↔ Coding-Agent 执行资源组 */}
+            <section className="exec-block" aria-label="三层 Bot 组织架构">
               <div className="exec-block-head">
-                <h2>两层数字员工组织架构</h2>
+                <h2>三层数字员工组织架构</h2>
                 <span className="exec-block-sub">
-                  第 1 层：Super Bot 总控协调与汇报 ｜ 第 2 层：五大部门 VP Bot 自治巡检、越线必报
+                  第 1 层：总裁秘书（Super Bot）直接对你负责 ｜ 第 2 层：五大部门统管 Bot ｜ 第 3 层：研发部统一纳管 Coding-Agent 执行资源组
                 </span>
               </div>
 
-              <article className="exec-super" aria-label="Super Bot 总控 COO">
+              <article className="exec-super" aria-label="总裁秘书 Super Bot">
                 <div className="exec-super-head">
                   <div className="exec-super-title">
                     <h3>
-                      <span>{status.superBot.name}</span>
+                      <span>总裁秘书 · {status.superBot.name}</span>
                       <span className="exec-pill" data-tone={superState.tone}>{superState.text}</span>
-                      <span className="exec-pill" data-tone="info">总控 COO · 创始人唯一日常接口</span>
+                      <span className="exec-pill" data-tone="info">直接对接创始人 · 总控 COO</span>
                     </h3>
                     <small>botId: {status.superBot.botId ?? "未连接"} · 角色：{status.superBot.title}</small>
                   </div>
                   <div className="exec-dept-actions">
-                    <a className="exec-toolbar-link" href={roomHref}>进入总控群对话 ↗</a>
+                    <a className="exec-toolbar-link" href="#mailbox">打开总裁信箱 ↗</a>
+                    <a className="exec-toolbar-link" href={roomHref}>群管理与成员 ↗</a>
                   </div>
                 </div>
                 <p className="exec-super-desc">
-                  通过 <code>bot_team_status</code> / <code>bot_delegate</code> / <code>bot_task_results</code> 统筹调度下辖 5 位部门 Bot，日常过滤琐碎过程、汇总 1 页总裁简报，并把涉及资金、定价、发版、高危运维与安全红线的事项整理成「推荐选项 + 风险一句话」呈报给你拍板。
+                  直接向你汇报并承接你的所有总裁指令：向下通过 <code>bot_team_status</code> / <code>bot_delegate</code> 统筹五大部门统管 Bot（研发部、商业与增长部、运维与基础设施部、安全与合规部、资源与财务部），替你挡住 90% 执行细节，只呈报「1 页总裁简报 + 审批清单」。
                 </p>
                 <div className="exec-super-meta">
                   <span>功能分组：{status.group ? <code>{status.group.name}</code> : "待建制"}</span>
@@ -418,7 +502,7 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
 
               <div className="exec-connector" aria-hidden="true">
                 <div className="exec-connector-stem" />
-                <div className="exec-connector-bar">Super Bot 向下按部门派单（bot_delegate） · 各部门 Bot 自治巡检并按红线向上汇报审批</div>
+                <div className="exec-connector-bar">总裁秘书向下对接五大部门统管 Bot · 各部门日常自治，越线审批与重大进展汇总上报总裁秘书</div>
               </div>
 
               <div className="exec-dept-grid">
@@ -426,11 +510,15 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
                   const st = botStatusLabel(dept.runtime.status);
                   const isDispatching = busyAction === `dept:${dept.id}`;
                   const showCustom = Boolean(customOpen[dept.id]);
+                  const isRd = dept.id === "rd";
                   return (
                     <article key={dept.id} className="exec-dept-card" data-dept={dept.id}>
                       <div className="exec-dept-head">
                         <div>
-                          <h3>{dept.departmentName}</h3>
+                          <h3>
+                            {dept.departmentName}
+                            {isRd && <span className="exec-pill" data-tone="info" style={{ marginLeft: 6, verticalAlign: "middle" }}>纳管 Coding-Agent 资源组</span>}
+                          </h3>
                           <div className="exec-dept-sub">{dept.runtime.name} · {dept.botTitle}</div>
                         </div>
                         <span className="exec-pill" data-tone={st.tone}>{st.text}</span>
@@ -457,7 +545,7 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
                         <h4>日常自治（不打扰创始人）</h4>
                         <ul>{dept.autonomousScope.map((item, i) => <li key={i}>{item}</li>)}</ul>
                         <div className="exec-contract-redline">
-                          <h4>必须经 Super Bot 请求创始人批准</h4>
+                          <h4>必须经总裁秘书请求创始人批准</h4>
                           <ul>{dept.approvalRedlines.map((item, i) => <li key={i}>{item}</li>)}</ul>
                         </div>
                       </details>
@@ -484,6 +572,15 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
                           >
                             {showCustom ? "收起" : "定向指令"}
                           </button>
+                          {!isRd && (
+                            <button
+                              type="button"
+                              className="exec-btn-ghost"
+                              onClick={() => openCodingRequestFor(dept.id)}
+                            >
+                              申请 Coding-Agent
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -499,7 +596,7 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
                             type="text"
                             value={customDraft[dept.id] ?? ""}
                             onChange={e => setCustomDraft(prev => ({ ...prev, [dept.id]: e.target.value }))}
-                            placeholder={`由 Super Bot 派给${dept.departmentName}的具体任务…`}
+                            placeholder={`由总裁秘书派给${dept.departmentName}的具体任务…`}
                           />
                           <button type="submit" className="exec-btn-dark" disabled={!!busyAction || !(customDraft[dept.id] ?? "").trim()}>
                             派发
@@ -510,6 +607,179 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
                   );
                 })}
               </div>
+
+              {/* Tier 2: 研发部统一纳管 · Coding-Agent 执行资源组 & 跨部门申请调用 */}
+              <div className="exec-connector" aria-hidden="true" style={{ marginTop: 10 }}>
+                <div className="exec-connector-stem" />
+                <div className="exec-connector-bar">
+                  研发部统管 Bot（{status.codingResourcePool.managedByBotName}）统一管理下方 Coding-Agent 执行资源组 · 其余四部按申请单对接调用
+                </div>
+              </div>
+
+              <section id="exec-coding-pool" className="exec-pool-panel" aria-label="研发部统一纳管的 Coding-Agent 执行资源组">
+                <div className="exec-pool-head">
+                  <div>
+                    <h3>
+                      Coding-Agent 执行资源组
+                      <span className="exec-pill" data-tone="good" style={{ marginLeft: 8 }}>
+                        归属：{status.codingResourcePool.managedByBotName} 统管
+                      </span>
+                    </h3>
+                    <p className="exec-block-sub" style={{ marginTop: 4 }}>
+                      全公司代码实现、自动化脚本、Bug 修复与工作流均由此资源组承接；其他部门通过下方《调用申请单》向研发部统管 Bot 申请排期，验收后统一交付并抄送总裁秘书。
+                    </p>
+                  </div>
+                  <div className="exec-dept-actions">
+                    <a className="exec-toolbar-link" href="#workflows">工作流看板 ↗</a>
+                    <a className="exec-toolbar-link" href="#dark-factory">Agent 暗工厂 ↗</a>
+                  </div>
+                </div>
+
+                {status.codingResourcePool.nodes.length > 0 ? (
+                  <div className="exec-pool-nodes">
+                    {status.codingResourcePool.nodes.map(node => {
+                      const tone = node.status === "running" ? "info" : node.status === "idle" || node.status === "online" ? "good" : "muted";
+                      const stText =
+                        node.status === "running" ? "执行中"
+                          : node.status === "idle" ? "空闲待命"
+                            : node.status === "online" ? "在线"
+                              : node.status === "paused" ? "已暂停"
+                                : "离线";
+                      return (
+                        <div key={node.id} className="exec-pool-node">
+                          <div className="exec-pool-node-top">
+                            <strong>{node.name}</strong>
+                            <span className="exec-pill" data-tone={tone}>{stText}</span>
+                          </div>
+                          <small>
+                            {node.kind === "bot_worker" ? `开发执行节点 · ${node.groupName || "开发"}` : `Coding Agent CLI · ${node.runtime}`}
+                            {node.kind === "bot_worker" && ` · 完${node.completedCount}/办${node.activeWorkCount}`}
+                          </small>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="exec-block-sub">当前未发现独立执行节点（已接入本机 Herdr / Worktree 编码工作流，可直接通过下方申请单由研发部调度）。</p>
+                )}
+
+                <form className="exec-coding-form" onSubmit={e => void submitCodingRequest(e)}>
+                  <div className="exec-directive-label">
+                    <strong>跨部门提交《Coding-Agent 调用申请单》→ 研发部统管 Bot</strong>
+                    <span>由申请部门发起，直达 {status.codingResourcePool.managedByBotName} 统一审核与分配执行资源</span>
+                  </div>
+                  <div className="exec-coding-grid">
+                    <label>
+                      申请部门
+                      <select
+                        value={reqDept}
+                        disabled={!!busyAction}
+                        onChange={e => setReqDept(e.target.value as ExecutiveDepartmentId | "executive")}
+                      >
+                        <option value="commercial">商业与增长部</option>
+                        <option value="operations">运维与基础设施部</option>
+                        <option value="security">安全与合规部</option>
+                        <option value="resources">资源与财务部</option>
+                        <option value="executive">总裁秘书（Super Bot 代提）</option>
+                        <option value="rd">产研与工程部（内部自建）</option>
+                      </select>
+                    </label>
+                    <label>
+                      优先级
+                      <select
+                        value={reqPriority}
+                        disabled={!!busyAction}
+                        onChange={e => setReqPriority(e.target.value as "high" | "normal" | "low")}
+                      >
+                        <option value="high">高优（P0 · 阻塞/故障）</option>
+                        <option value="normal">常规（P1 · 迭代需求）</option>
+                        <option value="low">低优（P2 · 顺手优化）</option>
+                      </select>
+                    </label>
+                    <label>
+                      目标仓库 / 项目（选填）
+                      <input
+                        type="text"
+                        value={reqRepo}
+                        disabled={!!busyAction}
+                        onChange={e => setReqRepo(e.target.value)}
+                        placeholder="例如：pagelens-interpret / opc-commerce-kit"
+                      />
+                    </label>
+                  </div>
+                  <div className="exec-coding-grid-2">
+                    <label>
+                      任务标题
+                      <input
+                        type="text"
+                        required
+                        value={reqTitle}
+                        disabled={!!busyAction}
+                        onChange={e => setReqTitle(e.target.value)}
+                        placeholder="例如：补齐着陆页 UTM 归因埋点并跑通单测"
+                      />
+                    </label>
+                    <label>
+                      验收标准（选填）
+                      <input
+                        type="text"
+                        value={reqAcceptance}
+                        disabled={!!busyAction}
+                        onChange={e => setReqAcceptance(e.target.value)}
+                        placeholder="例如：新增自动化测试通过、提供真实 diff 与截图证据"
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    期望产出与背景说明
+                    <textarea
+                      rows={2}
+                      required
+                      value={reqObjective}
+                      disabled={!!busyAction}
+                      onChange={e => setReqObjective(e.target.value)}
+                      placeholder="说明具体要实现/修复什么、涉及哪些接口或页面，研发部统管 Bot 将自动拆解并派给 Coding-Agent 资源组执行…"
+                    />
+                  </label>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <small style={{ fontSize: 12, color: "var(--muted)" }}>
+                      提交后将在 Agent Home 以申请部门名义正式向研发部统管 Bot 派单，回执同步回本页与总裁信箱
+                    </small>
+                    <button
+                      type="submit"
+                      className="exec-btn-dark"
+                      disabled={!!busyAction || !status.agentHomeReachable || !reqTitle.trim() || !reqObjective.trim()}
+                    >
+                      {busyAction === "coding-request" ? "提交给研发部中…" : "提交申请给研发部统管 Bot"}
+                    </button>
+                  </div>
+                </form>
+
+                {status.codingRequests.length > 0 && (
+                  <div className="exec-coding-reqs">
+                    <h4>最近跨部门 Coding-Agent 调用申请单（{status.codingRequests.length}）</h4>
+                    <ul className="exec-task-list">
+                      {status.codingRequests.map(req => {
+                        const ts = taskStatusLabel(req.status);
+                        return (
+                          <li key={req.id} className="exec-task-item">
+                            <div className="exec-task-top">
+                              <span className="exec-task-route">
+                                {req.requesterName} → 产研与工程部：{req.title}{" "}
+                                {req.repo && <code style={{ fontSize: 11.5 }}>{req.repo}</code>}{" "}
+                                <span className="exec-pill" data-tone={ts.tone}>{ts.text}</span>
+                              </span>
+                              <span className="exec-task-time">{req.id} · {formatTime(req.updatedAt)}</span>
+                            </div>
+                            <div className="exec-task-input">{req.objective}</div>
+                            {req.report && <div className="exec-task-result">{req.report}</div>}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </section>
             </section>
 
             {/* 流程协同职能 Bot 池（Coding Agent 干活 · 职能 Bot 按需复用/建制串联） */}

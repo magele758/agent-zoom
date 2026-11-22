@@ -33,7 +33,24 @@ export type HomeRoomIdeaRef = {
   createdAt: string;
 };
 
-export type HomeChatBot = { id: string; name: string };
+export type HomeChatBot = {
+  id: string;
+  name: string;
+  title?: string;
+  description?: string;
+  status?: "idle" | "running" | "paused" | "disabled";
+  activeWorkCount?: number;
+  pendingCount?: number;
+  completedCount?: number;
+  groupId?: string | null;
+  groupName?: string | null;
+};
+export type HomeChatGroup = {
+  id: string;
+  name: string;
+  botIds: string[];
+  roomIds: string[];
+};
 export type HomeChatRoom = {
   id: string;
   title: string;
@@ -75,6 +92,7 @@ export type HomeChatOverview = {
   reason?: string;
   rooms: HomeChatRoom[];
   bots: HomeChatBot[];
+  groups?: HomeChatGroup[];
   links: HomeChatLink[];
 };
 export type HomeChatRoomDetail = {

@@ -25,8 +25,20 @@ const displayRepo = (s: string) => (s.startsWith("/") ? basename(s) : s);
 export const activityLink = (view: "agents" | "repos", filter: Record<string, string> = {}) =>
   "#activity-index?" + new URLSearchParams({ view, ...filter });
 
+const ACTIVITY_CACHE_KEY = "opc_activity_index_v1";
+function readCachedActivity(): ActivityIndex | null {
+  try {
+    const raw = sessionStorage.getItem(ACTIVITY_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ActivityIndex;
+    return Array.isArray(parsed?.agents) && Array.isArray(parsed?.repositories) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function useActivityIndex(enabled: boolean) {
-  const [data, setData] = useState<ActivityIndex | null>(null);
+  const [data, setData] = useState<ActivityIndex | null>(() => readCachedActivity());
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const active = useRef<AbortController | null>(null);
@@ -44,6 +56,7 @@ export function useActivityIndex(enabled: boolean) {
       if (!controller.signal.aborted) {
         setData(result);
         setError("");
+        try { sessionStorage.setItem(ACTIVITY_CACHE_KEY, JSON.stringify(result)); } catch { /* ignore quota */ }
       }
     } catch (cause) {
       if (!controller.signal.aborted) setError(failure(cause));
@@ -61,7 +74,7 @@ export function useActivityIndex(enabled: boolean) {
       if (!document.hidden) void load();
     };
     void load();
-    const timer = window.setInterval(update, 15_000);
+    const timer = window.setInterval(update, 30_000);
     document.addEventListener("visibilitychange", update);
     return () => {
       clearInterval(timer);

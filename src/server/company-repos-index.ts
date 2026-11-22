@@ -24,13 +24,20 @@ type InventoryReaders = {
   now: () => number;
 };
 
+let cachedAccountKey: { envKey: string; value: string; at: number } | undefined;
 async function accountKey() {
   // The offline key identifies the active gh context. A supplied token takes precedence over gh config.
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (token) return "env-" + createHash("sha256").update(token).digest("hex");
+  const envKey = (process.env.PATH ?? "") + "\0" + (process.env.GH_CONFIG_DIR ?? "");
+  if (cachedAccountKey && cachedAccountKey.envKey === envKey && Date.now() - cachedAccountKey.at < 5 * 60 * 1000) {
+    return cachedAccountKey.value;
+  }
   try {
     const { stdout } = await execute("gh", ["config", "get", "user", "--host", "github.com"], { timeout: 2500 });
-    return stdout.trim() ? "github.com/" + stdout.trim().toLowerCase() : "";
+    const value = stdout.trim() ? "github.com/" + stdout.trim().toLowerCase() : "";
+    cachedAccountKey = { envKey, value, at: Date.now() };
+    return value;
   } catch {
     return "";
   }
@@ -76,7 +83,7 @@ async function github() {
       const { stdout } = await execute(
         "gh",
         ["api", "--hostname", "github.com", "graphql", "--paginate", "--slurp", "-f", "query=" + query],
-        { timeout: 30_000, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
+        { timeout: 10_000, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
       );
       const result: GhPage[] = JSON.parse(stdout);
       if (
@@ -230,9 +237,13 @@ export function createRepoIndex(
     }
   }
   function write(key: string, at: string, value: unknown) {
-    db.prepare(
-      `INSERT INTO opc_repo_inventory_snapshots VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET at=excluded.at,payload=excluded.payload`,
-    ).run(key, at, JSON.stringify(value));
+    try {
+      db.prepare(
+        `INSERT INTO opc_repo_inventory_snapshots VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET at=excluded.at,payload=excluded.payload`,
+      ).run(key, at, JSON.stringify(value));
+    } catch {
+      // Ignore snapshot write failures during shutdown or closed test DBs.
+    }
   }
   let memory: { key: string; at: number; data: RepoIndex } | undefined;
   let inFlight: { key: string; promise: Promise<RepoIndex> } | undefined;

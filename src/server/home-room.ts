@@ -577,10 +577,84 @@ export class HomeRoomBridge {
   async chatOverview(): Promise<HomeChatOverview> {
     const links = this.chatLinks();
     try {
-      const [roomsRes, bots] = await Promise.all([
+      const workStatusSchema = z.object({
+        bots: z.array(
+          z.object({
+            bot: z.object({
+              id: z.string().min(1),
+              name: z.string().min(1),
+              title: z.string().optional(),
+              description: z.string().optional(),
+              hidden: z.boolean().optional(),
+              functionalGroupId: z.string().nullable().optional(),
+            }),
+            control: z.object({ paused: z.boolean().optional(), disabled: z.boolean().optional() }).optional(),
+            status: z.string().optional(),
+            pending: z.number().optional(),
+            activeWorkCount: z.number().optional(),
+            taskCounts: z.record(z.string(), z.number()).optional(),
+          }),
+        ),
+      });
+      const groupsSchema = z.object({
+        groups: z.array(
+          z.object({
+            id: z.string().min(1),
+            name: z.string().min(1),
+            botIds: z.array(z.string()).default([]),
+            roomIds: z.array(z.string()).default([]),
+          }),
+        ),
+      });
+
+      const [roomsRes, baseBots, richRes, groupsRes] = await Promise.all([
         this.client.call(upstream, z.object({ rooms: z.array(roomSchema) })),
         this.client.bots(),
+        this.client.call("/api/bot-work/status", workStatusSchema).catch(() => null),
+        this.client.call("/api/bot-functional-groups", groupsSchema).catch(() => null),
       ]);
+
+      const groups = groupsRes?.groups ?? [];
+      const groupNameByBot = new Map<string, { id: string; name: string }>();
+      for (const g of groups) {
+        for (const botId of g.botIds) groupNameByBot.set(botId, { id: g.id, name: g.name });
+      }
+
+      const richById = new Map(richRes?.bots.map((row) => [row.bot.id, row]) ?? []);
+      const bots: HomeChatOverview["bots"] = baseBots.map((b) => {
+        const row = richById.get(b.id);
+        const grp = groupNameByBot.get(b.id);
+        if (!row) {
+          return {
+            id: b.id,
+            name: b.name,
+            ...(grp ? { groupId: grp.id, groupName: grp.name } : {}),
+          };
+        }
+        const disabled = Boolean(row.control?.disabled);
+        const paused = Boolean(row.control?.paused);
+        const active = Number(row.activeWorkCount ?? 0);
+        const status: NonNullable<HomeChatOverview["bots"][number]["status"]> = disabled
+          ? "disabled"
+          : paused
+            ? "paused"
+            : active > 0 || row.status === "running"
+              ? "running"
+              : "idle";
+        return {
+          id: b.id,
+          name: b.name,
+          ...(row.bot.title ? { title: row.bot.title } : {}),
+          ...(row.bot.description ? { description: row.bot.description } : {}),
+          status,
+          activeWorkCount: active,
+          pendingCount: Number(row.pending ?? 0),
+          completedCount: Number(row.taskCounts?.completed ?? 0),
+          groupId: grp?.id ?? row.bot.functionalGroupId ?? null,
+          groupName: grp?.name ?? null,
+        };
+      });
+
       const rooms: HomeChatRoom[] = roomsRes.rooms.map((r) => ({
         id: r.id,
         title: r.title,
@@ -590,7 +664,7 @@ export class HomeRoomBridge {
         ...(r.replyMode && { replyMode: r.replyMode }),
         ...(r.updatedAt && { updatedAt: r.updatedAt }),
       }));
-      return { available: true, origin: this.client.origin, rooms, bots, links };
+      return { available: true, origin: this.client.origin, rooms, bots, groups, links };
     } catch (error) {
       return {
         available: false,
@@ -598,6 +672,7 @@ export class HomeRoomBridge {
         reason: error instanceof ApiError ? error.message : "Agent Home 服务暂未连接，请确认本机 Agent Home 已启动。",
         rooms: [],
         bots: [],
+        groups: [],
         links,
       };
     }

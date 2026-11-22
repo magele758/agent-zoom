@@ -1,19 +1,12 @@
-import { MessageDelegate } from "./Delegation";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { CompanyIndex } from "../../src/company-types";
 import type {
   HomeChatBot,
   HomeChatLink,
-  HomeChatMessage,
   HomeChatOverview,
   HomeChatRoom,
-  HomeChatRoomDetail,
-  HomeRoomBinding,
-  HomeRoomPost,
-  HomeRoomTarget,
 } from "../../src/home-room-types";
 import type { ZoomMessage } from "../../src/zoom-types";
-import { extractIdeaId, LinkedText } from "./InternalLinks";
 import { api, request } from "./api";
 import { decisionTarget } from "./zoom-routes";
 import { messageText } from "./zoom-view";
@@ -26,32 +19,31 @@ type IdeaCitation = {
   sources: { reference: string; body: string }[];
 };
 
-const legacyBase = "/api/opc/home-rooms";
 const chatBase = "/api/opc/home-chat";
-const label = (e: unknown) => (e instanceof Error ? e.message : "无法读取群聊");
-const submit = (data: object) => ({ method: "POST", body: JSON.stringify(data) });
-const legacyAddress = (id: string) => legacyBase + "/" + encodeURIComponent(id);
-type LegacyIndex = { bindings: HomeRoomBinding[]; localRooms: { id: string; name: string; project: string }[] };
-type LegacyDirectory = { rooms: HomeRoomTarget[]; bots: { id: string; name: string }[] };
-const receipts = {
-  sending: "正在送达",
-  unknown: "回执待核对",
-  retryable: "核对后未找到原帖",
-  received: "已送达原房间",
-};
+const label = (e: unknown) => (e instanceof Error ? e.message : "无法读取 Agent Home 信息");
+
 const replyModeLabels: Record<string, string> = {
   coordinator: "主控协调",
   "all-members": "全员参与",
   "task-collaboration": "任务协作",
 };
 
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleString("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function botStatusMeta(status?: HomeChatBot["status"]): { label: string; tone: "ok" | "info" | "warn" | "muted" } {
+  switch (status) {
+    case "running": return { label: "运行中", tone: "info" };
+    case "idle": return { label: "在线待命", tone: "ok" };
+    case "paused": return { label: "已暂停", tone: "warn" };
+    case "disabled": return { label: "已停用", tone: "warn" };
+    default: return { label: "可用", tone: "muted" };
+  }
+}
+
+function scopeLabel(scopeKey: string) {
+  if (scopeKey === "default") return "默认提醒群";
+  if (scopeKey.startsWith("project:")) return "项目 · " + scopeKey.slice("project:".length);
+  if (scopeKey.startsWith("product:")) return "产品 · " + scopeKey.slice("product:".length);
+  if (scopeKey.startsWith("line:")) return "业务线 · " + scopeKey.slice("line:".length);
+  return scopeKey;
 }
 
 function formatIdeaPrompt(idea: IdeaCitation) {
@@ -77,32 +69,6 @@ function formatPendingShare(item: ZoomMessage) {
   ]
     .filter(Boolean)
     .join("\n");
-}
-
-function scopeLabel(scopeKey: string) {
-  if (scopeKey === "default") return "默认提醒群";
-  if (scopeKey.startsWith("project:")) return "项目 · " + scopeKey.slice("project:".length);
-  if (scopeKey.startsWith("product:")) return "产品 · " + scopeKey.slice("product:".length);
-  if (scopeKey.startsWith("line:")) return "业务线 · " + scopeKey.slice("line:".length);
-  return scopeKey;
-}
-
-function stageLinkForLegacyPost(binding: HomeRoomBinding, post: HomeRoomPost) {
-  const ideaId = extractIdeaId(post.body);
-  const query = new URLSearchParams({
-    step: ideaId ? "idea" : "research",
-    refBinding: binding.id,
-    refPost: post.id,
-  });
-  if (ideaId) query.set("item", ideaId);
-  return "#stage?" + query;
-}
-
-function stageLinkForChatMessage(room: HomeChatRoom, msg: HomeChatMessage) {
-  const ideaId = extractIdeaId(msg.text);
-  const query = new URLSearchParams({ step: ideaId ? "idea" : "development" });
-  if (ideaId) query.set("item", ideaId);
-  return "#stage?" + query;
 }
 
 function CreateRoomForm({
@@ -162,9 +128,7 @@ function CreateRoomForm({
     <form className="hr-create" onSubmit={(e) => void create(e)}>
       <header>
         <h2>新建 Agent Home 群聊</h2>
-        <button type="button" onClick={onCancel} disabled={busy}>
-          取消
-        </button>
+        <button type="button" onClick={onCancel} disabled={busy}>取消</button>
       </header>
       <label>
         群聊名称
@@ -194,17 +158,13 @@ function CreateRoomForm({
             ))}
           </div>
         ) : (
-          <p className="hr-muted">Agent Home 中暂无可用 Bot，请先在 Agent Home 创建并启用 Bot。</p>
+          <p className="hr-muted">Agent Home 中暂无可用 Bot。</p>
         )}
       </fieldset>
       <div className="hr-create-row">
         <label>
           回复模式
-          <select
-            value={replyMode}
-            disabled={busy}
-            onChange={(e) => setReplyMode(e.target.value as "coordinator" | "all-members")}
-          >
+          <select value={replyMode} disabled={busy} onChange={(e) => setReplyMode(e.target.value as "coordinator" | "all-members")}>
             <option value="coordinator">主控协调（由主控 Bot 统筹分工）</option>
             <option value="all-members">全员参与（@ 指定 Bot 或全员讨论）</option>
           </select>
@@ -213,51 +173,39 @@ function CreateRoomForm({
           <label>
             主控 Bot
             <select value={hostBotId} disabled={busy} onChange={(e) => setHostBotId(e.target.value)}>
-              {bots
-                .filter((b) => selectedBots.includes(b.id))
-                .map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
+              {bots.filter((b) => selectedBots.includes(b.id)).map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
             </select>
           </label>
         )}
       </div>
       <div className="hr-create-row">
         <label className="hr-check-inline">
-          <input
-            type="checkbox"
-            checked={asDefault}
-            disabled={busy}
-            onChange={(e) => setAsDefault(e.target.checked)}
-          />
-          设为 OPC 默认待决提醒群（工作流/实验/能力审批自动推到此群）
+          <input type="checkbox" checked={asDefault} disabled={busy} onChange={(e) => setAsDefault(e.target.checked)} />
+          设为 OPC 默认待决提醒群（审批自动推到此群）
         </label>
         {!asDefault && (
           <label>
             或绑定项目/业务线范围（选填）
-            <input
-              placeholder="例如 project:产品/项目 或 line:shop"
-              value={bindScope}
-              disabled={busy}
-              onChange={(e) => setBindScope(e.target.value)}
-            />
+            <input placeholder="例如 project:产品/项目 或 line:shop" value={bindScope} disabled={busy} onChange={(e) => setBindScope(e.target.value)} />
           </label>
         )}
       </div>
       <div className="hr-create-actions">
         <button type="submit" className="hr-primary" disabled={busy || !title.trim() || !selectedBots.length}>
-          {busy ? "正在创建…" : "创建并进入群聊"}
+          {busy ? "创建中…" : "创建群聊"}
         </button>
+        <button type="button" onClick={onCancel} disabled={busy}>取消</button>
       </div>
-      {error && <p role="alert">{error}</p>}
+      {error && <p role="alert" className="hr-error">{error}</p>}
     </form>
   );
 }
 
-function DirectChatPanel({
+function RoomDirectoryPanel({
   room,
+  origin,
   bots,
   links,
   pending,
@@ -265,10 +213,12 @@ function DirectChatPanel({
   draftText,
   onClearIdea,
   onClearDraft,
+  onSelectBot,
   onRoomUpdated,
   onLinksUpdated,
 }: {
   room: HomeChatRoom;
+  origin: string;
   bots: HomeChatBot[];
   links: HomeChatLink[];
   pending: ZoomMessage[];
@@ -276,103 +226,55 @@ function DirectChatPanel({
   draftText: string;
   onClearIdea: () => void;
   onClearDraft: () => void;
+  onSelectBot: (botId: string) => void;
   onRoomUpdated: (room: HomeChatRoom) => void;
   onLinksUpdated: (links: HomeChatLink[]) => void;
 }) {
-  const [detail, setDetail] = useState<HomeChatRoomDetail | null>(null);
-  const [older, setOlder] = useState<HomeChatMessage[]>([]);
-  const [body, setBody] = useState("");
-  const [mentions, setMentions] = useState<string[]>([]);
-  const [replyTo, setReplyTo] = useState<HomeChatMessage | null>(null);
-  const [addingBot, setAddingBot] = useState("");
-  const [scopeInput, setScopeInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [editTitle, setEditTitle] = useState(room.title);
+  const [editHost, setEditHost] = useState(room.hostBotId ?? room.botIds[0] ?? "");
+  const [editMode, setEditMode] = useState<"coordinator" | "all-members">(
+    room.replyMode === "all-members" ? "all-members" : "coordinator",
+  );
+  const [addBotId, setAddBotId] = useState("");
+  const [quickBody, setQuickBody] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [reload, setReload] = useState(0);
-  const appliedIdea = useRef("");
-  const appliedDraft = useRef("");
-  const endRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    setOlder([]);
-    setReplyTo(null);
-    setMentions([]);
-    setError("");
+    setEditTitle(room.title);
+    setEditHost(room.hostBotId ?? room.botIds[0] ?? "");
+    setEditMode(room.replyMode === "all-members" ? "all-members" : "coordinator");
     setNotice("");
-  }, [room.id]);
+    setError("");
+  }, [room.id, room.title, room.hostBotId, room.replyMode, room.botIds]);
 
   useEffect(() => {
-    if (!ideaCitation || appliedIdea.current === ideaCitation.id) return;
-    appliedIdea.current = ideaCitation.id;
-    setBody((current) => (current.trim() ? current : formatIdeaPrompt(ideaCitation)));
-  }, [ideaCitation]);
+    if (ideaCitation) setQuickBody(formatIdeaPrompt(ideaCitation));
+    else if (draftText) setQuickBody(draftText);
+  }, [ideaCitation, draftText]);
 
-  useEffect(() => {
-    if (!draftText || appliedDraft.current === draftText) return;
-    appliedDraft.current = draftText;
-    setBody((current) => (current.trim() ? current : draftText));
-  }, [draftText]);
+  const botMap = useMemo(() => new Map(bots.map((b) => [b.id, b])), [bots]);
+  const memberBots = useMemo(
+    () => room.botIds.map((id) => botMap.get(id) ?? { id, name: id }),
+    [room.botIds, botMap],
+  );
+  const availableToAdd = useMemo(
+    () => bots.filter((b) => !room.botIds.includes(b.id)),
+    [bots, room.botIds],
+  );
+  const roomLinks = useMemo(() => links.filter((l) => l.remoteRoom === room.id), [links, room.id]);
+  const isDefault = roomLinks.some((l) => l.scopeKey === "default");
+  const isExecutiveRoom = room.title.includes("总裁办") || room.title.includes("Super Bot");
 
-  useEffect(() => {
-    const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      if (!document.hidden) {
-        try {
-          const next = await request<HomeChatRoomDetail>(
-            chatBase + "/rooms/" + encodeURIComponent(room.id) + "/messages?limit=80",
-            { signal: abort.signal },
-          );
-          if (!abort.signal.aborted) {
-            setDetail(next);
-            onRoomUpdated(next.room);
-          }
-        } catch (err) {
-          if (!abort.signal.aborted) setError(label(err));
-        }
-      }
-      if (!abort.signal.aborted) timer = setTimeout(poll, 2500);
-    };
-    const onVisible = () => {
-      if (!document.hidden) {
-        clearTimeout(timer);
-        void poll();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    void poll();
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [room.id, reload]);
-
-  const activeRoom = detail?.room ?? room;
-  const allBots = detail?.bots.length ? detail.bots : bots;
-  const botById = useMemo(() => new Map(allBots.map((b) => [b.id, b])), [allBots]);
-  const memberBots = activeRoom.botIds.map((id) => botById.get(id) ?? { id, name: id });
-  const joinableBots = allBots.filter((b) => !activeRoom.botIds.includes(b.id));
-  const roomLinks = links.filter((l) => l.remoteRoom === activeRoom.id);
-  const isDefaultRoom = roomLinks.some((l) => l.scopeKey === "default");
-  const mergedMessages = useMemo(() => {
-    const map = new Map<string, HomeChatMessage>();
-    for (const m of older) map.set(m.id, m);
-    for (const m of detail?.messages ?? []) map.set(m.id, m);
-    return [...map.values()].sort((a, b) => a.seq - b.seq);
-  }, [older, detail?.messages]);
-  const runningTurn = detail?.turns.some((t) => t.status === "running" || t.status === "queued");
-
-  const runAction = async (work: () => Promise<void>, successNote = "") => {
+  const runAction = async (fn: () => Promise<void>) => {
+    if (busy) return;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      await work();
-      if (successNote) setNotice(successNote);
-      setReload((n) => n + 1);
+      await fn();
     } catch (err) {
       setError(label(err));
     } finally {
@@ -380,119 +282,105 @@ function DirectChatPanel({
     }
   };
 
-  const loadEarlier = async () => {
-    const cursor = older[0]?.seq ?? detail?.nextCursor;
-    if (!cursor || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      const page = await request<HomeChatRoomDetail>(
-        chatBase + "/rooms/" + encodeURIComponent(activeRoom.id) + "/messages?limit=80&beforeSeq=" + cursor,
-      );
-      setOlder((prev) => [...page.messages, ...prev]);
-    } catch (err) {
-      setError(label(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const sendText = async (textToSend: string, extra: { mentions?: string[]; reply?: HomeChatMessage | null } = {}) => {
-    const clean = textToSend.trim();
-    if (!clean) return;
-    await runAction(async () => {
-      await request(chatBase + "/rooms/" + encodeURIComponent(activeRoom.id) + "/messages", {
-        method: "POST",
-        body: JSON.stringify({
-          text: clean,
-          ...(extra.mentions?.length ? { mentions: extra.mentions } : {}),
-          ...(extra.reply
-            ? {
-                replyTo: {
-                  messageId: extra.reply.id,
-                  ...(extra.reply.sender.type === "bot" ? { botId: extra.reply.sender.id } : {}),
-                  excerpt: extra.reply.text.replace(/\s+/g, " ").trim().slice(0, 120),
-                },
-              }
-            : {}),
-          ...(ideaCitation ? { ideaId: ideaCitation.id } : {}),
-        }),
-      });
-    });
-    setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }), 80);
-  };
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (busy || !body.trim()) return;
-    const text = body;
-    const picked = mentions;
-    const targetReply = replyTo;
-    setBody("");
-    setReplyTo(null);
-    setMentions([]);
-    if (ideaCitation) onClearIdea();
-    if (draftText) onClearDraft();
-    await sendText(text, { mentions: picked, reply: targetReply });
-  };
-
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      if (!busy && body.trim()) void onSubmit(e as unknown as FormEvent);
-    }
-  };
-
-  const toggleDefaultLink = () =>
-    void runAction(async () => {
-      if (isDefaultRoom) {
-        const res = await request<{ links: HomeChatLink[] }>(chatBase + "/links?scopeKey=default", {
-          method: "DELETE",
-        });
+  const toggleDefault = () =>
+    runAction(async () => {
+      if (isDefault) {
+        const res = await request<{ links: HomeChatLink[] }>(chatBase + "/links/default", { method: "DELETE" });
         onLinksUpdated(res.links);
+        setNotice("已取消该群的 OPC 默认提醒绑定。");
       } else {
         const res = await request<{ links: HomeChatLink[] }>(chatBase + "/links", {
           method: "PUT",
-          body: JSON.stringify({ scopeKey: "default", remoteRoom: activeRoom.id, roomTitle: activeRoom.title }),
+          body: JSON.stringify({ scopeKey: "default", remoteRoom: room.id, roomTitle: room.title }),
         });
         onLinksUpdated(res.links);
+        setNotice("已设为 OPC 默认提醒群。");
       }
-    }, isDefaultRoom ? "已取消默认提醒群" : "已设为默认提醒群，待决审批将同步提醒到此群");
+    });
 
-  const bindCustomScope = (e: FormEvent) => {
-    e.preventDefault();
-    const key = scopeInput.trim();
-    if (!key) return;
-    void runAction(async () => {
-      const res = await request<{ links: HomeChatLink[] }>(chatBase + "/links", {
-        method: "PUT",
-        body: JSON.stringify({ scopeKey: key, remoteRoom: activeRoom.id, roomTitle: activeRoom.title }),
+  const toggleStatus = () =>
+    runAction(async () => {
+      const action = room.status === "active" ? "stop" : "resume";
+      const res = await request<{ room: HomeChatRoom }>(`${chatBase}/rooms/${encodeURIComponent(room.id)}/${action}`, {
+        method: "POST",
+        body: JSON.stringify({}),
       });
+      onRoomUpdated(res.room);
+      setNotice(action === "stop" ? "已暂停该群聊。" : "已恢复该群聊。");
+    });
+
+  const saveSettings = (e: FormEvent) => {
+    e.preventDefault();
+    void runAction(async () => {
+      const res = await request<{ room: HomeChatRoom; links: HomeChatLink[] }>(
+        `${chatBase}/rooms/${encodeURIComponent(room.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            ...(editTitle.trim() && editTitle.trim() !== room.title ? { title: editTitle.trim() } : {}),
+            ...(editHost ? { hostBotId: editHost } : {}),
+            replyMode: editMode,
+          }),
+        },
+      );
+      onRoomUpdated(res.room);
       onLinksUpdated(res.links);
-      setScopeInput("");
-    }, `已将「${scopeLabel(key)}」的待决提醒绑定到本群`);
+      setShowSettings(false);
+      setNotice("群聊设置已同步至 Agent Home。");
+    });
   };
 
-  const removeLink = (scopeKey: string) =>
+  const addMember = () => {
+    if (!addBotId) return;
     void runAction(async () => {
-      const res = await request<{ links: HomeChatLink[] }>(
-        chatBase + "/links?" + new URLSearchParams({ scopeKey }),
+      const res = await request<{ room: HomeChatRoom }>(`${chatBase}/rooms/${encodeURIComponent(room.id)}/members`, {
+        method: "POST",
+        body: JSON.stringify({ botId: addBotId }),
+      });
+      onRoomUpdated(res.room);
+      setAddBotId("");
+      setNotice("已将 Bot 加入该群聊。");
+    });
+  };
+
+  const removeMember = (botId: string) =>
+    runAction(async () => {
+      const res = await request<{ room: HomeChatRoom }>(
+        `${chatBase}/rooms/${encodeURIComponent(room.id)}/members/${encodeURIComponent(botId)}`,
         { method: "DELETE" },
       );
-      onLinksUpdated(res.links);
+      onRoomUpdated(res.room);
+      setNotice("已移出群聊成员。");
+    });
+
+  const pushQuickCard = (text: string, clearIdea = false) =>
+    runAction(async () => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      await request(`${chatBase}/rooms/${encodeURIComponent(room.id)}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          text: trimmed,
+          ...(ideaCitation && clearIdea ? { ideaId: ideaCitation.id } : {}),
+        }),
+      });
+      setQuickBody("");
+      if (clearIdea) onClearIdea();
+      onClearDraft();
+      setNotice("已推送到原生 Agent Home 群聊，点击上方「前往原生 Agent Home 打开群聊 ↗」即可查看完整对话。");
     });
 
   return (
-    <article className="hr-chat-panel" aria-label={"群聊 " + activeRoom.title}>
+    <article className="hr-chat-panel">
       <header className="hr-chat-head">
         <div>
           <div className="hr-chat-title-row">
-            <h2>{activeRoom.title}</h2>
-            <span className="hr-badge" data-tone={activeRoom.status === "active" ? "ok" : "warn"}>
-              {activeRoom.status === "active" ? "进行中" : "已暂停"}
+            <h2>{room.title}</h2>
+            <span className="hr-badge" data-tone={room.status === "active" ? "ok" : "warn"}>
+              {room.status === "active" ? "进行中" : "已暂停"}
             </span>
-            {activeRoom.replyMode && (
-              <span className="hr-badge">{replyModeLabels[activeRoom.replyMode] ?? activeRoom.replyMode}</span>
+            {room.replyMode && (
+              <span className="hr-badge">{replyModeLabels[room.replyMode] ?? room.replyMode}</span>
             )}
             {roomLinks.map((item) => (
               <span key={item.scopeKey} className="hr-badge" data-tone="accent">
@@ -500,607 +388,285 @@ function DirectChatPanel({
               </span>
             ))}
           </div>
-          <div className="hr-members" aria-label="群成员">
-            {memberBots.map((bot) => (
-              <span key={bot.id} className="hr-member-chip">
-                @{bot.name}
-                {activeRoom.hostBotId === bot.id && <em>主控</em>}
-                {memberBots.length > 1 && showSettings && (
-                  <button
-                    type="button"
-                    aria-label={"移出 " + bot.name}
-                    disabled={busy}
-                    onClick={() =>
-                      void runAction(async () => {
-                        const res = await request<{ room: HomeChatRoom }>(
-                          chatBase +
-                            "/rooms/" +
-                            encodeURIComponent(activeRoom.id) +
-                            "/members/" +
-                            encodeURIComponent(bot.id),
-                          { method: "DELETE" },
-                        );
-                        onRoomUpdated(res.room);
-                      })
-                    }
-                  >
-                    ×
-                  </button>
-                )}
-              </span>
-            ))}
-          </div>
+          <p className="hr-muted" style={{ margin: "6px 0 0" }}>
+            房间 ID：<code>{room.id}</code> · 共 {memberBots.length} 位 Bot 成员
+          </p>
         </div>
         <div className="hr-chat-controls">
-          <button type="button" disabled={busy} onClick={toggleDefaultLink}>
-            {isDefaultRoom ? "取消默认提醒群" : "设为默认提醒群"}
+          <a className="hr-primary hr-launch-btn" href={`${origin}/#/bot`} target="_blank" rel="noreferrer">
+            前往原生 Agent Home 打开群聊 ↗
+          </a>
+          <button type="button" disabled={busy} onClick={() => void toggleDefault()}>
+            {isDefault ? "取消默认提醒群" : "设为默认提醒群"}
           </button>
-          <button type="button" onClick={() => setShowSettings((v) => !v)}>
+          <button type="button" disabled={busy} onClick={() => setShowSettings((v) => !v)}>
             {showSettings ? "收起设置" : "群设置"}
           </button>
-          {activeRoom.status === "active" ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() =>
-                void runAction(async () => {
-                  const res = await request<{ room: HomeChatRoom }>(
-                    chatBase + "/rooms/" + encodeURIComponent(activeRoom.id) + "/stop",
-                    submit({}),
-                  );
-                  onRoomUpdated(res.room);
-                }, "已暂停本群回复")
-              }
-            >
-              暂停
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="hr-primary"
-              disabled={busy}
-              onClick={() =>
-                void runAction(async () => {
-                  const res = await request<{ room: HomeChatRoom }>(
-                    chatBase + "/rooms/" + encodeURIComponent(activeRoom.id) + "/resume",
-                    submit({}),
-                  );
-                  onRoomUpdated(res.room);
-                }, "已恢复本群对话")
-              }
-            >
-              恢复
-            </button>
-          )}
+          <button type="button" disabled={busy} onClick={() => void toggleStatus()}>
+            {room.status === "active" ? "暂停" : "恢复"}
+          </button>
         </div>
       </header>
 
+      {error && <p role="alert" className="hr-error">{error}</p>}
+      {notice && (
+        <div className="hr-notice" role="status">
+          <span>{notice}</span>
+          <a href={`${origin}/#/bot`} target="_blank" rel="noreferrer">打开原生 Agent Home ↗</a>
+        </div>
+      )}
+
+      {/* 原生直达说明卡：不再重复渲染劣质聊天消息流 */}
+      <section className="hr-launch-card" aria-label="原生对话直达">
+        <div>
+          <strong>完整群聊对话在原生 Agent Home 中打开</strong>
+          <p className="hr-muted">
+            流式回复、思考过程折叠、工具调用证据与附件展示统一由原生 Agent Home 承载，避免在此重复渲染。
+            {isExecutiveRoom && " 如果只想看 Super Bot 的结构化简报与审批结论，可直接去「总裁信箱」。"}
+          </p>
+        </div>
+        <div className="hr-launch-actions">
+          <a className="hr-primary hr-launch-btn" href={`${origin}/#/bot`} target="_blank" rel="noreferrer">
+            直达原生 Agent Home ↗
+          </a>
+          {isExecutiveRoom && (
+            <a className="hr-secondary-link" href="#mailbox">打开总裁信箱查看简报 ↗</a>
+          )}
+        </div>
+      </section>
+
       {showSettings && (
-        <section className="hr-settings" aria-label="群聊设置">
-          <div className="hr-settings-row">
+        <form className="hr-settings" onSubmit={saveSettings}>
+          <label>
+            群聊名称
+            <input value={editTitle} maxLength={120} disabled={busy} onChange={(e) => setEditTitle(e.target.value)} />
+          </label>
+          <label>
+            回复模式
+            <select value={editMode} disabled={busy} onChange={(e) => setEditMode(e.target.value as "coordinator" | "all-members")}>
+              <option value="coordinator">主控协调</option>
+              <option value="all-members">全员参与</option>
+            </select>
+          </label>
+          {memberBots.length > 0 && (
             <label>
-              回复模式
-              <select
-                value={activeRoom.replyMode ?? "coordinator"}
-                disabled={busy}
-                onChange={(e) =>
-                  void runAction(async () => {
-                    const res = await request<{ room: HomeChatRoom; links: HomeChatLink[] }>(
-                      chatBase + "/rooms/" + encodeURIComponent(activeRoom.id),
-                      { method: "PATCH", body: JSON.stringify({ replyMode: e.target.value }) },
-                    );
-                    onRoomUpdated(res.room);
-                    onLinksUpdated(res.links);
-                  })
-                }
-              >
-                <option value="coordinator">主控协调</option>
-                <option value="all-members">全员参与</option>
+              主控 Bot
+              <select value={editHost} disabled={busy} onChange={(e) => setEditHost(e.target.value)}>
+                {memberBots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </label>
-            {joinableBots.length > 0 && (
-              <div className="hr-add-member">
-                <label>
-                  拉新 Bot 进群
-                  <select value={addingBot} disabled={busy} onChange={(e) => setAddingBot(e.target.value)}>
-                    <option value="">选择 Bot</option>
-                    {joinableBots.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  disabled={busy || !addingBot}
-                  onClick={() =>
-                    void runAction(async () => {
-                      const res = await request<{ room: HomeChatRoom }>(
-                        chatBase + "/rooms/" + encodeURIComponent(activeRoom.id) + "/members",
-                        submit({ botId: addingBot }),
-                      );
-                      onRoomUpdated(res.room);
-                      setAddingBot("");
-                    })
-                  }
-                >
-                  加入群聊
+          )}
+          <button type="submit" className="hr-primary" disabled={busy}>保存设置</button>
+        </form>
+      )}
+
+      {/* 群内 Bot 成员卡片墙 */}
+      <section className="hr-section" aria-label="群内 Bot 成员">
+        <div className="hr-section-head">
+          <h3>群内 Bot 成员（{memberBots.length}）</h3>
+          {availableToAdd.length > 0 && (
+            <div className="hr-add-member">
+              <select value={addBotId} disabled={busy} onChange={(e) => setAddBotId(e.target.value)}>
+                <option value="">+ 选择要加入本群的 Bot…</option>
+                {availableToAdd.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+              <button type="button" disabled={busy || !addBotId} onClick={addMember}>加入群聊</button>
+            </div>
+          )}
+        </div>
+        <div className="hr-member-cards">
+          {memberBots.map((bot) => {
+            const st = botStatusMeta(bot.status);
+            const isHost = room.hostBotId === bot.id;
+            return (
+              <div key={bot.id} className="hr-bot-card">
+                <button type="button" className="hr-bot-card-main" onClick={() => onSelectBot(bot.id)}>
+                  <div className="hr-bot-card-top">
+                    <span className="hr-status-dot" data-tone={st.tone} />
+                    <strong>{bot.name}</strong>
+                    {isHost && <span className="hr-badge" data-tone="accent">主控</span>}
+                  </div>
+                  <small>{bot.title || bot.groupName || bot.id}</small>
+                </button>
+                <div className="hr-bot-card-actions">
+                  <a href={`${origin}/#/agents/bots?bot=${encodeURIComponent(bot.id)}&focus=permissions`} target="_blank" rel="noreferrer">
+                    原生详情 ↗
+                  </a>
+                  {room.botIds.length > 1 && (
+                    <button
+                      type="button"
+                      className="hr-link-btn"
+                      disabled={busy}
+                      title={`将 ${bot.name} 移出本群`}
+                      onClick={() => void removeMember(bot.id)}
+                    >
+                      移出
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* 仅当带入想法/待办草稿时，提供轻量卡片推送，不展示历史聊天流 */}
+      {(ideaCitation || quickBody || pending.length > 0) && (
+        <section className="hr-section" aria-label="OPC 业务卡片快捷推送">
+          <div className="hr-section-head">
+            <h3>向此群推送 OPC 事项卡片</h3>
+            <span className="hr-muted">推送后请在原生 Agent Home 继续讨论</span>
+          </div>
+          {ideaCitation && (
+            <div className="hr-idea-cite">
+              <div>
+                <strong>引用想法 · {ideaCitation.title}</strong>
+                <a href={"#ideas?idea=" + encodeURIComponent(ideaCitation.id)}>查看原想法 ↗</a>
+              </div>
+              <button type="button" disabled={busy} onClick={() => { onClearIdea(); setQuickBody(""); }}>取消引用</button>
+            </div>
+          )}
+          {quickBody && (
+            <form
+              className="hr-quick-push"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void pushQuickCard(quickBody, true);
+              }}
+            >
+              <textarea rows={3} value={quickBody} disabled={busy} onChange={(e) => setQuickBody(e.target.value)} />
+              <div className="hr-create-actions">
+                <button type="submit" className="hr-primary" disabled={busy || !quickBody.trim()}>
+                  {busy ? "推送中…" : "推送到该群并继续"}
                 </button>
               </div>
-            )}
-          </div>
-          <form className="hr-scope-form" onSubmit={bindCustomScope}>
-            <label>
-              按项目或业务线自动提醒到此群
-              <input
-                value={scopeInput}
-                disabled={busy}
-                placeholder="project:产品/项目 或 product:产品名 或 line:shop"
-                onChange={(e) => setScopeInput(e.target.value)}
-              />
-            </label>
-            <button type="submit" disabled={busy || !scopeInput.trim()}>
-              添加绑定
-            </button>
-          </form>
-          {roomLinks.length > 0 && (
-            <div className="hr-bound-scopes">
-              {roomLinks.map((item) => (
-                <span key={item.scopeKey} className="hr-member-chip">
-                  {scopeLabel(item.scopeKey)}
-                  <button
-                    type="button"
-                    aria-label={"解除 " + item.scopeKey}
-                    disabled={busy}
-                    onClick={() => removeLink(item.scopeKey)}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
+            </form>
+          )}
+          {pending.length > 0 && (
+            <div className="hr-pending-strip">
+              <strong>当前待决事项（{pending.length}）</strong>
+              <ul>
+                {pending.slice(0, 5).map((item) => (
+                  <li key={item.id}>
+                    <a href={decisionTarget(item)}>{messageText(item).title} ↗</a>
+                    <button type="button" disabled={busy} onClick={() => void pushQuickCard(formatPendingShare(item))}>
+                      推送提醒到本群
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </section>
       )}
-
-      {pending.length > 0 && (
-        <details className="hr-pending-bar">
-          <summary>
-            待处理的审批与复盘 <b>{pending.length}</b>
-            <small>可在原业务页直接拍板，或一键发到本群与 Bot 讨论</small>
-          </summary>
-          <ul>
-            {pending.slice(0, 8).map((item) => (
-              <li key={item.id}>
-                <div>
-                  <a href={decisionTarget(item)}>{messageText(item).title} ↗</a>
-                  <small>
-                    {item.source}
-                    {item.folder ? " · " + item.folder : ""}
-                  </small>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void sendText(formatPendingShare(item))}
-                >
-                  发到本群讨论
-                </button>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-
-      {notice && <p role="status" className="hr-status">{notice}</p>}
-      {error && <p role="alert" className="hr-error">{error}</p>}
-
-      <div className="hr-stream">
-        {detail?.hasMore && (
-          <button type="button" className="hr-load-more" disabled={busy} onClick={() => void loadEarlier()}>
-            加载更早消息
-          </button>
-        )}
-        <ol className="hr-posts">
-          {mergedMessages.map((msg) => {
-            const isBot = msg.sender.type === "bot";
-            return (
-              <li key={msg.id} className={isBot ? "hr-msg-bot" : "hr-msg-user"}>
-                <div>
-                  <strong>{isBot ? msg.sender.name : "你"}</strong>
-                  {isBot && <span className="hr-role-tag">Bot</span>}
-                  {msg.mentions && msg.mentions.length > 0 && (
-                    <small>
-                      @{msg.mentions.map((id) => botById.get(id)?.name ?? id).join(" @")}
-                    </small>
-                  )}
-                  <time dateTime={msg.createdAt}>{formatTime(msg.createdAt)}</time>
-                </div>
-                {msg.replyTo?.excerpt && <blockquote>{msg.replyTo.excerpt}</blockquote>}
-                <p>
-                  <LinkedText text={msg.text} />
-                </p>
-                <div className="hr-post-actions">
-                  <button type="button" disabled={busy} onClick={() => setReplyTo(msg)}>
-                    回复
-                  </button>
-                  <a className="hr-stage-link" href={stageLinkForChatMessage(activeRoom, msg)}>
-                    转为阶段任务 ↗
-                  </a>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-        {detail && mergedMessages.length === 0 && (
-          <p className="hr-muted">这个群聊还没有消息。直接发话或点名下方 Bot 开始协作。</p>
-        )}
-        {runningTurn && <p role="status" className="hr-thinking">群内 Bot 正在处理回复…</p>}
-        <div ref={endRef} />
-      </div>
-
-      {ideaCitation && (
-        <div className="hr-idea-cite">
-          <div>
-            <strong>引用想法 · {ideaCitation.title}</strong>
-            <a href={"#ideas?idea=" + encodeURIComponent(ideaCitation.id)}>查看原想法与日记 ↗</a>
-          </div>
-          {ideaCitation.sources[0] && (
-            <blockquote>
-              {ideaCitation.sources[0].reference}：{ideaCitation.sources[0].body.slice(0, 160)}
-            </blockquote>
-          )}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              onClearIdea();
-              if (body === formatIdeaPrompt(ideaCitation)) setBody("");
-            }}
-          >
-            取消引用
-          </button>
-        </div>
-      )}
-
-      <form className="hr-compose" onSubmit={(e) => void onSubmit(e)}>
-        {replyTo && (
-          <div className="hr-reply-banner">
-            <blockquote>
-              回复 {replyTo.sender.type === "bot" ? replyTo.sender.name : "你"}：{replyTo.text.slice(0, 120)}
-            </blockquote>
-            <button type="button" disabled={busy} onClick={() => setReplyTo(null)}>
-              取消
-            </button>
-          </div>
-        )}
-        {memberBots.length > 0 && (
-          <div className="hr-mention-bar" aria-label="点名群内 Bot">
-            <small>点名（不选则按群模式自动响应）：</small>
-            {memberBots.map((bot) => {
-              const active = mentions.includes(bot.id);
-              return (
-                <button
-                  type="button"
-                  key={bot.id}
-                  className="hr-mention-pill"
-                  aria-pressed={active}
-                  disabled={busy}
-                  onClick={() =>
-                    setMentions((prev) => (prev.includes(bot.id) ? prev.filter((id) => id !== bot.id) : [...prev, bot.id]))
-                  }
-                >
-                  @{bot.name}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        <textarea
-          required
-          maxLength={16000}
-          rows={3}
-          value={body}
-          disabled={busy || activeRoom.status !== "active"}
-          placeholder={
-            activeRoom.status !== "active"
-              ? "群聊已暂停，点击右上角「恢复」后可继续发言"
-              : "在 Agent Home 群聊中发言…（Cmd/Ctrl + Enter 发送）"
-          }
-          onChange={(e) => setBody(e.target.value)}
-          onKeyDown={onKeyDown}
-        />
-        <div className="hr-compose-foot">
-          <small>支持多 Bot 群聊、直接续聊，也可点击消息里的直达链接去业务页拍板</small>
-          <button
-            type="submit"
-            className="hr-primary"
-            disabled={busy || !body.trim() || activeRoom.status !== "active"}
-          >
-            {busy ? "发送中…" : "发送到群聊"}
-          </button>
-        </div>
-      </form>
     </article>
   );
 }
 
-function LegacyBindRoom({
-  localRooms,
-  saved,
+function BotProfilePanel({
+  bot,
+  origin,
+  rooms,
+  onSelectRoom,
 }: {
-  localRooms: LegacyIndex["localRooms"];
-  saved: (item: HomeRoomBinding) => void;
+  bot: HomeChatBot;
+  origin: string;
+  rooms: HomeChatRoom[];
+  onSelectRoom: (roomId: string) => void;
 }) {
-  const [catalog, setCatalog] = useState<LegacyDirectory>();
-  const [localRoom, setLocal] = useState("");
-  const [remoteRoom, setRemote] = useState("");
-  const [botId, setBot] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [refresh, setRefresh] = useState(0);
-  useEffect(() => {
-    const abort = new AbortController();
-    request<LegacyDirectory>(legacyBase + "/directory", { signal: abort.signal })
-      .then(setCatalog)
-      .catch((e) => {
-        if (!abort.signal.aborted) setError(label(e));
-      });
-    return () => abort.abort();
-  }, [refresh]);
-  const room = catalog?.rooms.find((r) => r.id === remoteRoom);
-  const bind = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      saved(await request<HomeRoomBinding>(legacyBase, submit({ localRoom, remoteRoom, botId })));
-    } catch (err) {
-      setError(label(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <form className="hr-bind" onSubmit={(e) => void bind(e)}>
-      <fieldset disabled={busy}>
-        <legend>关联已有频道与单个 Bot（旧版兼容）</legend>
-        <label>
-          OPC OS 频道
-          <select required value={localRoom} onChange={(e) => setLocal(e.target.value)}>
-            <option value="">选择本地频道</option>
-            {localRooms.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.project ? r.project + " / " : ""}
-                {r.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Agent Home 讨论房间
-          <select
-            required
-            value={remoteRoom}
-            onChange={(e) => {
-              setRemote(e.target.value);
-              setBot("");
-            }}
-          >
-            <option value="">{catalog ? "选择活动讨论房间" : "正在读取房间"}</option>
-            {catalog?.rooms.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.title}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          接收消息的 Bot
-          <select required value={botId} onChange={(e) => setBot(e.target.value)}>
-            <option value="">选择房间成员</option>
-            {catalog?.bots
-              .filter((b) => room?.botIds.includes(b.id))
-              .map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-          </select>
-        </label>
-        <button className="hr-primary" disabled={!botId || !localRoom} type="submit">
-          保存关联
-        </button>
-      </fieldset>
-      {error && (
-        <p role="alert">
-          {error}{" "}
-          {!catalog && (
-            <button type="button" onClick={() => setRefresh((n) => n + 1)}>
-              重新读取
-            </button>
-          )}
-        </p>
-      )}
-    </form>
-  );
-}
+  const st = botStatusMeta(bot.status);
+  const joinedRooms = useMemo(() => rooms.filter((r) => r.botIds.includes(bot.id)), [rooms, bot.id]);
+  const descLines = (bot.description || "").trim().split(/\r?\n/).filter(Boolean);
+  const summaryLines = descLines.slice(0, 4);
 
-function LegacyDiscussion({
-  binding,
-  highlightPost = "",
-  ideaCitation,
-  onClearIdea,
-}: {
-  binding: HomeRoomBinding;
-  highlightPost?: string;
-  ideaCitation?: IdeaCitation | null;
-  onClearIdea?: () => void;
-}) {
-  const [posts, setPosts] = useState<HomeRoomPost[]>();
-  const [body, setBody] = useState("");
-  const [parent, setParent] = useState<HomeRoomPost>();
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [reload, setReload] = useState(0);
-  const ticket = useRef<{ text: string; key: string } | null>(null);
-  const appliedIdea = useRef("");
-  const scrolledPost = useRef("");
-  const path = legacyAddress(binding.id);
-  useEffect(() => {
-    if (!ideaCitation || appliedIdea.current === ideaCitation.id) return;
-    appliedIdea.current = ideaCitation.id;
-    setBody((current) => (current.trim() ? current : formatIdeaPrompt(ideaCitation)));
-  }, [ideaCitation]);
-  useEffect(() => {
-    if (!highlightPost || !posts?.some((p) => p.id === highlightPost) || scrolledPost.current === highlightPost) return;
-    scrolledPost.current = highlightPost;
-    document.getElementById("hr-post-" + highlightPost)?.scrollIntoView({ block: "nearest" });
-  }, [highlightPost, posts]);
-  useEffect(() => {
-    const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      if (!document.hidden) {
-        try {
-          const result = await request<{ posts: HomeRoomPost[] }>(path + "/messages", { signal: abort.signal });
-          if (!abort.signal.aborted) setPosts(result.posts);
-        } catch (err) {
-          if (!abort.signal.aborted) setError(label(err));
-        }
-      }
-      if (!abort.signal.aborted) timer = setTimeout(poll, 3500);
-    };
-    const onVisible = () => {
-      if (!document.hidden) {
-        clearTimeout(timer);
-        void poll();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    void poll();
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [path, reload]);
-  const action = async (run: () => Promise<unknown>) => {
-    setError("");
-    setBusy(true);
-    try {
-      await run();
-      setReload((n) => n + 1);
-    } catch (err) {
-      setError(label(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const send = (e: FormEvent) => {
-    e.preventDefault();
-    if (busy || !body.trim()) return;
-    const text = JSON.stringify([body.trim(), parent?.id]);
-    if (ticket.current?.text !== text) ticket.current = { text, key: crypto.randomUUID() };
-    const key = ticket.current.key;
-    void action(async () => {
-      await request(path + "/messages", submit({ key, body, parent: parent?.id }));
-      setBody("");
-      setParent(undefined);
-      ticket.current = null;
-      if (ideaCitation) onClearIdea?.();
-    });
-  };
   return (
-    <article className="hr-discussion">
-      <header>
+    <article className="hr-chat-panel">
+      <header className="hr-chat-head">
         <div>
-          <span>{binding.project} · 旧版频道绑定</span>
-          <h2>{binding.roomTitle}</h2>
+          <div className="hr-chat-title-row">
+            <h2>{bot.name}</h2>
+            <span className="hr-badge" data-tone={st.tone === "ok" ? "ok" : st.tone === "warn" ? "warn" : undefined}>
+              {st.label}
+            </span>
+            {bot.groupName && <span className="hr-badge" data-tone="accent">{bot.groupName}</span>}
+          </div>
+          <p className="hr-muted" style={{ margin: "6px 0 0" }}>
+            {bot.title ? `${bot.title} · ` : ""}botId: <code>{bot.id}</code>
+            {typeof bot.completedCount === "number" &&
+              ` · 已完成 ${bot.completedCount} · 待处理 ${bot.pendingCount ?? 0} · 运行中 ${bot.activeWorkCount ?? 0}`}
+          </p>
         </div>
-        <button disabled={busy} onClick={() => void action(() => request(path + "/reconcile", submit({})))}>
-          核对原房间
-        </button>
+        <div className="hr-chat-controls">
+          <a className="hr-primary hr-launch-btn" href={`${origin}/#/bot`} target="_blank" rel="noreferrer">
+            在原生 Agent Home 对话 ↗
+          </a>
+          <a
+            className="hr-secondary-link"
+            href={`${origin}/#/agents/bots?bot=${encodeURIComponent(bot.id)}&focus=permissions`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            权限与连接设置 ↗
+          </a>
+          <a
+            className="hr-secondary-link"
+            href={`${origin}/#/tasks/flows?bot=${encodeURIComponent(bot.id)}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            任务流轨迹 ↗
+          </a>
+        </div>
       </header>
-      {binding.problem && <p role="status">{binding.problem}</p>}
-      <ol className="hr-posts">
-        {posts?.map((post) => {
-          const original = posts.find((p) => p.id === post.parent);
-          return (
-            <li key={post.id} id={"hr-post-" + post.id} data-highlighted={post.id === highlightPost || undefined}>
-              <div>
-                <strong>{post.direction === "in" ? binding.botName : "发给 @" + binding.botName}</strong>
-                <time dateTime={post.createdAt}>{formatTime(post.createdAt)}</time>
-              </div>
-              {original && <blockquote>{original.body.slice(0, 110)}</blockquote>}
-              <p>
-                <LinkedText text={post.body} />
-              </p>
-              {Boolean(post.question) && <MessageDelegate messageId={"home-room:" + post.id} />}
-              <div className="hr-post-actions">
-                {post.direction === "in" ? (
-                  <button disabled={busy} onClick={() => setParent(post)}>
-                    引用回复
-                  </button>
-                ) : (
+
+      <section className="hr-section" aria-label="Bot 职责与契约">
+        <h3>职责与角色说明</h3>
+        {descLines.length > 0 ? (
+          <div className="hr-bot-desc">
+            {summaryLines.map((line, i) => <p key={i}>{line}</p>)}
+            {descLines.length > 4 && (
+              <details>
+                <summary>展开完整提示词与契约（共 {descLines.length} 行）</summary>
+                <pre>{bot.description}</pre>
+              </details>
+            )}
+          </div>
+        ) : (
+          <p className="hr-muted">该 Bot 暂未填写额外角色说明，可在原生 Agent Home 中配置。</p>
+        )}
+      </section>
+
+      <section className="hr-section" aria-label="所在群聊">
+        <h3>已加入的群聊（{joinedRooms.length}）</h3>
+        {joinedRooms.length === 0 ? (
+          <p className="hr-muted">暂未加入任何群聊。可在左侧切换到「群聊」列表中将其拉入群。</p>
+        ) : (
+          <div className="hr-member-cards">
+            {joinedRooms.map((room) => (
+              <div key={room.id} className="hr-bot-card">
+                <button type="button" className="hr-bot-card-main" onClick={() => onSelectRoom(room.id)}>
+                  <div className="hr-bot-card-top">
+                    <strong>{room.title}</strong>
+                    {room.hostBotId === bot.id && <span className="hr-badge" data-tone="accent">主控</span>}
+                  </div>
                   <small>
-                    {receipts[post.state]}{" "}
-                    {post.state === "retryable" && (
-                      <button
-                        disabled={busy}
-                        onClick={() =>
-                          void action(() =>
-                            request(path + "/messages/" + encodeURIComponent(post.id) + "/retry", submit({})),
-                          )
-                        }
-                      >
-                        重试这条消息
-                      </button>
-                    )}
+                    {room.botIds.length} 位 Bot · {replyModeLabels[room.replyMode ?? ""] ?? room.replyMode ?? "群聊"}
                   </small>
-                )}
-                <a className="hr-stage-link" href={stageLinkForLegacyPost(binding, post)}>
-                  转为阶段任务 ↗
-                </a>
+                </button>
+                <div className="hr-bot-card-actions">
+                  <a href={`${origin}/#/bot`} target="_blank" rel="noreferrer">原生打开 ↗</a>
+                </div>
               </div>
-            </li>
-          );
-        })}
-      </ol>
-      <form className="hr-compose" onSubmit={send}>
-        {parent && (
-          <div className="hr-reply-banner">
-            <blockquote>
-              回复 {binding.botName} · {parent.body.slice(0, 120)}
-            </blockquote>
-            <button type="button" disabled={busy} onClick={() => setParent(undefined)}>
-              取消引用
-            </button>
+            ))}
           </div>
         )}
-        <label>
-          发给 @{binding.botName}
-          <textarea
-            required
-            maxLength={16000}
-            rows={3}
-            value={body}
-            disabled={busy}
-            onChange={(e) => setBody(e.target.value)}
-          />
-        </label>
-        <button type="submit" className="hr-primary" disabled={busy || !body.trim()}>
-          发送到原房间
-        </button>
-      </form>
-      {error && <p role="alert">{error}</p>}
+      </section>
     </article>
   );
 }
 
 export function HomeRoom({
-  project = "",
+  project,
   pending = [],
   nav,
 }: {
@@ -1108,36 +674,38 @@ export function HomeRoom({
   pending?: ZoomMessage[];
   nav?: ReactNode;
 }) {
-  const params = new URLSearchParams(location.hash.split("?")[1]);
-  const roomParam = params.get("room") ?? "";
-  const bindingParam = params.get("binding") ?? "";
-  const highlightPost = params.get("post") ?? "";
-  const ideaParam = params.get("idea") ?? "";
-  const draftParam = params.get("draft") ?? "";
-
+  const initialParams = useMemo(() => new URLSearchParams(location.hash.split("?")[1]), []);
   const [overview, setOverview] = useState<HomeChatOverview | null>(null);
-  const [legacy, setLegacy] = useState<LegacyIndex | null>(null);
-  const [selectedRoomId, setSelectedRoomId] = useState(roomParam);
-  const [selectedBindingId, setSelectedBindingId] = useState(bindingParam);
+  const [railTab, setRailTab] = useState<"rooms" | "bots">(() => (initialParams.get("bot") ? "bots" : "rooms"));
+  const [search, setSearch] = useState("");
+  const [selectedRoomId, setSelectedRoomId] = useState<string>(() => initialParams.get("room") ?? "");
+  const [selectedBotId, setSelectedBotId] = useState<string>(() => initialParams.get("bot") ?? "");
   const [creating, setCreating] = useState(false);
-  const [showLegacyBind, setShowLegacyBind] = useState(false);
-  const [ideaCitation, setIdeaCitation] = useState<IdeaCitation | null>(null);
-  const [draftText, setDraftText] = useState(draftParam);
   const [reload, setReload] = useState(0);
-  const [error, setError] = useState("");
+  const [ideaParam, setIdeaParam] = useState<string>(() => initialParams.get("idea") ?? "");
+  const [draftText, setDraftText] = useState<string>(() => initialParams.get("draft") ?? "");
+  const [ideaCitation, setIdeaCitation] = useState<IdeaCitation | null>(null);
 
   useEffect(() => {
-    if (roomParam) {
-      setSelectedRoomId(roomParam);
-      setSelectedBindingId("");
-    } else if (bindingParam) {
-      setSelectedBindingId(bindingParam);
-    }
-  }, [roomParam, bindingParam]);
-
-  useEffect(() => {
-    setDraftText(draftParam);
-  }, [draftParam]);
+    const sync = () => {
+      if (!location.hash.startsWith("#home-room")) return;
+      const params = new URLSearchParams(location.hash.split("?")[1]);
+      if (params.get("room")) {
+        setSelectedRoomId(params.get("room") ?? "");
+        setRailTab("rooms");
+        setCreating(false);
+      }
+      if (params.get("bot")) {
+        setSelectedBotId(params.get("bot") ?? "");
+        setRailTab("bots");
+        setCreating(false);
+      }
+      setIdeaParam(params.get("idea") ?? "");
+      if (params.get("draft")) setDraftText(params.get("draft") ?? "");
+    };
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
 
   useEffect(() => {
     if (!ideaParam) {
@@ -1150,46 +718,86 @@ export function HomeRoom({
       .then((company: CompanyIndex) => {
         if (abort.signal.aborted) return;
         const found = company.ideas.find((item) => item.id === ideaParam);
-        if (!found) {
-          setIdeaCitation(null);
-          return;
-        }
+        if (!found) { setIdeaCitation(null); return; }
         const sources = company.information
           .filter((note) => found.sources.includes(note.id))
           .map((note) => ({ reference: note.reference || note.title, body: note.body || note.title }));
         setIdeaCitation({ id: found.id, title: found.title, body: found.body, sources });
       })
-      .catch(() => {
-        if (!abort.signal.aborted) setIdeaCitation(null);
-      });
+      .catch(() => { if (!abort.signal.aborted) setIdeaCitation(null); });
     return () => abort.abort();
   }, [ideaParam]);
 
   useEffect(() => {
     const abort = new AbortController();
-    setError("");
-    Promise.all([
-      request<HomeChatOverview>(chatBase + "/overview", { signal: abort.signal }).catch(
+    request<HomeChatOverview>(chatBase + "/overview", { signal: abort.signal })
+      .catch(
         (err): HomeChatOverview => ({
           available: false,
           origin: "http://127.0.0.1:37070",
           reason: label(err),
           rooms: [],
           bots: [],
+          groups: [],
           links: [],
         }),
-      ),
-      request<LegacyIndex>(legacyBase, { signal: abort.signal }).catch(() => null),
-    ]).then(([chatData, legacyData]) => {
-      if (abort.signal.aborted) return;
-      setOverview(chatData);
-      setLegacy(legacyData);
-    });
+      )
+      .then((chatData) => {
+        if (!abort.signal.aborted) setOverview(chatData);
+      });
     return () => abort.abort();
   }, [reload]);
 
+  const sortedBots = useMemo(() => {
+    const list = [...(overview?.bots ?? [])];
+    const rank = (b: HomeChatBot) => {
+      if (b.id === "super-bot") return 0;
+      if (b.groupName?.includes("OPC") || b.name.startsWith("OPC ")) return 1;
+      if (b.status === "running") return 2;
+      if (b.status === "idle") return 3;
+      return 4;
+    };
+    return list.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "zh-CN"));
+  }, [overview?.bots]);
+
+  const query = search.trim().toLowerCase();
+  const filteredRooms = useMemo(
+    () => (overview?.rooms ?? []).filter((r) => !query || r.title.toLowerCase().includes(query)),
+    [overview?.rooms, query],
+  );
+  const filteredBots = useMemo(
+    () =>
+      sortedBots.filter(
+        (b) =>
+          !query ||
+          b.name.toLowerCase().includes(query) ||
+          (b.title ?? "").toLowerCase().includes(query) ||
+          (b.groupName ?? "").toLowerCase().includes(query) ||
+          b.id.toLowerCase().includes(query),
+      ),
+    [sortedBots, query],
+  );
+
+  const roomCountByBot = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of overview?.rooms ?? []) {
+      for (const id of r.botIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return counts;
+  }, [overview?.rooms]);
+
+  const linksByRoom = useMemo(() => {
+    const map = new Map<string, HomeChatLink[]>();
+    for (const item of overview?.links ?? []) {
+      const list = map.get(item.remoteRoom) ?? [];
+      list.push(item);
+      map.set(item.remoteRoom, list);
+    }
+    return map;
+  }, [overview?.links]);
+
   const resolvedRoom = useMemo(() => {
-    if (!overview?.rooms.length || selectedBindingId) return null;
+    if (!overview?.rooms.length) return null;
     if (selectedRoomId) {
       const exact = overview.rooms.find((r) => r.id === selectedRoomId);
       if (exact) return exact;
@@ -1208,50 +816,38 @@ export function HomeRoom({
       if (def) return def;
     }
     return overview.rooms[0];
-  }, [overview, selectedRoomId, selectedBindingId, project]);
+  }, [overview, selectedRoomId, project]);
 
-  const resolvedBinding = useMemo(() => {
-    if (!legacy?.bindings.length) return null;
-    if (selectedBindingId) return legacy.bindings.find((b) => b.id === selectedBindingId) ?? null;
-    if (!overview?.available && !overview?.rooms.length) return legacy.bindings[0];
-    return null;
-  }, [legacy, selectedBindingId, overview]);
-
-  const linksByRoom = useMemo(() => {
-    const map = new Map<string, HomeChatLink[]>();
-    for (const item of overview?.links ?? []) {
-      const list = map.get(item.remoteRoom) ?? [];
-      list.push(item);
-      map.set(item.remoteRoom, list);
+  const resolvedBot = useMemo(() => {
+    if (!sortedBots.length) return null;
+    if (selectedBotId) {
+      const exact = sortedBots.find((b) => b.id === selectedBotId);
+      if (exact) return exact;
     }
-    return map;
-  }, [overview?.links]);
+    return sortedBots[0];
+  }, [sortedBots, selectedBotId]);
+
+  const origin = overview?.origin || "http://127.0.0.1:37070";
 
   return (
-    <section className="zo-product hr-page" aria-label="Agent Home 群聊">
+    <section className="zo-product hr-page" aria-label="Agent Home 群聊与 Bot">
       <header className="zo-product-head hr-top-head">
         {nav}
         <div>
           <a href="#overview">全局看板 ↗</a>
-          <h1>Agent Home 群聊</h1>
+          {" · "}
+          <a href="#mailbox">总裁信箱 ↗</a>
+          <h1>Agent Home 群聊与 Bot</h1>
         </div>
         <div className="hr-top-actions">
-          {overview?.origin && (
-            <a href={overview.origin} target="_blank" rel="noreferrer">
-              打开原生 Agent Home ↗
-            </a>
-          )}
-          <button type="button" onClick={() => setReload((n) => n + 1)}>
-            刷新群聊
-          </button>
+          <a className="hr-primary hr-launch-btn" href={`${origin}/#/bot`} target="_blank" rel="noreferrer">
+            打开原生 Agent Home ↗
+          </a>
+          <button type="button" onClick={() => setReload((n) => n + 1)}>刷新</button>
           <button
             type="button"
-            className="hr-primary"
             disabled={!overview?.available}
-            onClick={() => {
-              setCreating((v) => !v);
-              setSelectedBindingId("");
-            }}
+            onClick={() => setCreating((v) => !v)}
           >
             {creating ? "取消新建" : "+ 新建群聊"}
           </button>
@@ -1259,92 +855,139 @@ export function HomeRoom({
       </header>
 
       <div className="hr-shell">
-        <aside className="hr-rail" aria-label="群聊列表">
-          <div className="hr-rail-head">
-            <strong>全部群聊</strong>
-            <small>{overview ? overview.rooms.length : "…"}</small>
+        <aside className="hr-rail" aria-label="群聊与 Bot 成员目录">
+          <div className="hr-rail-tabs" role="tablist" aria-label="切换群聊或 Bot 列表">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={railTab === "rooms"}
+              onClick={() => { setRailTab("rooms"); setCreating(false); }}
+            >
+              群聊 ({overview ? overview.rooms.length : "…"})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={railTab === "bots"}
+              onClick={() => { setRailTab("bots"); setCreating(false); }}
+            >
+              Bot 成员 ({overview ? overview.bots.length : "…"})
+            </button>
           </div>
+
+          <input
+            type="search"
+            className="hr-rail-search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={railTab === "rooms" ? "筛选群聊名称…" : "筛选 Bot 名称 / 分组 / 角色…"}
+          />
+
           {!overview && <p className="hr-muted">正在连接 Agent Home…</p>}
           {overview && !overview.available && (
             <div className="hr-offline" role="status">
               <p>{overview.reason || "暂未连接到 Agent Home 服务。"}</p>
               <small>地址：{overview.origin}</small>
-              <button type="button" onClick={() => setReload((n) => n + 1)}>
-                重新连接
-              </button>
+              <button type="button" onClick={() => setReload((n) => n + 1)}>重新连接</button>
             </div>
           )}
-          {overview?.available && overview.rooms.length === 0 && (
-            <p className="hr-muted">Agent Home 中还没有群聊，点击右上角「+ 新建群聊」即可创建。</p>
-          )}
-          {overview && overview.rooms.length > 0 && (
-            <ul className="hr-room-list">
-              {overview.rooms.map((room) => {
-                const active = !creating && !resolvedBinding && resolvedRoom?.id === room.id;
-                const roomTags = linksByRoom.get(room.id) ?? [];
-                return (
-                  <li key={room.id}>
-                    <button
-                      type="button"
-                      className="hr-room-item"
-                      aria-current={active ? "true" : undefined}
-                      onClick={() => {
-                        setCreating(false);
-                        setSelectedBindingId("");
-                        setSelectedRoomId(room.id);
-                      }}
-                    >
-                      <strong>{room.title}</strong>
-                      <small>
-                        {room.botIds.length} 位 Bot
-                        {room.status !== "active" ? " · 已暂停" : ""}
-                      </small>
-                      {roomTags.length > 0 && (
-                        <span className="hr-room-tags">
-                          {roomTags.map((t) => scopeLabel(t.scopeKey)).join(" / ")}
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+
+          {overview?.available && railTab === "rooms" && (
+            filteredRooms.length === 0 ? (
+              <p className="hr-muted">{query ? "没有匹配的群聊。" : "暂无群聊，可点击右上角新建。"}</p>
+            ) : (
+              <ul className="hr-room-list">
+                {filteredRooms.map((room) => {
+                  const active = !creating && resolvedRoom?.id === room.id;
+                  const roomTags = linksByRoom.get(room.id) ?? [];
+                  return (
+                    <li key={room.id} className="hr-rail-row">
+                      <button
+                        type="button"
+                        className="hr-room-item"
+                        aria-current={active ? "true" : undefined}
+                        onClick={() => {
+                          setCreating(false);
+                          setSelectedRoomId(room.id);
+                        }}
+                      >
+                        <strong>{room.title}</strong>
+                        <small>
+                          {room.botIds.length} 位 Bot
+                          {room.status !== "active" ? " · 已暂停" : ""}
+                        </small>
+                        {roomTags.length > 0 && (
+                          <span className="hr-room-tags">
+                            {roomTags.map((t) => scopeLabel(t.scopeKey)).join(" / ")}
+                          </span>
+                        )}
+                      </button>
+                      <a
+                        className="hr-row-jump"
+                        href={`${origin}/#/bot`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="直接前往原生 Agent Home"
+                        aria-label={`在原生 Agent Home 打开 ${room.title}`}
+                      >
+                        ↗
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            )
           )}
 
-          {legacy && (legacy.bindings.length > 0 || showLegacyBind) && (
-            <details className="hr-legacy-section" open={Boolean(resolvedBinding || showLegacyBind)}>
-              <summary>
-                旧版频道绑定 <small>{legacy.bindings.length}</small>
-              </summary>
+          {overview?.available && railTab === "bots" && (
+            filteredBots.length === 0 ? (
+              <p className="hr-muted">{query ? "没有匹配的 Bot。" : "Agent Home 中暂无可用 Bot。"}</p>
+            ) : (
               <ul className="hr-room-list">
-                {legacy.bindings.map((b) => (
-                  <li key={b.id}>
-                    <button
-                      type="button"
-                      className="hr-room-item"
-                      aria-current={resolvedBinding?.id === b.id ? "true" : undefined}
-                      onClick={() => {
-                        setCreating(false);
-                        setSelectedBindingId(b.id);
-                      }}
-                    >
-                      <strong>{b.roomTitle}</strong>
-                      <small>
-                        {b.project} · @{b.botName}
-                      </small>
-                    </button>
-                  </li>
-                ))}
+                {filteredBots.map((bot) => {
+                  const active = !creating && resolvedBot?.id === bot.id;
+                  const st = botStatusMeta(bot.status);
+                  const roomCount = roomCountByBot.get(bot.id) ?? 0;
+                  return (
+                    <li key={bot.id} className="hr-rail-row">
+                      <button
+                        type="button"
+                        className="hr-room-item"
+                        aria-current={active ? "true" : undefined}
+                        onClick={() => {
+                          setCreating(false);
+                          setSelectedBotId(bot.id);
+                        }}
+                      >
+                        <span className="hr-bot-list-title">
+                          <span className="hr-status-dot" data-tone={st.tone} />
+                          <strong>{bot.name}</strong>
+                        </span>
+                        <small>
+                          {bot.title || st.label}
+                          {roomCount > 0 ? ` · ${roomCount} 个群` : ""}
+                        </small>
+                        {bot.groupName && <span className="hr-room-tags">{bot.groupName}</span>}
+                      </button>
+                      <a
+                        className="hr-row-jump"
+                        href={`${origin}/#/agents/bots?bot=${encodeURIComponent(bot.id)}&focus=permissions`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="在原生 Agent Home 查看该 Bot"
+                        aria-label={`在原生 Agent Home 查看 ${bot.name}`}
+                      >
+                        ↗
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
-              <button type="button" className="hr-link-btn" onClick={() => setShowLegacyBind((v) => !v)}>
-                {showLegacyBind ? "收起绑定表单" : "关联本地频道与 Bot"}
-              </button>
-            </details>
+            )
           )}
         </aside>
 
         <div className="hr-main">
-          {error && <p role="alert" className="hr-error">{error}</p>}
           {creating && overview ? (
             <CreateRoomForm
               bots={overview.bots}
@@ -1357,33 +1000,24 @@ export function HomeRoom({
                     : prev,
                 );
                 setCreating(false);
+                setRailTab("rooms");
                 setSelectedRoomId(room.id);
               }}
             />
-          ) : showLegacyBind && legacy ? (
-            <LegacyBindRoom
-              localRooms={legacy.localRooms}
-              saved={(item) => {
-                setLegacy({
-                  ...legacy,
-                  bindings: [...legacy.bindings.filter((b) => b.id !== item.id), item],
-                });
-                setSelectedBindingId(item.id);
-                setShowLegacyBind(false);
+          ) : railTab === "bots" && resolvedBot && overview ? (
+            <BotProfilePanel
+              bot={resolvedBot}
+              origin={origin}
+              rooms={overview.rooms}
+              onSelectRoom={(roomId) => {
+                setSelectedRoomId(roomId);
+                setRailTab("rooms");
               }}
             />
-          ) : resolvedBinding ? (
-            <LegacyDiscussion
-              key={resolvedBinding.id}
-              binding={resolvedBinding}
-              highlightPost={highlightPost}
-              ideaCitation={ideaCitation}
-              onClearIdea={() => setIdeaCitation(null)}
-            />
           ) : resolvedRoom && overview ? (
-            <DirectChatPanel
-              key={resolvedRoom.id}
+            <RoomDirectoryPanel
               room={resolvedRoom}
+              origin={origin}
               bots={overview.bots}
               links={overview.links}
               pending={pending}
@@ -1391,6 +1025,10 @@ export function HomeRoom({
               draftText={draftText}
               onClearIdea={() => setIdeaCitation(null)}
               onClearDraft={() => setDraftText("")}
+              onSelectBot={(botId) => {
+                setSelectedBotId(botId);
+                setRailTab("bots");
+              }}
               onRoomUpdated={(updated) =>
                 setOverview((prev) =>
                   prev
@@ -1402,23 +1040,10 @@ export function HomeRoom({
             />
           ) : (
             <div className="hr-empty-state">
-              <h2>用 Agent Home 群聊协作</h2>
+              <h2>Agent Home 群聊与 Bot 目录</h2>
               <p>
-                在左侧选择一个群聊，或点击「+ 新建群聊」拉起多位 Bot 一起讨论需求、评审方案。设为「默认提醒群」后，工作流审批、经营实验复盘与开源能力变更会自动同步提醒到群里，点击链接直达原页面拍板。
+                左侧可随时切换查看所有「群聊」和「Bot 成员」，点击「前往原生 Agent Home ↗」直接在原生界面聊天；若希望异步收发 Super Bot 汇报和审批，请使用左侧「总裁信箱」。
               </p>
-              {pending.length > 0 && (
-                <section className="hr-pending-fallback" aria-label="当前待处理事项">
-                  <h3>当前待处理事项（{pending.length}）</h3>
-                  <ul>
-                    {pending.map((item) => (
-                      <li key={item.id}>
-                        <a href={decisionTarget(item)}>{messageText(item).title} ↗</a>
-                        <small>{item.source}</small>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              )}
             </div>
           )}
         </div>

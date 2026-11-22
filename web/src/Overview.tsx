@@ -63,12 +63,12 @@ export function Overview({ activityIndex, nav, products, messages, pending, read
         </a>
       )}</div>
     </section>
-    <nav className="overview-journal" aria-label="快捷入口"><a href="#executive">总裁办 · Bot 架构 ↗</a><a href="#digital-twin">组织数字孪生 ↗</a><a href="#canvas">无界知识画布 ↗</a><a href="#metabolism">信息代谢 · PM 自动立项 ↗</a><a href="#planning">人机看板 · 番茄 · ROI ↗</a><a href="#dark-factory">Agent 暗工厂 ↗</a><a href="#home-room">Agent Home 群聊 ↗</a><a href="#delegations">委派台与默认办理方式 ↗</a><a href="#ideas">从信息到想法 ↗</a><a href="#capabilities">开源能力 ↗</a><a href="#worklog">查看个人工作投入 ↗</a></nav>
+    <nav className="overview-journal" aria-label="快捷入口"><a href="#mailbox">总裁信箱 ↗</a><a href="#executive">总裁办 · Bot 架构 ↗</a><a href="#digital-twin">组织数字孪生 ↗</a><a href="#canvas">无界知识画布 ↗</a><a href="#metabolism">信息代谢 · PM 自动立项 ↗</a><a href="#planning">人机看板 · 番茄 · ROI ↗</a><a href="#dark-factory">Agent 暗工厂 ↗</a><a href="#home-room">Agent Home 群聊与 Bot ↗</a><a href="#delegations">委派台与默认办理方式 ↗</a><a href="#ideas">从信息到想法 ↗</a><a href="#capabilities">开源能力 ↗</a><a href="#worklog">查看个人工作投入 ↗</a></nav>
     {error && <p role="alert" className="overview-warning">{error} <button onClick={onRetry}>重试</button></p>}
     {!ready && !error && <p role="status">正在读取项目与待办…</p>}
     {ready && <>
       <section className="overview-decisions" aria-label="等待你决定的事项">
-        <header><h2>待我处理 <small>{pending.length}</small></h2><a href="#home-room">打开 Agent Home 群聊 ↗</a></header>
+        <header><h2>待我处理 <small>{pending.length}</small></h2><a href="#mailbox">打开总裁信箱 ↗</a></header>
         {pending.length ? <>
           <p>数字员工遇到需你拍板的计划、实验复盘或异常卡点时会汇总在此——点击条目即可进入对应页面批准、打回修改或一键关闭。</p>
           <ul>{pending.slice(0, 5).map(item => <li key={item.id}>
