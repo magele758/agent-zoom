@@ -12,9 +12,10 @@ const port = Number(process.env.PORT ?? 8791);
 const dataPath = process.env.DATA_PATH ?? "data/chatroom.db";
 const demoEnabled = process.env.DEMO_MODE === "1";
 const store = openStore(dataPath, { demo: demoEnabled });
-const workflow = configureWorkflow(store.db, dataPath, port);
+// Workflow DAG remains off by default unless WORKFLOW_CONFIG is explicitly supplied (and not disabled)
+const workflow = process.env.OPC_DISABLE_WORKFLOW === "1" ? undefined : configureWorkflow(store.db, dataPath, port);
 const activityIndexEnabled = process.env.OPC_ACTIVITY_INDEX === "1";
-const { app, injectWebSocket, nudge, opportunities, homeRooms, activityIndex, delegations, darkFactory, taskPlanning } = createApp(store, { workflow, activityIndexEnabled });
+const { app, injectWebSocket, nudge, opportunities, homeRooms, activityIndex, delegations, darkFactory, taskPlanning, company } = createApp(store, { workflow, activityIndexEnabled });
 
 store.hooks = {
   onInbox: poke,
@@ -38,6 +39,9 @@ const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) =
 });
 injectWebSocket(server);
 
+// Start Micro-Kernel & 6 Functional Departments lifecycle
+company.kernel.startAll();
+
 const reaper = setInterval(() => store.reap(), 5000);
 reaper.unref?.();
 
@@ -60,6 +64,23 @@ const patrolStaleTasks = () => {
   catch (error) { console.error("后台巡检卫士", error); }
 };
 setInterval(patrolStaleTasks, 6 * 60 * 60 * 1000).unref();
+
+// Dept 05 · Continuous Self-Healing Ops Watchdog (every 5 minutes)
+const runOpsWatchdog = () => void company.ops.runWatchdogCycle().catch(error => console.error("运维自愈守护", error));
+setInterval(runOpsWatchdog, 5 * 60 * 1000).unref();
+
+// Dept 02 · Signal Collector runs on ProductDepartment's internal 15-minute timer via company.kernel.startAll()
+
+// Dept 04 · Expiring Subscription Quota Harvester (every 15 minutes)
+const harvestExpiringQuota = () => {
+  try {
+    if (!company.kernel.decisions.getPolicy().autoHarvestQuota) return;
+    company.resources.harvestExpiringQuota({ windowHours: 6, minRemainingPct: 25 });
+  } catch (error) {
+    console.error("临期配额自动调度", error);
+  }
+};
+setInterval(harvestExpiringQuota, 15 * 60 * 1000).unref();
 
 if (activityIndexEnabled) {
   const refresh = () => void activityIndex.sync().catch(() => console.error("仓库索引暂未刷新"));

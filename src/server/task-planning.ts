@@ -12,6 +12,7 @@ import {
   type CreateEpicWithSubtasksResult,
   type CreatePlanningTaskInput,
   type DailyTrendPoint,
+  type DependencyCheckResult,
   type DispatchTaskInput,
   type DispatchTaskResult,
   type EpicRoiEntry,
@@ -42,6 +43,7 @@ import { submitAuth } from "./workflow/http.ts";
 
 export type {
   AgentMetricsSummary,
+  DependencyCheckResult,
   PlanningAgentOption,
   StaleTaskAlert,
   TaskPlanningHooks,
@@ -56,6 +58,8 @@ const taskStatusSchema = z.enum(PLANNING_TASK_STATUSES);
 const assigneeTypeSchema = z.enum(PLANNING_ASSIGNEE_TYPES);
 const energyLevelSchema = z.enum(PLANNING_ENERGY_LEVELS);
 const tagsSchema = z.array(z.string().trim().min(1).max(60)).max(20);
+const dependsOnSchema = z.array(z.string().trim().min(1).max(120)).max(50);
+const dependsOnIndicesSchema = z.array(z.number().int().min(0).max(50)).max(50);
 const metadataSchema = z.record(z.string(), z.unknown());
 
 const createTaskSchema = z.object({
@@ -72,6 +76,11 @@ const createTaskSchema = z.object({
   assigneeId: z.string().trim().max(120).nullable().optional(),
   assigneeName: z.string().trim().max(120).nullable().optional(),
   sourceRef: z.string().trim().max(300).nullable().optional(),
+  dependsOn: dependsOnSchema.optional(),
+  snoozedUntil: z.string().trim().max(80).nullable().optional(),
+  verifyCommand: z.string().max(2_000).optional(),
+  mainlineId: z.string().trim().max(120).nullable().optional(),
+  assetId: z.string().trim().max(120).nullable().optional(),
   metadata: metadataSchema.optional(),
 });
 
@@ -85,6 +94,12 @@ const createEpicSubtaskSchema = z.object({
   assigneeType: assigneeTypeSchema.optional(),
   assigneeId: z.string().trim().max(120).nullable().optional(),
   assigneeName: z.string().trim().max(120).nullable().optional(),
+  dependsOn: dependsOnSchema.optional(),
+  dependsOnIndices: dependsOnIndicesSchema.optional(),
+  verifyCommand: z.string().max(2_000).optional(),
+  mainlineId: z.string().trim().max(120).nullable().optional(),
+  assetId: z.string().trim().max(120).nullable().optional(),
+  metadata: metadataSchema.optional(),
 });
 
 const createEpicSchema = z.object({
@@ -95,6 +110,10 @@ const createEpicSchema = z.object({
   tags: tagsSchema.optional(),
   dueAt: z.string().trim().max(80).nullable().optional(),
   sourceRef: z.string().trim().max(300).nullable().optional(),
+  dependsOn: dependsOnSchema.optional(),
+  verifyCommand: z.string().max(2_000).optional(),
+  mainlineId: z.string().trim().max(120).nullable().optional(),
+  assetId: z.string().trim().max(120).nullable().optional(),
   metadata: metadataSchema.optional(),
   subtasks: z.array(createEpicSubtaskSchema).max(50).default([]),
 });
@@ -117,6 +136,11 @@ const updateTaskSchema = z.object({
   prUrl: z.string().trim().max(500).nullable().optional(),
   tokenUsed: z.number().int().min(0).optional(),
   costUsd: z.number().min(0).optional(),
+  dependsOn: dependsOnSchema.optional(),
+  snoozedUntil: z.string().trim().max(80).nullable().optional(),
+  verifyCommand: z.string().max(2_000).optional(),
+  mainlineId: z.string().trim().max(120).nullable().optional(),
+  assetId: z.string().trim().max(120).nullable().optional(),
   metadata: metadataSchema.optional(),
 });
 
@@ -141,6 +165,10 @@ const patrolSchema = z.object({
   notifyZoom: z.boolean().optional(),
 });
 
+const snoozeSchema = z.object({
+  days: z.number().positive().max(365).default(7),
+});
+
 interface TaskRow {
   id: string;
   project: string;
@@ -162,6 +190,11 @@ interface TaskRow {
   pr_url: string | null;
   token_used: number;
   cost_usd: number;
+  depends_on_json?: string;
+  snoozed_until?: string | null;
+  verify_command?: string;
+  mainline_id?: string | null;
+  asset_id?: string | null;
   metadata: string;
   created_at: string;
   updated_at: string;
@@ -281,6 +314,11 @@ function mapTaskRow(row: TaskRow): PlanningTask {
     prUrl: row.pr_url,
     tokenUsed: Number(row.token_used) || 0,
     costUsd: round4(Number(row.cost_usd) || 0),
+    dependsOn: parseJsonArray<string>(row.depends_on_json ?? "[]").map(String),
+    snoozedUntil: row.snoozed_until ?? null,
+    verifyCommand: String(row.verify_command ?? ""),
+    mainlineId: row.mainline_id ?? null,
+    assetId: row.asset_id ?? null,
     metadata: parseJsonObject(row.metadata),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -336,6 +374,8 @@ function windowStartIso(days: number): string {
 
 export class TaskPlanningStore {
   private hooks: TaskPlanningHooks;
+  private epicCompletedListeners = new Set<(epic: PlanningTaskWithSubtasks) => void>();
+  private patrolListeners = new Set<(report: PatrolReport) => void>();
 
   constructor(
     private db: DatabaseSync,
@@ -365,6 +405,11 @@ export class TaskPlanningStore {
         pr_url TEXT,
         token_used INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL NOT NULL DEFAULT 0,
+        depends_on_json TEXT NOT NULL DEFAULT '[]',
+        snoozed_until TEXT,
+        verify_command TEXT NOT NULL DEFAULT '',
+        mainline_id TEXT,
+        asset_id TEXT,
         metadata TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -398,10 +443,46 @@ export class TaskPlanningStore {
       );
       CREATE INDEX IF NOT EXISTS idx_opc_patrol_created ON opc_patrol_runs(created_at);
     `);
+
+    const existingCols = new Set(
+      (this.db.prepare("PRAGMA table_info(opc_planning_tasks)").all() as Array<{ name?: string }>).map((c) =>
+        String(c.name ?? ""),
+      ),
+    );
+    const columnMigrations: Array<[string, string]> = [
+      ["depends_on_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["snoozed_until", "TEXT"],
+      ["verify_command", "TEXT NOT NULL DEFAULT ''"],
+      ["mainline_id", "TEXT"],
+      ["asset_id", "TEXT"],
+    ];
+    for (const [col, sqlType] of columnMigrations) {
+      if (!existingCols.has(col)) {
+        this.db.exec(`ALTER TABLE opc_planning_tasks ADD COLUMN ${col} ${sqlType}`);
+      }
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_opc_planning_tasks_mainline ON opc_planning_tasks(mainline_id);
+      CREATE INDEX IF NOT EXISTS idx_opc_planning_tasks_asset ON opc_planning_tasks(asset_id);
+    `);
   }
 
   setHooks(hooks: TaskPlanningHooks): void {
     this.hooks = { ...this.hooks, ...hooks };
+  }
+
+  onEpicComplete(listener: (epic: PlanningTaskWithSubtasks) => void): () => void {
+    this.epicCompletedListeners.add(listener);
+    return () => {
+      this.epicCompletedListeners.delete(listener);
+    };
+  }
+
+  onPatrol(listener: (report: PatrolReport) => void): () => void {
+    this.patrolListeners.add(listener);
+    return () => {
+      this.patrolListeners.delete(listener);
+    };
   }
 
   private getRawTask(id: string): PlanningTask | null {
@@ -451,6 +532,41 @@ export class TaskPlanningStore {
     });
   }
 
+  private maybeAutoCompleteParentEpic(parentId: string | null, now: string): void {
+    if (!parentId) return;
+    const parent = this.getRawTask(parentId);
+    if (!parent || parent.type !== "epic") return;
+    if (isCompletedStatus(parent.status)) return;
+
+    const childRows = this.db
+      .prepare("SELECT * FROM opc_planning_tasks WHERE parent_id = ?")
+      .all(parentId) as unknown as TaskRow[];
+    if (childRows.length === 0) return;
+
+    const allDone = childRows.every((row) =>
+      isCompletedStatus(
+        (PLANNING_TASK_STATUSES.includes(row.status as PlanningTaskStatus)
+          ? row.status
+          : "todo") as PlanningTaskStatus,
+      ),
+    );
+    if (!allDone) return;
+
+    this.db
+      .prepare(
+        `UPDATE opc_planning_tasks
+         SET status = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(now, now, parent.id);
+
+    const completedEpic = this.getTask(parent.id);
+    this.hooks.onEpicCompleted?.(completedEpic);
+    for (const listener of this.epicCompletedListeners) {
+      listener(completedEpic);
+    }
+  }
+
   private insertTaskRow(params: {
     id: string;
     project: string;
@@ -466,6 +582,11 @@ export class TaskPlanningStore {
     assigneeId: string | null;
     assigneeName: string | null;
     sourceRef: string | null;
+    dependsOn: string[];
+    snoozedUntil: string | null;
+    verifyCommand: string;
+    mainlineId: string | null;
+    assetId: string | null;
     metadata: Record<string, unknown>;
     now: string;
   }): PlanningTask {
@@ -475,9 +596,10 @@ export class TaskPlanningStore {
         `INSERT INTO opc_planning_tasks (
           id, project, parent_id, title, description, type, status, priority, tags, due_at,
           assignee_type, assignee_id, assignee_name, pomodoro_count, energy_level,
-          source_ref, latest_run_id, pr_url, token_used, cost_usd, metadata,
-          created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, 0, 0, ?, ?, ?, ?)`,
+          source_ref, latest_run_id, pr_url, token_used, cost_usd,
+          depends_on_json, snoozed_until, verify_command, mainline_id, asset_id,
+          metadata, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         params.id,
@@ -494,6 +616,11 @@ export class TaskPlanningStore {
         params.assigneeId,
         params.assigneeName,
         params.sourceRef,
+        JSON.stringify(params.dependsOn),
+        params.snoozedUntil,
+        params.verifyCommand,
+        params.mainlineId,
+        params.assetId,
         JSON.stringify(params.metadata),
         params.now,
         params.now,
@@ -512,18 +639,26 @@ export class TaskPlanningStore {
     const data = parsed.data;
     const parentId = cleanNullable(data.parentId);
     let inheritedProject: string | undefined;
+    let inheritedMainlineId: string | null = null;
+    let inheritedAssetId: string | null = null;
+    let inheritedVerifyCommand = "";
     if (parentId) {
       const parent = this.getRawTask(parentId);
       if (!parent) {
         throw new ApiError(404, "parent_not_found", `父任务不存在: ${parentId}`);
       }
       inheritedProject = parent.project;
+      inheritedMainlineId = parent.mainlineId;
+      inheritedAssetId = parent.assetId;
+      inheritedVerifyCommand = parent.verifyCommand;
     }
 
+    const id = `tsk_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const dependsOn = dedupeTags(data.dependsOn).filter((depId) => depId !== id);
     const project = data.project?.trim() || inheritedProject || "default";
     const now = nowIso();
-    return this.insertTaskRow({
-      id: `tsk_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+    const created = this.insertTaskRow({
+      id,
       project,
       parentId,
       title: data.title,
@@ -537,9 +672,18 @@ export class TaskPlanningStore {
       assigneeId: cleanNullable(data.assigneeId),
       assigneeName: cleanNullable(data.assigneeName),
       sourceRef: cleanNullable(data.sourceRef),
+      dependsOn,
+      snoozedUntil: cleanNullable(data.snoozedUntil),
+      verifyCommand: (data.verifyCommand ?? inheritedVerifyCommand).trim(),
+      mainlineId: data.mainlineId !== undefined ? cleanNullable(data.mainlineId) : inheritedMainlineId,
+      assetId: data.assetId !== undefined ? cleanNullable(data.assetId) : inheritedAssetId,
       metadata: data.metadata ?? {},
       now,
     });
+    if (isCompletedStatus(created.status)) {
+      this.maybeAutoCompleteParentEpic(parentId, now);
+    }
+    return created;
   }
 
   createEpicWithSubtasks(rawInput: CreateEpicWithSubtasksInput | unknown): CreateEpicWithSubtasksResult {
@@ -552,7 +696,47 @@ export class TaskPlanningStore {
     const epicPriority = data.priority ?? 7;
     const epicTags = dedupeTags(data.tags);
     const sourceRef = cleanNullable(data.sourceRef);
+    const epicDependsOn = dedupeTags(data.dependsOn);
+    const epicVerifyCommand = (data.verifyCommand ?? "").trim();
+    const epicMainlineId = cleanNullable(data.mainlineId);
+    const epicAssetId = cleanNullable(data.assetId);
     const now = nowIso();
+
+    const subtaskIds = data.subtasks.map(() => `tsk_${randomUUID().replace(/-/g, "").slice(0, 12)}`);
+    const resolvedSubtaskDeps: string[][] = data.subtasks.map((sub, i) => {
+      const fromIndices: string[] = [];
+      for (const idx of sub.dependsOnIndices ?? []) {
+        if (idx < 0 || idx >= data.subtasks.length || idx === i) {
+          throw new ApiError(
+            400,
+            "epic_input",
+            `子任务 #${i} 的 dependsOnIndices 包含非法下标 ${idx}`,
+          );
+        }
+        fromIndices.push(subtaskIds[idx]);
+      }
+      return dedupeTags([...(sub.dependsOn ?? []), ...fromIndices]).filter((depId) => depId !== subtaskIds[i]);
+    });
+
+    // Detect dependency cycles among subtasks
+    const idToIndex = new Map<string, number>(subtaskIds.map((sid, idx) => [sid, idx]));
+    const color = new Array<number>(subtaskIds.length).fill(0); // 0=unvisited, 1=visiting, 2=done
+    const hasCycle = (u: number): boolean => {
+      color[u] = 1;
+      for (const depId of resolvedSubtaskDeps[u]) {
+        const v = idToIndex.get(depId);
+        if (v === undefined) continue;
+        if (color[v] === 1) return true;
+        if (color[v] === 0 && hasCycle(v)) return true;
+      }
+      color[u] = 2;
+      return false;
+    };
+    for (let i = 0; i < subtaskIds.length; i++) {
+      if (color[i] === 0 && hasCycle(i)) {
+        throw new ApiError(400, "epic_input", "子任务依赖关系存在循环引用");
+      }
+    }
 
     this.db.exec("BEGIN");
     try {
@@ -572,14 +756,20 @@ export class TaskPlanningStore {
         assigneeId: null,
         assigneeName: null,
         sourceRef,
+        dependsOn: epicDependsOn.filter((depId) => depId !== epicId),
+        snoozedUntil: null,
+        verifyCommand: epicVerifyCommand,
+        mainlineId: epicMainlineId,
+        assetId: epicAssetId,
         metadata: data.metadata ?? {},
         now,
       });
 
       const subtasks: PlanningTask[] = [];
-      for (const sub of data.subtasks) {
+      for (let i = 0; i < data.subtasks.length; i++) {
+        const sub = data.subtasks[i];
         const subTask = this.insertTaskRow({
-          id: `tsk_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+          id: subtaskIds[i],
           project,
           parentId: epicId,
           title: sub.title,
@@ -593,7 +783,12 @@ export class TaskPlanningStore {
           assigneeId: cleanNullable(sub.assigneeId),
           assigneeName: cleanNullable(sub.assigneeName),
           sourceRef,
-          metadata: {},
+          dependsOn: resolvedSubtaskDeps[i],
+          snoozedUntil: null,
+          verifyCommand: (sub.verifyCommand ?? epicVerifyCommand).trim(),
+          mainlineId: sub.mainlineId !== undefined ? cleanNullable(sub.mainlineId) : epicMainlineId,
+          assetId: sub.assetId !== undefined ? cleanNullable(sub.assetId) : epicAssetId,
+          metadata: sub.metadata ?? {},
           now,
         });
         subtasks.push(subTask);
@@ -640,6 +835,14 @@ export class TaskPlanningStore {
     if (filters.assigneeType) {
       clauses.push("assignee_type = ?");
       args.push(filters.assigneeType);
+    }
+    if (filters.mainlineId && filters.mainlineId.trim()) {
+      clauses.push("mainline_id = ?");
+      args.push(filters.mainlineId.trim());
+    }
+    if (filters.assetId && filters.assetId.trim()) {
+      clauses.push("asset_id = ?");
+      args.push(filters.assetId.trim());
     }
 
     if (typeof filters.parentId === "string" && filters.parentId.trim()) {
@@ -772,6 +975,15 @@ export class TaskPlanningStore {
       }
     }
 
+    let nextDependsOn = existing.dependsOn;
+    if (patch.dependsOn !== undefined) {
+      const cleanedDeps = dedupeTags(patch.dependsOn);
+      if (cleanedDeps.includes(id)) {
+        throw new ApiError(400, "invalid_dependency", "任务不能将自身设为前置依赖");
+      }
+      nextDependsOn = cleanedDeps;
+    }
+
     const now = nowIso();
     const nextStatus: PlanningTaskStatus = patch.status ?? existing.status;
     let nextCompletedAt = existing.completedAt;
@@ -799,6 +1011,12 @@ export class TaskPlanningStore {
     const nextPrUrl = patch.prUrl !== undefined ? cleanNullable(patch.prUrl) : existing.prUrl;
     const nextTokenUsed = patch.tokenUsed ?? existing.tokenUsed;
     const nextCostUsd = patch.costUsd !== undefined ? round4(patch.costUsd) : existing.costUsd;
+    const nextSnoozedUntil =
+      patch.snoozedUntil !== undefined ? cleanNullable(patch.snoozedUntil) : existing.snoozedUntil;
+    const nextVerifyCommand =
+      patch.verifyCommand !== undefined ? patch.verifyCommand.trim() : existing.verifyCommand;
+    const nextMainlineId = patch.mainlineId !== undefined ? cleanNullable(patch.mainlineId) : existing.mainlineId;
+    const nextAssetId = patch.assetId !== undefined ? cleanNullable(patch.assetId) : existing.assetId;
     const nextMetadata = patch.metadata ?? existing.metadata;
 
     this.db
@@ -806,8 +1024,9 @@ export class TaskPlanningStore {
         `UPDATE opc_planning_tasks
          SET project = ?, parent_id = ?, title = ?, description = ?, type = ?, status = ?,
              priority = ?, tags = ?, due_at = ?, assignee_type = ?, assignee_id = ?, assignee_name = ?,
-             source_ref = ?, latest_run_id = ?, pr_url = ?, token_used = ?, cost_usd = ?, metadata = ?,
-             updated_at = ?, completed_at = ?
+             source_ref = ?, latest_run_id = ?, pr_url = ?, token_used = ?, cost_usd = ?,
+             depends_on_json = ?, snoozed_until = ?, verify_command = ?, mainline_id = ?, asset_id = ?,
+             metadata = ?, updated_at = ?, completed_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -828,11 +1047,20 @@ export class TaskPlanningStore {
         nextPrUrl,
         nextTokenUsed,
         nextCostUsd,
+        JSON.stringify(nextDependsOn),
+        nextSnoozedUntil,
+        nextVerifyCommand,
+        nextMainlineId,
+        nextAssetId,
         JSON.stringify(nextMetadata),
         now,
         nextCompletedAt,
         id,
       );
+
+    if (isCompletedStatus(nextStatus)) {
+      this.maybeAutoCompleteParentEpic(nextParentId, now);
+    }
 
     return this.getTask(id);
   }
@@ -897,6 +1125,69 @@ export class TaskPlanningStore {
     return this.getTask(id);
   }
 
+  areDependenciesMet(taskId: string): DependencyCheckResult {
+    const task = this.requireRawTask(taskId);
+    if (task.dependsOn.length === 0) {
+      return { met: true, blockingIds: [] };
+    }
+    const blockingIds: string[] = [];
+    for (const depId of task.dependsOn) {
+      const dep = this.getRawTask(depId);
+      if (dep && !isCompletedStatus(dep.status)) {
+        blockingIds.push(depId);
+      }
+    }
+    return {
+      met: blockingIds.length === 0,
+      blockingIds,
+    };
+  }
+
+  snoozeTask(id: string, days = 7): PlanningTaskWithSubtasks {
+    this.requireRawTask(id);
+    const numDays = Number(days);
+    if (!Number.isFinite(numDays) || numDays <= 0) {
+      throw new ApiError(400, "snooze_input", "延后天数必须大于 0");
+    }
+    const now = nowIso();
+    const snoozedUntil = new Date(Date.now() + numDays * MS_PER_DAY).toISOString();
+    this.db
+      .prepare(
+        `UPDATE opc_planning_tasks
+         SET snoozed_until = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(snoozedUntil, now, id);
+    return this.getTask(id);
+  }
+
+  listReadyForAutoDispatch(limit = 20): PlanningTask[] {
+    const safeLimit = clampInt(limit, 20, 1, 500);
+    const now = nowIso();
+    const rows = this.db
+      .prepare(
+        `SELECT t.* FROM opc_planning_tasks t
+         WHERE t.status IN ('todo', 'assigned')
+           AND (t.snoozed_until IS NULL OR t.snoozed_until <= ?)
+           AND (
+             t.type != 'epic'
+             OR NOT EXISTS (SELECT 1 FROM opc_planning_tasks c WHERE c.parent_id = t.id)
+           )
+         ORDER BY t.priority DESC, t.created_at ASC`,
+      )
+      .all(now) as unknown as TaskRow[];
+
+    const ready: PlanningTask[] = [];
+    for (const row of rows) {
+      const task = mapTaskRow(row);
+      if (this.areDependenciesMet(task.id).met) {
+        ready.push(task);
+        if (ready.length >= safeLimit) break;
+      }
+    }
+    return ready;
+  }
+
   async dispatchTask(id: string, rawInput: DispatchTaskInput | unknown): Promise<DispatchTaskResult> {
     const parsed = dispatchSchema.safeParse(rawInput);
     if (!parsed.success) {
@@ -904,6 +1195,15 @@ export class TaskPlanningStore {
     }
     const { agentId, autoCreatePr } = parsed.data;
     const task = this.requireRawTask(id);
+
+    const depCheck = this.areDependenciesMet(id);
+    if (!depCheck.met) {
+      throw new ApiError(
+        409,
+        "dependency_blocked",
+        `前置依赖任务尚未完成: ${depCheck.blockingIds.join(", ")}`,
+      );
+    }
 
     if (!this.hooks.dispatchToAgent) {
       throw new ApiError(503, "dispatch_unconfigured", "尚未接入暗工厂 Agent 派发执行钩子");
@@ -940,6 +1240,8 @@ export class TaskPlanningStore {
     let nextStatus: PlanningTaskStatus = existing.status;
     if (normalized === "pr_open") {
       nextStatus = "pr_open";
+    } else if (normalized === "published") {
+      nextStatus = "published";
     } else if (normalized === "completed" || normalized === "succeeded" || normalized === "done") {
       nextStatus = "review";
     } else if (normalized === "failed" || normalized === "error" || normalized === "cancelled") {
@@ -955,14 +1257,20 @@ export class TaskPlanningStore {
     const nextPrUrl = cleanNullable(event.prUrl) ?? existing.prUrl;
     const nextRunId = cleanNullable(event.runId) ?? existing.latestRunId;
     const now = nowIso();
+    const nextCompletedAt = isCompletedStatus(nextStatus) ? existing.completedAt ?? now : existing.completedAt;
 
     this.db
       .prepare(
         `UPDATE opc_planning_tasks
-         SET status = ?, latest_run_id = ?, pr_url = ?, token_used = ?, cost_usd = ?, updated_at = ?
+         SET status = ?, latest_run_id = ?, pr_url = ?, token_used = ?, cost_usd = ?,
+             updated_at = ?, completed_at = ?
          WHERE id = ?`,
       )
-      .run(nextStatus, nextRunId, nextPrUrl, nextTokens, nextCost, now, existing.id);
+      .run(nextStatus, nextRunId, nextPrUrl, nextTokens, nextCost, now, nextCompletedAt, existing.id);
+
+    if (isCompletedStatus(nextStatus)) {
+      this.maybeAutoCompleteParentEpic(existing.parentId, now);
+    }
 
     return this.getTask(existing.id);
   }
@@ -1073,18 +1381,21 @@ export class TaskPlanningStore {
     const staleRows = this.db
       .prepare(
         `SELECT * FROM opc_planning_tasks
-         WHERE status IN (${placeholders}) AND updated_at < ?
+         WHERE status IN (${placeholders})
+           AND updated_at < ?
+           AND (snoozed_until IS NULL OR snoozed_until <= ?)
          ORDER BY updated_at ASC`,
       )
-      .all(...STALE_WATCH_STATUSES, staleCutoff) as unknown as TaskRow[];
+      .all(...STALE_WATCH_STATUSES, staleCutoff, now) as unknown as TaskRow[];
 
     const failedRows = this.db
       .prepare(
         `SELECT * FROM opc_planning_tasks
          WHERE status = 'failed'
+           AND (snoozed_until IS NULL OR snoozed_until <= ?)
          ORDER BY updated_at DESC`,
       )
-      .all() as unknown as TaskRow[];
+      .all(now) as unknown as TaskRow[];
 
     const staleTasks: StaleTaskAlert[] = staleRows.map((row) => {
       const task = mapTaskRow(row);
@@ -1122,7 +1433,7 @@ export class TaskPlanningStore {
 
     const alerts: StaleTaskAlert[] = [...staleTasks, ...failedTasks];
     let notifiedZoom = false;
-    if (notifyZoomRequested && staleTasks.length > 0 && this.hooks.notifyPatrolToZoom) {
+    if (notifyZoomRequested && alerts.length > 0 && this.hooks.notifyPatrolToZoom) {
       this.hooks.notifyPatrolToZoom(alerts);
       notifiedZoom = true;
     }
@@ -1136,7 +1447,7 @@ export class TaskPlanningStore {
       )
       .run(reportId, staleDays, staleTasks.length, failedTasks.length, JSON.stringify(alerts), notifiedZoom ? 1 : 0, now);
 
-    return {
+    const report: PatrolReport = {
       id: reportId,
       staleDays,
       staleCount: staleTasks.length,
@@ -1147,6 +1458,13 @@ export class TaskPlanningStore {
       notifiedZoom,
       createdAt: now,
     };
+
+    this.hooks.onPatrolReport?.(report);
+    for (const listener of this.patrolListeners) {
+      listener(report);
+    }
+
+    return report;
   }
 
   listPatrolHistory(limit = 10): PatrolReport[] {
@@ -1487,6 +1805,8 @@ export function registerTaskPlanningRoutes(
 
     const filters: TaskListFilters = {
       project: c.req.query("project") || undefined,
+      mainlineId: c.req.query("mainlineId") || undefined,
+      assetId: c.req.query("assetId") || undefined,
       includeSubtasks,
     };
 
@@ -1571,6 +1891,20 @@ export function registerTaskPlanningRoutes(
   app.post(`${base}/tasks/:id/dispatch`, async (c) => {
     const body = await readJsonBody(c);
     return c.json(await store.dispatchTask(c.req.param("id"), body));
+  });
+
+  app.post(`${base}/tasks/:id/snooze`, async (c) => {
+    const body = await readJsonBody(c, true);
+    const parsed = snoozeSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new ApiError(400, "snooze_input", formatZodIssues(parsed.error));
+    }
+    return c.json(store.snoozeTask(c.req.param("id"), parsed.data.days));
+  });
+
+  app.get(`${base}/ready`, (c) => {
+    const limit = clampInt(c.req.query("limit"), 20, 1, 500);
+    return c.json({ tasks: store.listReadyForAutoDispatch(limit) });
   });
 
   app.get(`${base}/roi`, (c) => {

@@ -39,6 +39,7 @@ import { registerDarkFactoryRoutes } from "./dark-factory.ts";
 import { registerTaskPlanningRoutes } from "./task-planning.ts";
 import { registerKnowledgeCanvasRoutes } from "./knowledge-canvas.ts";
 import { registerMetabolismRoutes, toUsd } from "./metabolism.ts";
+import { bootstrapCompanyRuntime, type CompanyRuntime } from "../kernel/bootstrap.ts";
 
 export function addZoomRoutes(app: Hono, store: Store, options: {
   submitToken?: string;
@@ -110,6 +111,7 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
   const securityReviews = new SecurityReviews(store.db);
   const preview = process.env.KUNLUN_PREVIEW === "1" || process.env.DEMO_MODE === "1";
   const hubQuotaPath = process.env.OPC_HUB_QUOTA_DB ?? join(homedir(), ".agent-hub", "hub.db");
+  let companyRef: CompanyRuntime | null = null;
   let pulseCache: { at: number; value: Awaited<ReturnType<ExecutivePulseProvider>> } | null = null;
   const pulseProvider: ExecutivePulseProvider = async () => {
     if (pulseCache && Date.now() - pulseCache.at < 15_000) return pulseCache.value;
@@ -204,8 +206,11 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
       ],
     };
 
+    const kernelPending = companyRef ? companyRef.kernel.decisions.counts().pending : 0;
+    const totalPendingApprovals = pendingMsgs.length + kernelPending;
+
     const companyPulse = {
-      pendingApprovals: pendingMsgs.length,
+      pendingApprovals: totalPendingApprovals,
       onlineMachines,
       totalMachines,
       healthyServices,
@@ -226,7 +231,29 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
     pulseCache = { at: Date.now(), value };
     return value;
   };
-  registerExecutiveBotRoutes(app, store.db, options.user, { pulseProvider });
+  const codingAgentsProvider = () => {
+    try {
+      const rows = store.db
+        .prepare("SELECT DISTINCT id, handle, runtime, last_seen_at FROM agents WHERE paused=0 AND demo=0 ORDER BY handle")
+        .all() as Array<{ id: string; handle: string; runtime: string; last_seen_at?: string | null }>;
+      return rows.map(row => {
+        const online = Boolean(row.last_seen_at && Date.parse(String(row.last_seen_at)) > Date.now() - PRESENCE_MS);
+        return {
+          id: `cli:${row.id}`,
+          name: String(row.handle),
+          kind: "coding_agent_cli" as const,
+          runtime: String(row.runtime || "Coding Agent"),
+          status: online ? ("online" as const) : ("offline" as const),
+          activeWorkCount: 0,
+          completedCount: 0,
+          groupName: "Coding-Agent CLI",
+        };
+      });
+    } catch {
+      return [];
+    }
+  };
+  registerExecutiveBotRoutes(app, store.db, options.user, { pulseProvider, codingAgentsProvider });
   registerRoleBotRoutes(app, store.db, options.user);
 
   // ---- Knowledge-to-Business Full Pipeline Wiring (Providers + Dark Factory + Task Planning + Knowledge Canvas + Metabolism) ----
@@ -353,13 +380,44 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
           body: alert.body,
           ...(alert.choices?.length ? { choices: alert.choices } : {}),
         });
+        const projectKey = alert.folder.split("/")[0] || alert.externalId.replace(/^kill-switch\//, "");
+        if (companyRef) {
+          void companyRef.kernel.decisions.propose({
+            dedupeKey: `commercial:kill_switch:${projectKey}`,
+            domain: "commercial",
+            kind: "kill_switch",
+            riskLevel: "critical",
+            projectOrAssetRef: projectKey,
+            title: alert.title,
+            backgroundSummary: alert.body,
+            whyRecommended: "连续亏损项目默认建议冻结算力派工与预算，避免持续失血；若属战略投入期可明确豁免。",
+            options: [
+              {
+                id: "freeze",
+                label: "立即冻结该项目派工与算力准入",
+                outcome: "approved",
+                handlerKey: "commercial.kill_switch_freeze",
+                payload: { project: projectKey },
+              },
+              {
+                id: "exempt",
+                label: "调整商业模型后豁免恢复",
+                outcome: "rejected",
+                handlerKey: "commercial.kill_switch_exempt",
+                payload: { project: projectKey },
+              },
+            ],
+            recommendedOptionId: "freeze",
+            tags: ["kill-switch", "commercial", projectKey],
+          }).catch(() => {});
+        }
         return { taskId: task.id, messageId: msg.id };
       },
     },
   });
 
   // Bidirectional hook wiring across Dark Factory <-> Task Planning <-> Knowledge Canvas <-> Metabolism
-  darkFactory.hooks.onRunStatusChanged = (run) => {
+  darkFactory.addRunStatusListener((run) => {
     try {
       taskPlanning.syncRunOutcome({
         taskId: run.taskId,
@@ -372,7 +430,7 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
     } catch {
       // Task may have been created ad-hoc outside TaskPlanning.
     }
-  };
+  });
 
   taskPlanning.setHooks({
     listAgents: () =>
@@ -383,11 +441,20 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
         capabilities: a.capabilities,
       })),
     dispatchToAgent: async (task, agentId, autoCreatePr) => {
+      if (companyRef) {
+        const adm = companyRef.kernel.registry.checkAdmission(task.project, {
+          isEmergencyBug: task.type === "bug" && task.priority >= 9,
+        });
+        if (!adm.allowed) {
+          throw new ApiError(409, adm.code ?? "admission_blocked", adm.reason ?? "主线或停服准入限制拒绝派工");
+        }
+      }
       const run = darkFactory.dispatch({
         taskId: task.id,
         taskTitle: task.title,
         taskDescription: task.description,
         project: task.project,
+        verifyCommand: task.verifyCommand || undefined,
         agentId,
         autoCreatePr: Boolean(autoCreatePr),
       });
@@ -518,12 +585,29 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
       return { id };
     },
   });
+  const company = bootstrapCompanyRuntime({
+    db: store.db,
+    app,
+    requireUser: options.user,
+    darkFactory,
+    taskPlanning,
+    commercialHub: commercial,
+    submitToken: options.submitToken,
+    hubQuotaPath,
+  });
+  companyRef = company;
+
   app.get("/api/zoom/messages", c => {
     const messages = delegations.decorate(rawMessages(options.user(c)))
       .sort((a, b) => Number(b.pending) - Number(a.pending) || b.at.localeCompare(a.at));
     const projectFolders = store.db.prepare("SELECT product, name FROM company_projects ORDER BY product,name").all()
       .map(row => row.product + "/" + row.name);
-    return c.json({ messages, products: projects.names(), projectFolders });
+    return c.json({
+      messages,
+      products: projects.names(),
+      projectFolders,
+      pendingDecisions: company.kernel.decisions.counts().pending,
+    });
   });
   app.post("/api/zoom/tasks", async c => {
     requireSubmit(c);
@@ -548,5 +632,5 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
     if (capabilities.task(id)) return c.json(capabilities.reply(id, input, user.name));
     return c.json(zoom.reply(id, input, user.name));
   });
-  return { delegations, providers, darkFactory, taskPlanning, knowledgeCanvas, metabolism };
+  return { delegations, providers, darkFactory, taskPlanning, knowledgeCanvas, metabolism, company };
 }

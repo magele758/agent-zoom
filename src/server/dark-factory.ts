@@ -12,6 +12,7 @@ import {
   type AgentRegistryStatus,
   type AgentRunRecord,
   type AgentRunStatus,
+  type AgentRunVerification,
   type AgentType,
   type AuditStatus,
   type CircuitBreakerReason,
@@ -47,12 +48,17 @@ export const SENSITIVE_ENV_KEYS = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "STRIPE_SECRET_KEY",
+  "STRIPE_WEBHOOK_SECRET",
   "LEMON_API_KEY",
+  "LEMON_WEBHOOK_SECRET",
   "HUPI_APP_SECRET",
+  "LLM_API_KEY",
+  "EMBEDDING_API_KEY",
   "OPC_LLM_API_KEY",
   "OPC_EMBEDDING_API_KEY",
   "OPC_WORKFLOW_API_KEY",
   "OPC_DISTRIBUTION_API_KEY",
+  "OPC_BACKUP_PASSPHRASE",
   "GITHUB_TOKEN",
   "GH_TOKEN",
 ] as const;
@@ -71,6 +77,7 @@ const SANDBOX_RC_NAME = ".sandboxrc";
 export interface DarkFactoryHooks {
   onRunStatusChanged?: (run: AgentRunRecord) => void;
   resolveRepoPath?: (project: string) => string | null;
+  resolveVerifyCommand?: (project: string) => string | null;
 }
 
 export interface DarkFactoryOptions {
@@ -113,6 +120,7 @@ const dispatchSchema = z.object({
   repoPath: z.string().trim().max(500).optional(),
   agentId: z.string().trim().min(1, "agentId 不能为空").max(120),
   autoCreatePr: z.boolean().default(false),
+  verifyCommand: z.string().trim().max(2000).optional(),
 });
 
 const cleanupWorktreesSchema = z
@@ -556,7 +564,21 @@ function rowToAgent(row: Record<string, unknown>): AgentRecord {
   };
 }
 
+const MAX_VERIFY_OUTPUT_BYTES = 256 * 1024;
+
+function appendBounded(current: string, chunk: string, maxChars = MAX_VERIFY_OUTPUT_BYTES): string {
+  if (current.length >= maxChars) return current;
+  const remaining = maxChars - current.length;
+  return chunk.length <= remaining ? current + chunk : current + chunk.slice(0, remaining);
+}
+
 function rowToRun(row: Record<string, unknown>): AgentRunRecord {
+  const errText =
+    row.error_summary != null
+      ? String(row.error_summary)
+      : row.error_message != null
+        ? String(row.error_message)
+        : null;
   return {
     id: String(row.id),
     taskId: String(row.task_id),
@@ -574,13 +596,16 @@ function rowToRun(row: Record<string, unknown>): AgentRunRecord {
     costUsd: Number(row.cost_usd ?? 0),
     retryCount: Number(row.retry_count ?? 0),
     logFilePath: row.log_file_path == null ? null : String(row.log_file_path),
-    errorSummary: row.error_summary == null ? null : String(row.error_summary),
+    errorSummary: errText,
+    errorMessage: errText,
     prUrl: row.pr_url == null ? null : String(row.pr_url),
     changedFiles: safeJsonParse<string[]>(row.changed_files, []),
     protectedViolations: safeJsonParse<string[]>(row.protected_violations, []),
     circuitBreakerReason:
       row.circuit_breaker_reason == null ? null : (String(row.circuit_breaker_reason) as CircuitBreakerReason),
     autoCreatePr: Number(row.auto_create_pr ?? 0) === 1,
+    verifyCommand: String(row.verify_command ?? ""),
+    verification: safeJsonParse<AgentRunVerification | null>(row.verification_json, null),
     startedAt: row.started_at == null ? null : String(row.started_at),
     completedAt: row.completed_at == null ? null : String(row.completed_at),
     createdAt: String(row.created_at),
@@ -589,9 +614,12 @@ function rowToRun(row: Record<string, unknown>): AgentRunRecord {
 }
 
 function rowToAudit(row: Record<string, unknown>): FactoryAuditRecord {
+  const kind = String(row.kind);
+  const action = row.action && String(row.action) ? String(row.action) : kind;
   return {
     id: String(row.id),
-    kind: String(row.kind),
+    kind,
+    action,
     status: String(row.status) as AuditStatus,
     summary: String(row.summary),
     details: safeJsonParse<FactoryAuditDetails>(row.details, {
@@ -615,6 +643,7 @@ export class DarkFactoryStore {
   private activeRuns = new Map<string, ActiveRunRuntime>();
   private cancelRequested = new Set<string>();
   private logListeners = new Map<string, Set<(event: RunStreamEvent) => void>>();
+  private runStatusListeners = new Set<(run: AgentRunRecord) => void>();
 
   constructor(
     private db: DatabaseSync,
@@ -656,6 +685,7 @@ export class DarkFactoryStore {
         repo_path TEXT,
         worktree_path TEXT,
         branch_name TEXT,
+        base_commit TEXT,
         status TEXT NOT NULL DEFAULT 'queued',
         pid INTEGER,
         token_used INTEGER NOT NULL DEFAULT 0,
@@ -663,11 +693,14 @@ export class DarkFactoryStore {
         retry_count INTEGER NOT NULL DEFAULT 0,
         log_file_path TEXT,
         error_summary TEXT,
+        error_message TEXT,
         pr_url TEXT,
         changed_files TEXT NOT NULL DEFAULT '[]',
         protected_violations TEXT NOT NULL DEFAULT '[]',
         circuit_breaker_reason TEXT,
         auto_create_pr INTEGER NOT NULL DEFAULT 0,
+        verify_command TEXT NOT NULL DEFAULT '',
+        verification_json TEXT,
         started_at TEXT,
         completed_at TEXT,
         created_at TEXT NOT NULL,
@@ -681,6 +714,7 @@ export class DarkFactoryStore {
       CREATE TABLE IF NOT EXISTS opc_factory_audits (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
+        action TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL,
         summary TEXT NOT NULL,
         details TEXT NOT NULL DEFAULT '{}',
@@ -688,11 +722,117 @@ export class DarkFactoryStore {
       );
     `);
 
-    // Defensive migration in case table pre-existed without task_description.
-    const cols = this.db.prepare("PRAGMA table_info(opc_agent_runs)").all() as Array<{ name?: string }>;
-    if (!cols.some((col) => col.name === "task_description")) {
+    // Safe idempotent column migrations for pre-existing databases.
+    const cols = new Set(
+      (this.db.prepare("PRAGMA table_info(opc_agent_runs)").all() as Array<{ name?: string }>)
+        .map((col) => col.name)
+        .filter((name): name is string => Boolean(name)),
+    );
+    if (!cols.has("task_description")) {
       this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN task_description TEXT NOT NULL DEFAULT ''");
     }
+    if (!cols.has("error_message")) {
+      this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN error_message TEXT");
+    }
+    if (!cols.has("verify_command")) {
+      this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN verify_command TEXT NOT NULL DEFAULT ''");
+    }
+    if (!cols.has("verification_json")) {
+      this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN verification_json TEXT");
+    }
+    if (!cols.has("base_commit")) {
+      this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN base_commit TEXT");
+    }
+
+    const auditCols = new Set(
+      (this.db.prepare("PRAGMA table_info(opc_factory_audits)").all() as Array<{ name?: string }>)
+        .map((col) => col.name)
+        .filter((name): name is string => Boolean(name)),
+    );
+    if (!auditCols.has("action")) {
+      this.db.exec("ALTER TABLE opc_factory_audits ADD COLUMN action TEXT NOT NULL DEFAULT ''");
+    }
+
+    // Startup Orphan Recovery: reclaim any leaked 'running' slots from prior process crash/restart.
+    this.recoverOrphanedRuns();
+  }
+
+  addRunStatusListener(listener: (run: AgentRunRecord) => void): () => void {
+    this.runStatusListeners.add(listener);
+    return () => {
+      this.runStatusListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Reclaims orphaned 'running' rows in opc_agent_runs that have no live process in this.activeRuns.
+   * Safe to run both at server startup and periodically from Ops watchdog.
+   */
+  recoverOrphanedRuns(): number {
+    const runningRows = this.db
+      .prepare("SELECT id, agent_id FROM opc_agent_runs WHERE status = 'running'")
+      .all() as Array<{ id?: string; agent_id?: string }>;
+
+    const orphans = runningRows.filter((r) => r.id && !this.activeRuns.has(String(r.id)));
+    if (orphans.length === 0) return 0;
+
+    const ts = nowIso();
+    const msg = "服务重启自动回收孤儿运行槽位";
+    const recoveredRunIds: string[] = [];
+
+    const updateStmt = this.db.prepare(
+      `UPDATE opc_agent_runs
+       SET status = 'failed',
+           error_summary = ?,
+           error_message = ?,
+           completed_at = ?,
+           updated_at = ?
+       WHERE id = ? AND status = 'running'`,
+    );
+
+    for (const row of orphans) {
+      const runId = String(row.id);
+      const res = updateStmt.run(msg, msg, ts, ts, runId);
+      if (Number(res.changes ?? 0) > 0) {
+        recoveredRunIds.push(runId);
+        if (row.agent_id) {
+          this.syncAgentStatus(String(row.agent_id), "idle");
+        }
+        try {
+          this.notifyRunChanged(this.getRun(runId));
+        } catch {
+          // ignore hook errors during recovery
+        }
+      }
+    }
+
+    if (recoveredRunIds.length === 0) return 0;
+
+    const auditId = `aud_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const details: FactoryAuditDetails = {
+      repoRoot: this.defaultRepoRoot,
+      protectedPaths: this.providers.get().system.protectedPaths,
+      changedFiles: [],
+      violations: [],
+      isGitRepo: false,
+      recentViolationsCount: 0,
+      action: "orphan_recovered",
+      recoveredRunIds,
+      recoveredCount: recoveredRunIds.length,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO opc_factory_audits (id, kind, action, status, summary, details, created_at)
+         VALUES (?, 'orphan_recovered', 'orphan_recovered', 'warning', ?, ?, ?)`,
+      )
+      .run(
+        auditId,
+        `服务重启自动回收 ${recoveredRunIds.length} 个孤儿运行槽位（${recoveredRunIds.join(", ")}）`,
+        JSON.stringify(details),
+        ts,
+      );
+
+    return recoveredRunIds.length;
   }
 
   // ---- Agent Registry CRUD ----
@@ -863,6 +1003,13 @@ export class DarkFactoryStore {
       (input.repoPath && input.repoPath.trim()) ||
       (input.project ? this.hooks.resolveRepoPath?.(input.project) ?? null : null);
 
+    const resolvedVerifyCommand =
+      input.verifyCommand !== undefined
+        ? input.verifyCommand.trim()
+        : input.project
+          ? (this.hooks.resolveVerifyCommand?.(input.project)?.trim() ?? "")
+          : "";
+
     const id = `run_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
     const ts = nowIso();
 
@@ -871,10 +1018,10 @@ export class DarkFactoryStore {
         `INSERT INTO opc_agent_runs (
           id, task_id, task_title, task_description, project, agent_id, agent_name,
           repo_path, worktree_path, branch_name, status, pid, token_used, cost_usd,
-          retry_count, log_file_path, error_summary, pr_url, changed_files,
-          protected_violations, circuit_breaker_reason, auto_create_pr,
+          retry_count, log_file_path, error_summary, error_message, pr_url, changed_files,
+          protected_violations, circuit_breaker_reason, auto_create_pr, verify_command, verification_json,
           started_at, completed_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'queued', NULL, 0, 0, 0, NULL, NULL, NULL, '[]', '[]', NULL, ?, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'queued', NULL, 0, 0, 0, NULL, NULL, NULL, NULL, '[]', '[]', NULL, ?, ?, NULL, NULL, NULL, ?, ?)`,
       )
       .run(
         id,
@@ -886,6 +1033,7 @@ export class DarkFactoryStore {
         agent.name,
         resolvedRepoPath ? resolve(resolvedRepoPath) : null,
         input.autoCreatePr ? 1 : 0,
+        resolvedVerifyCommand,
         ts,
         ts,
       );
@@ -981,10 +1129,10 @@ export class DarkFactoryStore {
     this.db
       .prepare(
         `UPDATE opc_agent_runs
-         SET status = 'failed', error_summary = ?, completed_at = ?, updated_at = ?
+         SET status = 'failed', error_summary = ?, error_message = ?, completed_at = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .run(summary, ts, ts, runId);
+      .run(summary, summary, ts, ts, runId);
     const updated = this.getRun(runId);
     this.notifyRunChanged(updated);
     this.emitStreamEvent(runId, { type: "done", run: updated });
@@ -1077,8 +1225,10 @@ export class DarkFactoryStore {
       runtime.isGitWorktree = true;
 
       this.db
-        .prepare("UPDATE opc_agent_runs SET repo_path = ?, worktree_path = ?, branch_name = ?, updated_at = ? WHERE id = ?")
-        .run(repoRoot, targetDir, branchName, nowIso(), run.id);
+        .prepare(
+          "UPDATE opc_agent_runs SET repo_path = ?, worktree_path = ?, branch_name = ?, base_commit = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(repoRoot, targetDir, branchName, baseCommit, nowIso(), run.id);
 
       this.appendLog(runtime, "system", `已创建隔离 Git Worktree：${targetDir}（分支 ${branchName}）`);
       return { workdir: targetDir, branchName, isGitWorktree: true };
@@ -1157,6 +1307,7 @@ export class DarkFactoryStore {
       changedFiles?: string[];
       protectedViolations?: string[];
       circuitBreakerReason?: CircuitBreakerReason | null;
+      verification?: AgentRunVerification | null;
       systemMessage?: string;
     },
   ): AgentRunRecord {
@@ -1175,6 +1326,7 @@ export class DarkFactoryStore {
     }
 
     const ts = nowIso();
+    const errText = update.errorSummary ?? null;
     this.db
       .prepare(
         `UPDATE opc_agent_runs SET
@@ -1183,10 +1335,12 @@ export class DarkFactoryStore {
           cost_usd = ?,
           retry_count = ?,
           error_summary = ?,
+          error_message = ?,
           pr_url = COALESCE(?, pr_url),
           changed_files = ?,
           protected_violations = ?,
           circuit_breaker_reason = ?,
+          verification_json = COALESCE(?, verification_json),
           completed_at = ?,
           updated_at = ?
          WHERE id = ?`,
@@ -1196,11 +1350,13 @@ export class DarkFactoryStore {
         runtime.tokenUsed,
         roundUsd(runtime.costUsd),
         runtime.retryCount,
-        update.errorSummary ?? null,
+        errText,
+        errText,
         update.prUrl ?? null,
         JSON.stringify(update.changedFiles ?? []),
         JSON.stringify(update.protectedViolations ?? []),
         update.circuitBreakerReason ?? null,
+        update.verification ? JSON.stringify(update.verification) : null,
         ts,
         ts,
         runtime.runId,
@@ -1424,7 +1580,7 @@ export class DarkFactoryStore {
         }
         if (runtime.finalized) return;
 
-        void this.handleProcessExit(runtime, run, workspace, code, signal);
+        void this.handleProcessExit(runtime, run, agent, workspace, code, signal);
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1436,14 +1592,146 @@ export class DarkFactoryStore {
     }
   }
 
+  private async runExternalVerification(
+    runtime: ActiveRunRuntime,
+    run: AgentRunRecord,
+    agent: AgentRecord,
+    workspace: { workdir: string; branchName: string | null },
+    verifyCommand: string,
+  ): Promise<AgentRunVerification> {
+    const timeoutMs = Math.max(100, Math.min(Math.round(agent.maxDurationSecs * 1000), 300_000));
+    const env = buildSandboxEnv({
+      taskId: run.taskId,
+      runId: run.id,
+      worktreePath: workspace.workdir,
+      branchName: workspace.branchName,
+    });
+
+    this.appendLog(runtime, "system", `开始执行外部确定性校验：${verifyCommand}`);
+    const started = Date.now();
+
+    const result = await new Promise<{ exitCode: number; stdout: string; stderr: string; durationMs: number }>((res) => {
+      let stdout = "";
+      let stderr = "";
+      let stdoutLineBuf = "";
+      let stderrLineBuf = "";
+      let timedOut = false;
+      let settled = false;
+
+      const finish = (exitCode: number) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (stdoutLineBuf.trim() && !runtime.finalized) {
+          this.appendLog(runtime, "stdout", `[verify] ${stdoutLineBuf}`);
+        }
+        if (stderrLineBuf.trim() && !runtime.finalized) {
+          this.appendLog(runtime, "stderr", `[verify] ${stderrLineBuf}`);
+        }
+        res({
+          exitCode,
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+          durationMs: Date.now() - started,
+        });
+      };
+
+      let verifyChild: ChildProcess;
+      try {
+        verifyChild = spawn("/bin/sh", ["-lc", verifyCommand], {
+          cwd: workspace.workdir,
+          env,
+          detached: process.platform !== "win32",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        stderr = msg;
+        if (!runtime.finalized) {
+          this.appendLog(runtime, "stderr", `[verify] ${msg}`);
+        }
+        res({ exitCode: 127, stdout: "", stderr: msg, durationMs: Date.now() - started });
+        return;
+      }
+
+      runtime.child = verifyChild;
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        forceKillChild(verifyChild);
+      }, timeoutMs);
+
+      verifyChild.stdout?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        stdout = appendBounded(stdout, text);
+        stdoutLineBuf += text;
+        const lines = stdoutLineBuf.split(/\r?\n/);
+        stdoutLineBuf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (runtime.finalized) break;
+          if (line.length > 0) this.appendLog(runtime, "stdout", `[verify] ${line}`);
+        }
+      });
+
+      verifyChild.stderr?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        stderr = appendBounded(stderr, text);
+        stderrLineBuf += text;
+        const lines = stderrLineBuf.split(/\r?\n/);
+        stderrLineBuf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (runtime.finalized) break;
+          if (line.length > 0) this.appendLog(runtime, "stderr", `[verify] ${line}`);
+        }
+      });
+
+      verifyChild.on("error", (err) => {
+        stderr = appendBounded(stderr, `\n${err.message}`);
+        finish(127);
+      });
+
+      verifyChild.on("close", (code) => {
+        if (timedOut) {
+          stderr = appendBounded(stderr, `\nverification timed out after ${timeoutMs}ms`);
+          finish(124);
+          return;
+        }
+        finish(typeof code === "number" ? code : 1);
+      });
+    });
+
+    const verification: AgentRunVerification = {
+      command: verifyCommand,
+      passed: result.exitCode === 0,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      durationMs: result.durationMs,
+    };
+
+    this.db
+      .prepare("UPDATE opc_agent_runs SET verification_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(verification), nowIso(), run.id);
+
+    return verification;
+  }
+
   private async handleProcessExit(
     runtime: ActiveRunRuntime,
     run: AgentRunRecord,
+    agent: AgentRecord,
     workspace: { workdir: string; branchName: string | null; isGitWorktree: boolean },
     code: number | null,
     signal: NodeJS.Signals | null,
   ): Promise<void> {
     if (runtime.finalized) return;
+
+    // Agent child has exited; disarm agent process duration watchdog before running post-exit gates.
+    if (runtime.timeoutHandle) {
+      clearTimeout(runtime.timeoutHandle);
+      runtime.timeoutHandle = null;
+    }
+    runtime.child = null;
 
     if (code !== 0) {
       const summary =
@@ -1457,10 +1745,28 @@ export class DarkFactoryStore {
       return;
     }
 
+    const verifyCommand = (run.verifyCommand ?? "").trim();
+
     // Exit code 0 — inspect Git Worktree if applicable
     if (!workspace.isGitWorktree) {
+      let verification: AgentRunVerification | null = null;
+      if (verifyCommand) {
+        verification = await this.runExternalVerification(runtime, run, agent, workspace, verifyCommand);
+        if (runtime.finalized || this.cancelRequested.has(run.id)) return;
+        if (!verification.passed) {
+          const errMsg = `外部确定性校验未通过 (exit ${verification.exitCode})`;
+          this.finalizeRun(runtime, {
+            status: "failed",
+            errorSummary: errMsg,
+            verification,
+            systemMessage: `[VERIFY_FAILED] ${errMsg}`,
+          });
+          return;
+        }
+      }
       this.finalizeRun(runtime, {
         status: "completed",
+        verification,
         systemMessage: "非 Git 沙盒执行完成 (exit code 0)。",
       });
       return;
@@ -1494,10 +1800,52 @@ export class DarkFactoryStore {
       return;
     }
 
-    // 3. Valid output — optionally push & create PR when autoCreatePr is enabled
+    // 3. External deterministic verification gate (verifyCommand)
+    let verification: AgentRunVerification | null = null;
+    if (verifyCommand) {
+      verification = await this.runExternalVerification(runtime, run, agent, workspace, verifyCommand);
+      if (runtime.finalized || this.cancelRequested.has(run.id)) return;
+      if (!verification.passed) {
+        const errMsg = `外部确定性校验未通过 (exit ${verification.exitCode})`;
+        this.finalizeRun(runtime, {
+          status: "failed",
+          errorSummary: errMsg,
+          changedFiles: gitChanges.changedFiles,
+          protectedViolations: [],
+          verification,
+          systemMessage: `[VERIFY_FAILED] ${errMsg}，已拦截完工与自动 PR。`,
+        });
+        return;
+      }
+      this.appendLog(
+        runtime,
+        "system",
+        `[VERIFY_PASSED] 外部确定性校验通过 (${verification.durationMs}ms)。`,
+      );
+    }
+
+    // Re-collect changes in case verifyCommand generated/cleaned files, and verify protected paths again
+    const postVerifyChanges = verifyCommand
+      ? await collectGitChanges(workspace.workdir, runtime.baseCommit)
+      : gitChanges;
+    const postViolations = matchProtectedPaths(postVerifyChanges.changedFiles, protectedPaths);
+    if (postViolations.length > 0) {
+      this.finalizeRun(runtime, {
+        status: "failed",
+        changedFiles: postVerifyChanges.changedFiles,
+        protectedViolations: postViolations,
+        circuitBreakerReason: "protected_path_violation",
+        verification,
+        errorSummary: `自举安全拦截：改动触碰人类独占路径（${postViolations.join(", ")}），已禁止自动创建 PR`,
+        systemMessage: `[PROTECTED_PATH_VIOLATION] 检测到受保护路径变更：${postViolations.join(", ")}，已拦截自动 PR。`,
+      });
+      return;
+    }
+
+    // 4. Valid output — optionally push & create PR when autoCreatePr is enabled
     let prUrl: string | null = null;
     let finalStatus: AgentRunStatus = "completed";
-    let systemMessage = `完工检测通过：新 commit ${gitChanges.newCommitCount} 个，变更文件 ${gitChanges.changedFiles.length} 个。`;
+    let systemMessage = `完工检测通过：新 commit ${postVerifyChanges.newCommitCount} 个，变更文件 ${postVerifyChanges.changedFiles.length} 个。`;
 
     if (run.autoCreatePr && workspace.branchName) {
       const prAttempt = await this.tryPushAndCreatePr({
@@ -1506,9 +1854,9 @@ export class DarkFactoryStore {
         taskDescription: run.taskDescription,
         workdir: workspace.workdir,
         branchName: workspace.branchName,
-        newCommitCount: gitChanges.newCommitCount,
-        dirtyFiles: gitChanges.dirtyFiles,
-        changedFiles: gitChanges.changedFiles,
+        newCommitCount: postVerifyChanges.newCommitCount,
+        dirtyFiles: postVerifyChanges.dirtyFiles,
+        changedFiles: postVerifyChanges.changedFiles,
       });
 
       if (prAttempt.ok) {
@@ -1523,10 +1871,117 @@ export class DarkFactoryStore {
     this.finalizeRun(runtime, {
       status: finalStatus,
       prUrl,
-      changedFiles: gitChanges.changedFiles,
+      changedFiles: postVerifyChanges.changedFiles,
       protectedViolations: [],
+      verification,
       systemMessage,
     });
+  }
+
+  /**
+   * Stages and commits any uncommitted changes (excluding .sandboxrc) in the run's isolated Git worktree,
+   * even if the agent already created one or more partial commits during execution.
+   */
+  async commitWorktreeChanges(
+    runId: string,
+  ): Promise<{ branchName: string; headSha: string; commitCount: number }> {
+    const row = this.db.prepare("SELECT * FROM opc_agent_runs WHERE id = ?").get(runId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) {
+      throw new ApiError(404, "run_not_found", `找不到执行记录：${runId}`);
+    }
+    const run = rowToRun(row);
+    if (!run.worktreePath || !run.branchName || !existsSync(run.worktreePath)) {
+      throw new ApiError(400, "no_worktree", "找不到对应的 Git Worktree 或分支（可能非 Git 运行或已清理）");
+    }
+    if (!(await isGitRepository(run.worktreePath))) {
+      throw new ApiError(400, "no_worktree", `路径 ${run.worktreePath} 不是有效的 Git Worktree`);
+    }
+
+    let baseCommit: string | null =
+      (row.base_commit != null && String(row.base_commit)) ||
+      this.activeRuns.get(runId)?.baseCommit ||
+      null;
+    if (!baseCommit && run.repoPath && (await isGitRepository(run.repoPath))) {
+      try {
+        const repoHead = await execGit(run.repoPath, ["rev-parse", "HEAD"], 5_000);
+        baseCommit = await execGit(run.worktreePath, ["merge-base", "HEAD", repoHead], 5_000);
+      } catch {
+        baseCommit = null;
+      }
+    }
+
+    const before = await collectGitChanges(run.worktreePath, baseCommit);
+    const allChanged = [...new Set([...run.changedFiles, ...before.changedFiles])].sort();
+    const protectedPaths = this.providers.get().system.protectedPaths;
+    const violations = matchProtectedPaths(allChanged, protectedPaths);
+    if (violations.length > 0) {
+      this.db
+        .prepare(
+          `UPDATE opc_agent_runs
+           SET protected_violations = ?, circuit_breaker_reason = 'protected_path_violation', updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(JSON.stringify(violations), nowIso(), run.id);
+      throw new ApiError(
+        403,
+        "protected_path_violation",
+        `自举安全拦截：改动触碰人类独占路径（${violations.join(", ")}），禁止提交工作树变更`,
+      );
+    }
+
+    let committedDirty = false;
+    if (before.dirtyFiles.length > 0) {
+      await execGit(run.worktreePath, ["add", "-A"], 15_000);
+      // Always unstage .sandboxrc if present so sandbox metadata never leaks into git commits
+      try {
+        await execGit(run.worktreePath, ["reset", "HEAD", "--", SANDBOX_RC_NAME], 10_000);
+      } catch {
+        try {
+          await execGit(run.worktreePath, ["rm", "--cached", "--ignore-unmatch", "--", SANDBOX_RC_NAME], 10_000);
+        } catch {
+          // ignore
+        }
+      }
+
+      const stagedNames = await execGit(run.worktreePath, ["diff", "--cached", "--name-only"], 10_000);
+      if (stagedNames.trim().length > 0) {
+        await execGit(
+          run.worktreePath,
+          [
+            "-c",
+            "user.name=OPC Dark Factory",
+            "-c",
+            "user.email=dark-factory@opc.local",
+            "commit",
+            "-m",
+            `feat(factory): ${run.taskTitle}`,
+          ],
+          15_000,
+        );
+        committedDirty = true;
+      }
+    }
+
+    const after = committedDirty ? await collectGitChanges(run.worktreePath, baseCommit) : before;
+    const mergedFiles = [...new Set([...allChanged, ...after.changedFiles])].sort();
+    if (mergedFiles.length !== run.changedFiles.length) {
+      this.db
+        .prepare("UPDATE opc_agent_runs SET changed_files = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(mergedFiles), nowIso(), run.id);
+    }
+
+    const headSha = await execGit(run.worktreePath, ["rev-parse", "HEAD"], 10_000);
+    const commitCount = baseCommit
+      ? after.newCommitCount
+      : before.newCommitCount + (committedDirty ? 1 : 0);
+
+    return {
+      branchName: run.branchName,
+      headSha,
+      commitCount,
+    };
   }
 
   private async tryPushAndCreatePr(params: {
@@ -1542,6 +1997,22 @@ export class DarkFactoryStore {
     body?: string;
     baseBranch?: string;
   }): Promise<{ ok: true; prUrl: string } | { ok: false; reason: string; code: string }> {
+    // Stage & commit any remaining dirty files even if the agent already made partial commits
+    if (params.dirtyFiles.length > 0) {
+      try {
+        await this.commitWorktreeChanges(params.runId);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === "protected_path_violation") {
+          return { ok: false, code: "protected_path_violation", reason: err.message };
+        }
+        return {
+          ok: false,
+          code: "git_commit_failed",
+          reason: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
     let remoteUrl = "";
     try {
       remoteUrl = await execGit(params.workdir, ["remote", "get-url", "origin"], 5_000);
@@ -1550,32 +2021,6 @@ export class DarkFactoryStore {
     }
     if (!remoteUrl) {
       return { ok: false, code: "no_git_remote", reason: "仓库未配置 remote origin" };
-    }
-
-    // If worktree has uncommitted changes and zero commits yet, commit changed files (excluding .sandboxrc)
-    if (params.newCommitCount === 0 && params.dirtyFiles.length > 0) {
-      try {
-        await execGit(params.workdir, ["add", "--", ...params.dirtyFiles], 15_000);
-        await execGit(
-          params.workdir,
-          [
-            "-c",
-            "user.name=OPC Dark Factory",
-            "-c",
-            "user.email=dark-factory@opc.local",
-            "commit",
-            "-m",
-            `feat(factory): ${params.taskTitle}`,
-          ],
-          15_000,
-        );
-      } catch (err) {
-        return {
-          ok: false,
-          code: "git_commit_failed",
-          reason: err instanceof Error ? err.message : String(err),
-        };
-      }
     }
 
     try {
@@ -1736,6 +2181,13 @@ export class DarkFactoryStore {
     } catch {
       // Never allow external hook error to crash scheduler
     }
+    for (const listener of [...this.runStatusListeners]) {
+      try {
+        listener(run);
+      } catch {
+        // Isolate subscriber errors
+      }
+    }
   }
 
   killRun(runId: string): AgentRunRecord {
@@ -1750,7 +2202,7 @@ export class DarkFactoryStore {
       this.db
         .prepare(
           `UPDATE opc_agent_runs
-           SET status = 'cancelled', error_summary = '排队中已被人工取消', completed_at = ?, updated_at = ?
+           SET status = 'cancelled', error_summary = '排队中已被人工取消', error_message = '排队中已被人工取消', completed_at = ?, updated_at = ?
            WHERE id = ? AND status = 'queued'`,
         )
         .run(ts, ts, runId);
@@ -1785,7 +2237,7 @@ export class DarkFactoryStore {
     this.db
       .prepare(
         `UPDATE opc_agent_runs
-         SET status = 'cancelled', error_summary = '已被人工终止', completed_at = ?, updated_at = ?
+         SET status = 'cancelled', error_summary = '已被人工终止', error_message = '已被人工终止', completed_at = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(ts, ts, runId);
@@ -1807,6 +2259,7 @@ export class DarkFactoryStore {
       repoPath: original.repoPath ?? undefined,
       agentId: original.agentId,
       autoCreatePr: original.autoCreatePr,
+      verifyCommand: original.verifyCommand || undefined,
     });
   }
 

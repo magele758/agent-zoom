@@ -14,10 +14,14 @@ export const SECRET_MASK = "********";
 export const LOCAL_VECTOR_DIMENSIONS = 256;
 
 export const DEFAULT_PROTECTED_PATHS = [
+  "src/kernel/",
+  "src/domains/factory/",
+  "src/domains/strategy/",
   "src/server/workflow/",
   "src/server/dark-factory.ts",
   "src/server/providers.ts",
   "src/server/security-department.ts",
+  "package.json",
 ];
 
 export const DEFAULT_DISTRIBUTION_CHANNELS = [

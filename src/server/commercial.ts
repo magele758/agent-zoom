@@ -380,6 +380,7 @@ const closedLoopSchema = z.strictObject({
   currency: z.string().regex(/^[A-Z]{3}$/).default("USD"),
   grossMinor: z.number().int().positive().max(10_000_000).default(2900),
   llmCostMinor: z.number().int().nonnegative().max(10_000_000).default(180),
+  sandbox: z.boolean().default(false),
 });
 
 export type CommercialEndpoints = {
@@ -539,6 +540,22 @@ export class CommercialHubService {
       )
       .run(JSON.stringify(next), next.updatedAt);
     return next;
+  }
+
+  serviceOrigins() {
+    return this.origins();
+  }
+
+  lastSandboxReceipt(): Record<string, unknown> | null {
+    const row = this.db
+      .prepare("SELECT value FROM opc_governance_kv WHERE key='closed_loop_sandbox_receipt'")
+      .get() as { value?: string } | undefined;
+    if (!row?.value) return null;
+    try {
+      return JSON.parse(String(row.value)) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   }
 
   lastAnalytics(): AnalyticsSyncSnapshot | null {
@@ -1179,23 +1196,28 @@ export class CommercialHubService {
   async runClosedLoopVerification(rawInput: unknown = {}) {
     const input = parseInput(closedLoopSchema, rawInput ?? {});
     const pilot = this.pilot();
-    const product = input.product || pilot.product;
+    const isSandbox = input.sandbox === true;
     const slug = input.slug || pilot.slug;
+    const product = isSandbox ? `sandbox-pilot-${slug}` : input.product || pilot.product;
     const origins = this.origins();
 
-    this.bootstrapCompany();
+    if (!isSandbox) {
+      this.bootstrapCompany();
+    }
     await this.ensureServices();
 
     const stamp = Date.now().toString(36);
-    const customerId = input.customerId || `pilot-cust-${stamp}`;
-    const orderId = `ORD-${stamp.toUpperCase()}`;
+    const customerId = input.customerId || (isSandbox ? `sandbox-cust-${stamp}` : `pilot-cust-${stamp}`);
+    const orderId = isSandbox ? `SBX-${stamp.toUpperCase()}` : `ORD-${stamp.toUpperCase()}`;
     const baseTs = Date.now();
     const t0 = new Date(baseTs - 120_000).toISOString();
     const t1 = new Date(baseTs - 60_000).toISOString();
     const t2 = new Date(baseTs).toISOString();
 
-    const applied = this.applyPlaybook("flagship-extension-monetization", { startTrial: true });
-    const trialId = applied.trial?.id;
+    const applied = isSandbox
+      ? null
+      : this.applyPlaybook("flagship-extension-monetization", { startTrial: true });
+    const trialId = applied?.trial?.id;
 
     // 1. GTM: Generate compliance + multi-channel UTM bundle + record acquisition
     const gtmCampaign = await postJson(origins.gtm, "/api/v1/repurpose", {
@@ -1219,7 +1241,10 @@ export class CommercialHubService {
       reference: acqRef,
     });
 
-    if (!this.db.prepare("SELECT 1 FROM growth_events WHERE product=? AND event_id=?").get(product, `utm-${stamp}`)) {
+    if (
+      !isSandbox &&
+      !this.db.prepare("SELECT 1 FROM growth_events WHERE product=? AND event_id=?").get(product, `utm-${stamp}`)
+    ) {
       this.growth.record({
         product,
         customerId,
@@ -1244,7 +1269,10 @@ export class CommercialHubService {
       reference: actRef,
     });
 
-    if (!this.db.prepare("SELECT 1 FROM growth_events WHERE product=? AND event_id=?").get(product, `ops-act-act-${stamp}`)) {
+    if (
+      !isSandbox &&
+      !this.db.prepare("SELECT 1 FROM growth_events WHERE product=? AND event_id=?").get(product, `ops-act-act-${stamp}`)
+    ) {
       this.growth.record({
         product,
         customerId,
@@ -1273,7 +1301,7 @@ export class CommercialHubService {
       expiresAt: null,
       at: t2,
       reference: `mor://lemonsqueezy/orders/${orderId}`,
-      trialId,
+      ...(trialId ? { trialId } : {}),
     });
 
     const licenseKey = String(
@@ -1299,7 +1327,10 @@ export class CommercialHubService {
       });
     }
 
-    if (!this.db.prepare("SELECT 1 FROM growth_events WHERE product=? AND order_id=?").get(product, orderId)) {
+    if (
+      !isSandbox &&
+      !this.db.prepare("SELECT 1 FROM growth_events WHERE product=? AND order_id=?").get(product, orderId)
+    ) {
       this.growth.record({
         product,
         customerId,
@@ -1311,7 +1342,7 @@ export class CommercialHubService {
       });
     }
 
-    if (trialId) {
+    if (!isSandbox && trialId) {
       try {
         this.business.record(trialId, {
           eventId: `receipt-${orderId}`,
@@ -1326,6 +1357,41 @@ export class CommercialHubService {
       }
     }
 
+    const licenseKeyPreview = licenseKey ? `${licenseKey.slice(0, 22)}...${licenseKey.slice(-10)}` : "";
+
+    if (isSandbox) {
+      const receipt = {
+        ok: true,
+        sandbox: true,
+        product,
+        slug,
+        customerId,
+        orderId,
+        channel: input.channel,
+        currency: input.currency,
+        grossMinor: input.grossMinor,
+        llmCostMinor: input.llmCostMinor,
+        licenseKeyPreview,
+        licenseVerified: verification.valid === true,
+        gtmCampaignReady: Boolean(gtmCampaign),
+        acquisitionRecorded: Boolean(acq),
+        activationRecorded: Boolean(telemetry),
+        verifiedAt: t2,
+      };
+      this.db
+        .prepare(
+          `INSERT INTO opc_governance_kv(key, value, updated_at) VALUES('closed_loop_sandbox_receipt', ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+        )
+        .run(JSON.stringify(receipt), t2);
+
+      return {
+        ...receipt,
+        analytics: null,
+        overview: await this.overview(),
+      };
+    }
+
     // 4. Data Analysis: Sync traces and compute DuckDB funnel if data_analysis is online
     let analytics: AnalyticsSyncSnapshot | null = null;
     const daProbe = await probeJson(`${origins.data_analysis}/health`, 1500);
@@ -1335,10 +1401,11 @@ export class CommercialHubService {
 
     return {
       ok: true,
+      sandbox: false,
       product,
       customerId,
       orderId,
-      licenseKeyPreview: licenseKey ? `${licenseKey.slice(0, 22)}...${licenseKey.slice(-10)}` : "",
+      licenseKeyPreview,
       licenseVerified: verification.valid === true,
       gtmCampaignReady: Boolean(gtmCampaign),
       acquisitionRecorded: Boolean(acq),

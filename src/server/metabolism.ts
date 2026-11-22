@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
@@ -287,9 +287,13 @@ const FX_TO_USD: Record<string, number> = {
   GBP: 1.27,
   HKD: 1 / 7.8,
   JPY: 1 / 150,
-  CAD: 0.73,
+  MXN: 0.05,
+  CAD: 0.72,
   AUD: 0.65,
   SGD: 0.74,
+  KRW: 0.00072,
+  TWD: 0.031,
+  BRL: 0.18,
 };
 
 export function toUsd(amount: number, currency: string): number {
@@ -2122,18 +2126,32 @@ ${input.rawText.slice(0, 4000)}`,
     return mapPayment(row);
   }
 
-  handlePaymentCallback(channel: string, rawPayload: unknown): PaymentCallbackResult {
+  handlePaymentCallback(
+    channel: string,
+    rawPayload: unknown,
+    options?: { rawBody?: string; headers?: Record<string, string | undefined> },
+  ): PaymentCallbackResult {
     const payload =
-      rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload)
-        ? (rawPayload as Record<string, unknown>)
-        : {};
+      typeof rawPayload === "string"
+        ? safeJsonParse<Record<string, unknown>>(rawPayload, {})
+        : rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload)
+          ? (rawPayload as Record<string, unknown>)
+          : {};
+
+    const rawProvidersCfg =
+      "getRaw" in this.providers &&
+      typeof (this.providers as ProvidersStore & { getRaw?: () => ReturnType<ProvidersStore["get"]> }).getRaw ===
+        "function"
+        ? (this.providers as ProvidersStore & { getRaw: () => ReturnType<ProvidersStore["get"]> }).getRaw()
+        : this.providers.get();
 
     if (channel === "hupijiao") {
-      const appSecret = this.providers.get().services.payment.domestic.appSecret;
-      if (appSecret) {
-        if (!verifyHupijiaoSignature(payload, appSecret)) {
-          return { success: false, message: "Invalid signature" };
-        }
+      const appSecret = rawProvidersCfg.services.payment.domestic.appSecret?.trim() ?? "";
+      if (!appSecret) {
+        return { success: false, message: "Payment secret not configured" };
+      }
+      if (!verifyHupijiaoSignature(payload, appSecret)) {
+        return { success: false, message: "Invalid signature" };
       }
 
       const tradeStatus = String(payload.trade_status ?? payload.status ?? "").trim();
@@ -2168,6 +2186,131 @@ ${input.rawText.slice(0, 4000)}`,
     }
 
     if (channel === "stripe" || channel === "lemonsqueezy") {
+      const webhookSecret = rawProvidersCfg.services.payment.global.webhookSecret?.trim() ?? "";
+      if (!webhookSecret) {
+        return { success: false, message: "Webhook secret not configured" };
+      }
+
+      const rawSig = String(
+        options?.headers?.["stripe-signature"] ??
+          options?.headers?.["x-signature"] ??
+          options?.headers?.["x-webhook-signature"] ??
+          options?.headers?.["signature"] ??
+          payload.signature ??
+          payload.stripe_signature ??
+          payload.x_signature ??
+          "",
+      ).trim();
+
+      if (!rawSig) {
+        return { success: false, message: "Invalid webhook signature" };
+      }
+
+      const v1Candidates: string[] = [];
+      let stripeTimestamp: string | null = null;
+      if (rawSig.includes("v1=")) {
+        for (const part of rawSig.split(",")) {
+          const eqIdx = part.indexOf("=");
+          if (eqIdx <= 0) continue;
+          const k = part.slice(0, eqIdx).trim();
+          const v = part.slice(eqIdx + 1).trim();
+          if (k === "t" && v) {
+            stripeTimestamp = v;
+          } else if (k === "v1" && v) {
+            const normalized = v.toLowerCase();
+            if (/^[0-9a-f]{64}$/.test(normalized)) {
+              v1Candidates.push(normalized);
+            }
+          }
+        }
+      } else {
+        let suppliedHex = rawSig;
+        if (rawSig.toLowerCase().startsWith("sha256=")) {
+          suppliedHex = rawSig.slice("sha256=".length).trim();
+        }
+        suppliedHex = suppliedHex.toLowerCase();
+        if (/^[0-9a-f]{64}$/.test(suppliedHex)) {
+          v1Candidates.push(suppliedHex);
+        }
+      }
+
+      if (v1Candidates.length === 0) {
+        return { success: false, message: "Invalid webhook signature" };
+      }
+
+      if (stripeTimestamp !== null) {
+        const tsSeconds = Number(stripeTimestamp);
+        if (!Number.isFinite(tsSeconds) || Math.abs(Date.now() - tsSeconds * 1000) > 300_000) {
+          return {
+            success: false,
+            message: "Invalid webhook signature: timestamp outside tolerance window",
+          };
+        }
+      }
+
+      const stripped: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(payload)) {
+        if (k === "signature" || k === "stripe_signature" || k === "x_signature") continue;
+        stripped[k] = v;
+      }
+
+      const sortCanonical = (val: unknown): unknown => {
+        if (Array.isArray(val)) return val.map(sortCanonical);
+        if (val && typeof val === "object") {
+          const sorted: Record<string, unknown> = {};
+          for (const key of Object.keys(val as Record<string, unknown>).sort()) {
+            sorted[key] = sortCanonical((val as Record<string, unknown>)[key]);
+          }
+          return sorted;
+        }
+        return val;
+      };
+
+      const candidatePayloads = new Set<string>();
+      if (typeof options?.rawBody === "string" && options.rawBody.length > 0) {
+        candidatePayloads.add(options.rawBody);
+        if (stripeTimestamp) {
+          candidatePayloads.add(`${stripeTimestamp}.${options.rawBody}`);
+        }
+      }
+      if (typeof rawPayload === "string" && rawPayload.length > 0) {
+        candidatePayloads.add(rawPayload);
+        if (stripeTimestamp) {
+          candidatePayloads.add(`${stripeTimestamp}.${rawPayload}`);
+        }
+      }
+      const strippedJson = JSON.stringify(stripped);
+      candidatePayloads.add(strippedJson);
+      if (stripeTimestamp) {
+        candidatePayloads.add(`${stripeTimestamp}.${strippedJson}`);
+      }
+      const canonicalJson = JSON.stringify(sortCanonical(stripped));
+      candidatePayloads.add(canonicalJson);
+      const canonicalKv = Object.keys(stripped)
+        .filter((k) => stripped[k] !== undefined && stripped[k] !== null)
+        .sort()
+        .map((k) => `${k}=${typeof stripped[k] === "object" ? JSON.stringify(stripped[k]) : String(stripped[k])}`)
+        .join("&");
+      if (canonicalKv) {
+        candidatePayloads.add(canonicalKv);
+      }
+
+      const suppliedBufs = v1Candidates.map((hex) => Buffer.from(hex, "utf8"));
+      let sigMatched = false;
+      for (const candidate of candidatePayloads) {
+        const expectedHex = createHmac("sha256", webhookSecret).update(candidate, "utf8").digest("hex").toLowerCase();
+        const expectedBuf = Buffer.from(expectedHex, "utf8");
+        for (const suppliedBuf of suppliedBufs) {
+          if (suppliedBuf.length === expectedBuf.length && timingSafeEqual(suppliedBuf, expectedBuf)) {
+            sigMatched = true;
+          }
+        }
+      }
+
+      if (!sigMatched) {
+        return { success: false, message: "Invalid webhook signature" };
+      }
+
       const eventType = String(
         payload.type ??
           (payload.meta as Record<string, unknown> | undefined)?.event_name ??
@@ -2594,10 +2737,11 @@ ${input.rawText.slice(0, 4000)}`,
         for (const ev of evidenceRows) {
           const parsed = safeJsonParse<{ currency?: string; minor?: number }>(ev.input, {});
           const currency = String(parsed.currency ?? "USD").toUpperCase();
-          const divisor = currency === "JPY" ? 1 : 100;
+          const divisor = currency === "JPY" || currency === "KRW" ? 1 : 100;
           const amountUsd = toUsd((Number(parsed.minor) || 0) / divisor, currency);
           const month = String(ev.created_at).slice(0, 7);
           if (ev.kind === "receipt") addRevenue(ev.project, month, amountUsd);
+          else if (ev.kind === "refund") addRevenue(ev.project, month, -amountUsd);
           else addCost(ev.project, month, amountUsd);
         }
       } catch {
@@ -2887,13 +3031,32 @@ export function registerMetabolismRoutes(
     const channel = c.req.param("channel") ?? "";
     const contentType = c.req.header("content-type") ?? "";
     let payload: unknown;
+    let rawBody: string | undefined;
     if (contentType.includes("application/x-www-form-urlencoded")) {
       const form = await c.req.parseBody();
       payload = form;
     } else {
-      payload = await readJsonBody(c);
+      const text = await c.req.text();
+      rawBody = text;
+      if (!text.trim()) {
+        payload = {};
+      } else {
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          throw new ApiError(400, "bad_json", "请求体不是合法 JSON");
+        }
+      }
     }
-    const result = store.handlePaymentCallback(channel, payload);
+    const result = store.handlePaymentCallback(channel, payload, {
+      rawBody,
+      headers: {
+        "stripe-signature": c.req.header("stripe-signature"),
+        "x-signature": c.req.header("x-signature"),
+        "x-webhook-signature": c.req.header("x-webhook-signature"),
+        signature: c.req.header("signature"),
+      },
+    });
     return c.json(result, result.success ? 200 : 400);
   });
   app.post(base + "/payments/:id/sandbox-pay", (c) =>

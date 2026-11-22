@@ -44,10 +44,20 @@ export interface PlanningTask {
   prUrl: string | null;
   tokenUsed: number;
   costUsd: number;
+  dependsOn: string[];
+  snoozedUntil: string | null;
+  verifyCommand: string;
+  mainlineId: string | null;
+  assetId: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+}
+
+export interface DependencyCheckResult {
+  met: boolean;
+  blockingIds: string[];
 }
 
 export interface SubtaskStats {
@@ -74,6 +84,11 @@ export interface CreatePlanningTaskInput {
   assigneeId?: string | null;
   assigneeName?: string | null;
   sourceRef?: string | null;
+  dependsOn?: string[];
+  snoozedUntil?: string | null;
+  verifyCommand?: string;
+  mainlineId?: string | null;
+  assetId?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -87,6 +102,12 @@ export interface CreateEpicSubtaskInput {
   assigneeType?: PlanningAssigneeType;
   assigneeId?: string | null;
   assigneeName?: string | null;
+  dependsOn?: string[];
+  dependsOnIndices?: number[];
+  verifyCommand?: string;
+  mainlineId?: string | null;
+  assetId?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface CreateEpicWithSubtasksInput {
@@ -97,6 +118,10 @@ export interface CreateEpicWithSubtasksInput {
   tags?: string[];
   dueAt?: string | null;
   sourceRef?: string | null;
+  dependsOn?: string[];
+  verifyCommand?: string;
+  mainlineId?: string | null;
+  assetId?: string | null;
   metadata?: Record<string, unknown>;
   subtasks: CreateEpicSubtaskInput[];
 }
@@ -124,6 +149,11 @@ export interface UpdatePlanningTaskInput {
   prUrl?: string | null;
   tokenUsed?: number;
   costUsd?: number;
+  dependsOn?: string[];
+  snoozedUntil?: string | null;
+  verifyCommand?: string;
+  mainlineId?: string | null;
+  assetId?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -134,6 +164,8 @@ export interface TaskListFilters {
   assigneeType?: PlanningAssigneeType;
   parentId?: string | null;
   includeSubtasks?: boolean;
+  mainlineId?: string;
+  assetId?: string;
 }
 
 export interface PlanningAgentOption {
@@ -173,6 +205,8 @@ export interface TaskPlanningHooks {
   getAgentMetrics?: (days: number) => AgentMetricsSummary;
   getProjectRevenueUsd?: () => Record<string, number>;
   notifyPatrolToZoom?: (alerts: StaleTaskAlert[]) => void;
+  onEpicCompleted?: (epic: PlanningTaskWithSubtasks) => void;
+  onPatrolReport?: (report: PatrolReport) => void;
 }
 
 export interface KanbanBoardResponse {

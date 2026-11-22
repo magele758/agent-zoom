@@ -69,6 +69,15 @@ export interface CreateAgentInput {
 
 export type UpdateAgentInput = Partial<CreateAgentInput>;
 
+export interface AgentRunVerification {
+  command: string;
+  passed: boolean;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
 export interface AgentRunRecord {
   id: string;
   taskId: string;
@@ -87,11 +96,14 @@ export interface AgentRunRecord {
   retryCount: number;
   logFilePath: string | null;
   errorSummary: string | null;
+  errorMessage?: string | null;
   prUrl: string | null;
   changedFiles: string[];
   protectedViolations: string[];
   circuitBreakerReason: CircuitBreakerReason | null;
   autoCreatePr: boolean;
+  verifyCommand?: string;
+  verification?: AgentRunVerification | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -106,6 +118,7 @@ export interface DispatchRunInput {
   repoPath?: string;
   agentId: string;
   autoCreatePr?: boolean;
+  verifyCommand?: string;
 }
 
 export interface RunLogEntry {
@@ -155,11 +168,15 @@ export interface FactoryAuditDetails {
   violations: string[];
   isGitRepo: boolean;
   recentViolationsCount: number;
+  action?: string;
+  recoveredRunIds?: string[];
+  recoveredCount?: number;
 }
 
 export interface FactoryAuditRecord {
   id: string;
   kind: string;
+  action?: string;
   status: AuditStatus;
   summary: string;
   details: FactoryAuditDetails;
