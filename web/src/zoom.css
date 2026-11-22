@@ -217,3 +217,25 @@
 @media(max-width:899px){.zoom .zo-mobile-menu{min-width:42px;min-height:42px;justify-content:center}}
 .zo-nav-section{display:block;padding:10px 12px 4px;font-size:10.5px;letter-spacing:.08em;color:rgba(244,239,227,.48);text-transform:uppercase;pointer-events:none}
 .zo-nav-section:first-child{padding-top:4px}
+
+.zo-autonomy{margin:10px 12px 2px;padding:8px 9px;border:1px solid rgba(244,239,227,.14);border-radius:6px;background:rgba(16,22,22,.42)}
+.zo-autonomy-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;font-size:10.5px;color:rgba(244,239,227,.65);letter-spacing:.04em}
+.zo-autonomy-head a{color:#e8b77b;text-decoration:none;font-size:10.5px}
+.zo-autonomy-head a:hover{text-decoration:underline}
+.zo-autonomy-seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px}
+.zo-autonomy-seg button{min-height:24px;padding:2px 4px;border-radius:4px;font-size:11px;line-height:1.25;color:#cfd6cd;background:rgba(255,255,255,.04);border:1px solid transparent;cursor:pointer;text-align:center;transition:background-color .14s ease,color .14s ease,border-color .14s ease}
+.zo-autonomy-seg button:hover:not(:disabled){background:rgba(255,255,255,.1);color:#fff}
+.zo-autonomy-seg button[aria-pressed="true"]{background:#3b4b46;color:#fff7e6;border-color:#e8b77b;font-weight:600}
+.zo-autonomy-seg button[data-mode="assisted"][aria-pressed="true"]{background:#593326;border-color:#e8a07b}
+.zo-autonomy-seg button[data-mode="semi_auto"][aria-pressed="true"]{background:#3b4c3d;border-color:#9fd3a6}
+.zo-autonomy-seg button[data-mode="full_auto"][aria-pressed="true"]{background:#2f4752;border-color:#8bc6df}
+.zo-autonomy-hint{margin:6px 0 0;font-size:10.5px;line-height:1.35;color:rgba(244,239,227,.58)}
+
+.zo-nav-details{margin-top:8px;border-top:1px solid rgba(244,239,227,.1);padding-top:6px}
+.zo-nav-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-radius:4px;font-size:11px;letter-spacing:.06em;color:rgba(244,239,227,.72);cursor:pointer;user-select:none;list-style:none;pointer-events:auto}
+.zo-nav-summary::-webkit-details-marker{display:none}
+.zo-nav-summary:hover{background:#34403c;color:#fff7e6}
+.zo-nav-summary-meta{display:inline-flex;align-items:center;gap:6px;font:11px var(--digits);color:rgba(244,239,227,.58)}
+.zo-nav-chevron{display:inline-block;transition:transform .16s ease;font-size:11px}
+.zo-nav-details[open] .zo-nav-chevron{transform:rotate(90deg)}
+.zo-nav-sublist{display:grid;align-content:start;margin:4px 0 6px}

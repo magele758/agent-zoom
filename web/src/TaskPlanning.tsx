@@ -27,7 +27,51 @@ import { request } from "./api";
 import "./task-planning.css";
 
 const API_BASE = "/api/opc/planning";
+const PRODUCT_API_BASE = "/api/opc/domains/product";
 const POMODORO_DEFAULT_SECONDS = 25 * 60;
+
+type SignalStatus = "new" | "promoted" | "dropped" | "blocked";
+
+interface ProductSignalItem {
+  id: string;
+  dedupeKey: string;
+  source: string;
+  projectRef: string;
+  mainlineId: string | null;
+  assetId: string | null;
+  title: string;
+  body: string;
+  tags: string[];
+  alignmentScore: number;
+  recommendation: string;
+  scoreSummary: string;
+  status: SignalStatus;
+  promotedTaskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SignalCounts {
+  total: number;
+  new: number;
+  promoted: number;
+  dropped: number;
+  blocked: number;
+}
+
+const SIGNAL_STATUS_LABELS: Record<SignalStatus, string> = {
+  new: "待人工筛选",
+  promoted: "已转研发任务",
+  dropped: "已丢弃噪音",
+  blocked: "准入已拦截",
+};
+
+const SIGNAL_REC_LABELS: Record<string, string> = {
+  auto_promote: "建议立项",
+  needs_review: "建议人工复核",
+  drop_noise: "疑似噪音",
+  blocked: "主线/冻结拦截",
+};
 
 const KANBAN_COLUMNS: Array<{ key: KanbanColumnKey; label: string; hint: string }> = [
   { key: "todo", label: "Todo", hint: "待规划" },
@@ -306,7 +350,7 @@ function TaskCard({
   const [showDispatch, setShowDispatch] = useState(false);
   const [showSubtasks, setShowSubtasks] = useState(task.type === "epic" && task.subtasks.length > 0);
   const [newSubTitle, setNewSubTitle] = useState("");
-  const [selectedAgentId, setSelectedAgentId] = useState(agents[0]?.id ?? "");
+  const [selectedAgentId, setSelectedAgentId] = useState("__auto_quota__");
   const [autoCreatePr, setAutoCreatePr] = useState(true);
 
   useEffect(() => {
@@ -470,6 +514,18 @@ function TaskCard({
                       <span className="tp-subtask-item-title" title={sub.title}>
                         {sub.title}
                       </span>
+                      {!subDone && (
+                        <button
+                          type="button"
+                          className="tp-ghost"
+                          disabled={busy}
+                          style={{ fontSize: 10, padding: "1px 6px" }}
+                          title="按实时套餐余量与依赖检查自动派发给暗工厂 Agent"
+                          onClick={() => void onDispatch(sub.id, "__auto_quota__", true)}
+                        >
+                          ⚡派发
+                        </button>
+                      )}
                       <span className="tp-pill mono" style={{ fontSize: 10 }}>
                         {STATUS_LABELS[sub.status]}
                       </span>
@@ -549,9 +605,9 @@ function TaskCard({
             type="button"
             className="tp-ghost"
             disabled={busy}
-            onClick={() => void onStatusChange(task.id, "published")}
+            onClick={() => void onDispatch(task.id, "__request_release__", false)}
           >
-            🚀 标记发布
+            {task.latestRunId ? "🚀 申请合入真上线" : "🚀 标记发布"}
           </button>
         )}
         <button
@@ -584,8 +640,9 @@ function TaskCard({
           ) : (
             <>
               <label className="tp-field">
-                选择暗工厂 Agent
+                选择派发模式 / 暗工厂 Agent
                 <select value={selectedAgentId} onChange={(e) => setSelectedAgentId(e.target.value)}>
+                  <option value="__auto_quota__">⚡ 按实时套餐配额智能选模路由 (推荐)</option>
                   {agents.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name} ({a.status}) {a.capabilities.length ? `· ${a.capabilities.slice(0, 3).join("/")}` : ""}
@@ -627,8 +684,8 @@ function TaskCard({
 
 // ---- Main TaskPlanning Page Component ----
 
-export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?: "kanban" | "roi" | "patrol" }) {
-  const [activeTab, setActiveTab] = useState<"kanban" | "roi" | "patrol">(initialTab ?? "kanban");
+export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?: "signals" | "kanban" | "roi" | "patrol" }) {
+  const [activeTab, setActiveTab] = useState<"signals" | "kanban" | "roi" | "patrol">(initialTab ?? "kanban");
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab);
   }, [initialTab]);
@@ -638,6 +695,16 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
   const [showArchiveDrawer, setShowArchiveDrawer] = useState(false);
 
   const [kanban, setKanban] = useState<KanbanBoardResponse | null>(null);
+  const [signals, setSignals] = useState<ProductSignalItem[]>([]);
+  const [signalCounts, setSignalCounts] = useState<SignalCounts | null>(null);
+  const [signalStatusFilter, setSignalStatusFilter] = useState<SignalStatus | "all">("all");
+  const [collectManualOnly, setCollectManualOnly] = useState(true);
+  const [showSignalForm, setShowSignalForm] = useState(false);
+  const [sigTitle, setSigTitle] = useState("");
+  const [sigProject, setSigProject] = useState("");
+  const [sigTags, setSigTags] = useState("");
+  const [sigBody, setSigBody] = useState("");
+  const [sigManualOnly, setSigManualOnly] = useState(true);
   const [roi, setRoi] = useState<RoiDashboardResponse | null>(null);
   const [roiDays, setRoiDays] = useState(30);
   const [trend, setTrend] = useState<DailyTrendPoint[]>([]);
@@ -699,31 +766,47 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
     }
   }, []);
 
+  const loadSignals = useCallback(
+    async (statusOverride?: SignalStatus | "all") => {
+      const targetStatus = statusOverride ?? signalStatusFilter;
+      const params = new URLSearchParams({ status: targetStatus, limit: "120" });
+      const res = await request<{ signals: ProductSignalItem[]; counts: SignalCounts }>(
+        `${PRODUCT_API_BASE}/signals?${params.toString()}`,
+      );
+      setSignals(res.signals);
+      setSignalCounts(res.counts);
+    },
+    [signalStatusFilter],
+  );
+
   const refreshAll = useCallback(async () => {
     try {
-      await Promise.all([loadKanban(), loadRoiAndTrend(), loadPatrolHistory()]);
+      await Promise.all([loadKanban(), loadSignals(), loadRoiAndTrend(), loadPatrolHistory()]);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载任务规划数据失败");
     }
-  }, [loadKanban, loadRoiAndTrend, loadPatrolHistory]);
+  }, [loadKanban, loadSignals, loadRoiAndTrend, loadPatrolHistory]);
 
   useEffect(() => {
     void loadKanban().catch((err) => setError(err instanceof Error ? err.message : "加载看板失败"));
   }, [loadKanban]);
 
   useEffect(() => {
-    if (activeTab === "roi") {
+    if (activeTab === "signals") {
+      void loadSignals().catch((err) => setError(err instanceof Error ? err.message : "加载情报信号池失败"));
+    } else if (activeTab === "roi") {
       void loadRoiAndTrend().catch((err) => setError(err instanceof Error ? err.message : "加载 ROI 数据失败"));
     } else if (activeTab === "patrol") {
       void loadPatrolHistory().catch((err) => setError(err instanceof Error ? err.message : "加载巡检记录失败"));
     }
-  }, [activeTab, loadRoiAndTrend, loadPatrolHistory]);
+  }, [activeTab, loadSignals, loadRoiAndTrend, loadPatrolHistory]);
 
-  // Initial background load of patrol history so badge count is ready
+  // Initial background load of patrol history & signal counts so tab badges are ready
   useEffect(() => {
     void loadPatrolHistory().catch(() => {});
-  }, [loadPatrolHistory]);
+    void loadSignals().catch(() => {});
+  }, [loadPatrolHistory, loadSignals]);
 
   const filterTasks = useCallback(
     (list: PlanningTaskWithSubtasks[]) => {
@@ -824,6 +907,31 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
     setBusy(true);
     setError("");
     try {
+      if (agentId === "__request_release__") {
+        const target = allBoardTasks.find((t) => t.id === taskId);
+        if (target?.latestRunId) {
+          await request(`/api/opc/domains/factory/runs/${encodeURIComponent(target.latestRunId)}/request-release`, {
+            method: "POST",
+            body: "{}",
+          });
+          setNotice("已提交真上线审批包至「总裁审批网关 (#mailbox)」，批准后将自动合入部署。");
+        } else {
+          await handleStatusChange(taskId, "published");
+        }
+        return;
+      }
+      if (agentId === "__auto_quota__") {
+        const smartRes = await request<{
+          run: { id: string; status: string; agentName: string };
+          routing: { chosenAgent: { name: string } | null };
+        }>("/api/opc/domains/resources/dispatch-smart", {
+          method: "POST",
+          body: JSON.stringify({ taskId, autoCreatePr }),
+        });
+        await loadKanban();
+        setNotice(`⚡ 已按实时套餐配额路由至 ${smartRes.run.agentName} · Run ${smartRes.run.id} (${smartRes.run.status})`);
+        return;
+      }
       const res = await request<{ runId: string; runStatus: string }>(
         `${API_BASE}/tasks/${encodeURIComponent(taskId)}/dispatch`,
         {
@@ -1014,6 +1122,109 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
     }
   };
 
+  const handleCollectSignals = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await request<{
+        collectedCount: number;
+        journalSignals: number;
+        githubIssueSignals: number;
+        promotedCount: number;
+      }>(`${PRODUCT_API_BASE}/collect`, {
+        method: "POST",
+        body: JSON.stringify({ autoPromote: !collectManualOnly }),
+      });
+      await Promise.all([loadSignals(), loadKanban()]);
+      setNotice(
+        res.collectedCount > 0
+          ? `信号采集完成：新入池 ${res.collectedCount} 条（日读 ${res.journalSignals} · GitHub Issue ${res.githubIssueSignals}），自动立项 ${res.promotedCount} 条`
+          : "信号采集完成：当前无新的未采集条目。",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "信号源采集失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleIngestSignal = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!sigTitle.trim()) return;
+    setBusy(true);
+    setError("");
+    const tags = sigTags
+      .split(/[,，\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    try {
+      const res = await request<{
+        created: boolean;
+        signal: ProductSignalItem;
+        promotedTask: PlanningTask | null;
+      }>(`${PRODUCT_API_BASE}/signals`, {
+        method: "POST",
+        body: JSON.stringify({
+          source: "manual",
+          title: sigTitle.trim(),
+          projectRef: sigProject.trim() || undefined,
+          body: sigBody.trim() || undefined,
+          tags,
+          autoPromote: !sigManualOnly,
+        }),
+      });
+      setSigTitle("");
+      setSigProject("");
+      setSigTags("");
+      setSigBody("");
+      setShowSignalForm(false);
+      await Promise.all([loadSignals(), loadKanban()]);
+      setNotice(
+        res.promotedTask
+          ? `信号已入池并自动立项为任务「${res.promotedTask.title}」（得分 ${res.signal.alignmentScore}/100）`
+          : `信号已入池待人工筛选：得分 ${res.signal.alignmentScore}/100 · ${SIGNAL_REC_LABELS[res.signal.recommendation] ?? res.signal.recommendation}`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "录入信号失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePromoteSignal = async (signal: ProductSignalItem) => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await request<{ signal: ProductSignalItem; task: PlanningTask }>(
+        `${PRODUCT_API_BASE}/signals/${encodeURIComponent(signal.id)}/promote`,
+        { method: "POST", body: "{}" },
+      );
+      await Promise.all([loadSignals(), loadKanban()]);
+      setNotice(`已将信号转为研发任务「${res.task.title}」，可切到「人机混合看板」分配给人类或 Agent 执行。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "转任务失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDropSignal = async (signalId: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      await request(`${PRODUCT_API_BASE}/signals/${encodeURIComponent(signalId)}/drop`, {
+        method: "POST",
+        body: "{}",
+      });
+      await loadSignals();
+      setNotice("已丢弃该噪音信号。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "丢弃信号失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Drag handlers
   const handleDragStart = (e: DragEvent<HTMLElement>, taskId: string) => {
     setDraggingId(taskId);
@@ -1075,18 +1286,26 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
   }, [recent14Days]);
 
   const patrolBadgeCount = (latestPatrol?.staleCount ?? 0) + (latestPatrol?.failedCount ?? 0);
+  const newSignalBadgeCount = signalCounts?.new ?? 0;
 
   return (
-    <section className="zo-product tp-page" aria-label="任务规划与 ROI 看板">
+    <section className="zo-product tp-page" aria-label="情报与产品拆解看板">
       <header className="tp-head">
         <div>
           <div className="tp-title-row">
             {nav}
-            <h1>任务规划与 ROI 看板</h1>
+            <h1>02 · 情报与产品拆解</h1>
           </div>
           <p className="tp-sub">
-            Epic → SubTask 任务树 · 人机混合 5 列拖拽看板 · 番茄钟精力追踪 · 巡检卫士 · 30 天 ROI 与 16 周热力图
+            情报信号池人工筛选 · Epic → SubTask 任务树 · 人机混合 5 列拖拽看板 · 番茄钟精力追踪 · 巡检卫士 · ROI 热力图
           </p>
+          <div className="tp-upstream-links">
+            <span>上游输入与专项工作台：</span>
+            <a href="#ideas">信息与想法 ↗</a>
+            <a href="#metabolism">信息代谢 · 简报 ↗</a>
+            <a href="#opportunities">研发选题池 ↗</a>
+            <a href="#canvas">无界知识画布 ↗</a>
+          </div>
         </div>
         <div className="tp-head-actions">
           <button
@@ -1115,6 +1334,19 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
           >
             人机混合看板
             {kanban && <span className="tp-tab-count">{kanban.counts.total}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "signals"}
+            onClick={() => setActiveTab("signals")}
+          >
+            情报信号池
+            {newSignalBadgeCount > 0 ? (
+              <span className="tp-tab-count warn">{newSignalBadgeCount}</span>
+            ) : (
+              signalCounts && <span className="tp-tab-count">{signalCounts.total}</span>
+            )}
           </button>
           <button
             type="button"
@@ -1625,6 +1857,198 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
             </div>
           )}
         </>
+      )}
+
+      {/* ==================== TAB 1.5: INTELLIGENCE SIGNAL POOL ==================== */}
+      {activeTab === "signals" && (
+        <div className="tp-signals-wrap" data-testid="product-signals-panel">
+          <div className="tp-signals-toolbar">
+            <div className="tp-segmented" role="group" aria-label="信号状态筛选">
+              {(
+                [
+                  { id: "all", label: `全部 (${signalCounts?.total ?? signals.length})` },
+                  { id: "new", label: `待筛选 (${signalCounts?.new ?? 0})` },
+                  { id: "promoted", label: `已立项 (${signalCounts?.promoted ?? 0})` },
+                  { id: "dropped", label: `已丢弃 (${signalCounts?.dropped ?? 0})` },
+                  { id: "blocked", label: `已拦截 (${signalCounts?.blocked ?? 0})` },
+                ] as Array<{ id: SignalStatus | "all"; label: string }>
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-pressed={signalStatusFilter === item.id}
+                  onClick={() => setSignalStatusFilter(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="tp-signals-actions">
+              <label className="tp-signals-check">
+                <input
+                  type="checkbox"
+                  checked={collectManualOnly}
+                  onChange={(e) => setCollectManualOnly(e.target.checked)}
+                />
+                <span>仅采集入池，让我人工筛选</span>
+              </label>
+              <button
+                type="button"
+                className="tp-primary"
+                disabled={busy}
+                onClick={() => void handleCollectSignals()}
+              >
+                🔍 立即采集信号源
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setShowSignalForm((v) => !v)}
+              >
+                {showSignalForm ? "收起录入" : "+ 手工录入信号"}
+              </button>
+            </div>
+          </div>
+
+          {showSignalForm && (
+            <form className="tp-creator" onSubmit={(e) => void handleIngestSignal(e)}>
+              <div className="tp-creator-head">
+                <h3>手工录入情报 / 想法（自动按长期主线与习惯规则打分）</h3>
+              </div>
+              <div className="tp-creator-grid">
+                <label className="tp-field span-2">
+                  标题 *
+                  <input
+                    value={sigTitle}
+                    onChange={(e) => setSigTitle(e.target.value)}
+                    placeholder="例如：PageLens 离线导出字幕支持 SRT / Markdown"
+                    required
+                  />
+                </label>
+                <label className="tp-field">
+                  归属项目 / 仓库（留空自动匹配）
+                  <input
+                    value={sigProject}
+                    onChange={(e) => setSigProject(e.target.value)}
+                    placeholder="PageLens / opc-os"
+                  />
+                </label>
+                <label className="tp-field">
+                  标签（逗号或空格分隔）
+                  <input
+                    value={sigTags}
+                    onChange={(e) => setSigTags(e.target.value)}
+                    placeholder="离线优先, 变现闭环"
+                  />
+                </label>
+                <label className="tp-field span-2">
+                  背景与验收要点
+                  <textarea
+                    rows={2}
+                    value={sigBody}
+                    onChange={(e) => setSigBody(e.target.value)}
+                    placeholder="补充上下文、预期验收标准或原链接"
+                  />
+                </label>
+              </div>
+              <div className="tp-creator-foot">
+                <label className="tp-signals-check">
+                  <input
+                    type="checkbox"
+                    checked={sigManualOnly}
+                    onChange={(e) => setSigManualOnly(e.target.checked)}
+                  />
+                  <span>先打分入池，由我决定是否转为研发任务</span>
+                </label>
+                <button type="submit" className="tp-primary" disabled={busy || !sigTitle.trim()}>
+                  提交评估入池
+                </button>
+              </div>
+            </form>
+          )}
+
+          {signals.length === 0 ? (
+            <div className="tp-panel" style={{ textAlign: "center", color: "#5e6a61", padding: "32px 18px" }}>
+              当前筛选下暂无情报信号。点击上方「🔍 立即采集信号源」从日读与 GitHub Issue 汇聚候选条目，或点「+ 手工录入信号」直接输入想法并试算主线匹配分。
+            </div>
+          ) : (
+            <div className="tp-signals-list">
+              {signals.map((sig) => (
+                <article
+                  key={sig.id}
+                  className={`tp-signal-card status-${sig.status}`}
+                  data-testid={`signal-card-${sig.id}`}
+                >
+                  <div className="tp-signal-head">
+                    <div>
+                      <div className="tp-signal-title">{sig.title}</div>
+                      <div className="tp-signal-meta">
+                        <span className="tp-pill">{SIGNAL_STATUS_LABELS[sig.status]}</span>
+                        <span className="tp-pill">{SIGNAL_REC_LABELS[sig.recommendation] ?? sig.recommendation}</span>
+                        <span>来源：{sig.source}</span>
+                        <span>项目：{sig.projectRef}</span>
+                        <span>{formatShortTime(sig.createdAt)}</span>
+                      </div>
+                    </div>
+                    <span
+                      className={`tp-signal-score ${
+                        sig.alignmentScore >= 70 ? "high" : sig.alignmentScore < 45 ? "low" : ""
+                      }`}
+                    >
+                      对齐分 {sig.alignmentScore} / 100
+                    </span>
+                  </div>
+
+                  {sig.scoreSummary && <p className="tp-signal-summary">{sig.scoreSummary}</p>}
+                  {sig.body && <p className="tp-signal-body">{sig.body}</p>}
+
+                  <div className="tp-signal-foot">
+                    <div className="tp-signal-meta">
+                      {sig.tags.map((tag) => (
+                        <span key={tag} className="tp-pill mono">
+                          #{tag}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="tp-alert-actions">
+                      {sig.status === "promoted" && sig.promotedTaskId ? (
+                        <button
+                          type="button"
+                          className="tp-primary"
+                          onClick={() => setActiveTab("kanban")}
+                        >
+                          已转任务 ({sig.promotedTaskId.slice(0, 12)}) · 去看板查看 →
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="tp-primary"
+                            disabled={busy}
+                            onClick={() => void handlePromoteSignal(sig)}
+                          >
+                            → 转为研发任务
+                          </button>
+                          {sig.status !== "dropped" && (
+                            <button
+                              type="button"
+                              className="tp-ghost"
+                              disabled={busy}
+                              onClick={() => void handleDropSignal(sig.id)}
+                            >
+                              ✕ 丢弃噪音
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {/* ==================== TAB 2: ROI DASHBOARD & HEATMAP ==================== */}

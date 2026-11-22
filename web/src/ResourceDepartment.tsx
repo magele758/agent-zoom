@@ -120,6 +120,11 @@ export function ResourceDepartment({ nav }: { nav: ReactNode }) {
   const [collecting, setCollecting] = useState(false);
   const [collectionNotice, setCollectionNotice] = useState("");
   const [now, setNow] = useState(Date.now);
+  const [schedulerStatus, setSchedulerStatus] = useState<{
+    expiringSignals?: Array<{ name: string; window: string; remainingPct: number; hoursUntilReset: number | null }>;
+    recentDispatches?: Array<{ id: string; taskId: string; agentName: string; remainingPct: number | null; reason: string; createdAt: string }>;
+  } | null>(null);
+  const [harvestBusy, setHarvestBusy] = useState(false);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30000);
     return () => window.clearInterval(timer);
@@ -131,8 +136,31 @@ export function ResourceDepartment({ nav }: { nav: ReactNode }) {
       .then(data => { if (!controller.signal.aborted) { setIndex(data); setNow(Date.now()); } })
       .catch(err => { if (!controller.signal.aborted) setError(reason(err)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    request<NonNullable<typeof schedulerStatus>>("/api/opc/domains/resources/scheduler-status", { signal: controller.signal })
+      .then(s => { if (!controller.signal.aborted) setSchedulerStatus(s); })
+      .catch(() => {});
     return () => controller.abort();
   }, [refresh]);
+
+  async function triggerQuotaHarvest(dryRun: boolean) {
+    setHarvestBusy(true); setError(""); setNotice("");
+    try {
+      const res = await request<{ plannedDispatches: Array<{ taskTitle: string; agentName: string }>; triggered: boolean }>(
+        "/api/opc/domains/resources/harvest",
+        { method: "POST", body: JSON.stringify({ dryRun, windowHours: 12, minRemainingPct: 20, force: !dryRun }) },
+      );
+      setNotice(
+        res.plannedDispatches.length
+          ? `${dryRun ? "试算结果" : "已自动派发"} ${res.plannedDispatches.length} 项高优主线任务：${res.plannedDispatches.map(d => `${d.taskTitle} → ${d.agentName}`).join("；")}`
+          : "当前无满足条件的待派发任务或可用高余量 Agent。",
+      );
+      setRefresh(v => v + 1);
+    } catch (err) {
+      setError(reason(err));
+    } finally {
+      setHarvestBusy(false);
+    }
+  }
   async function collect() {
     if (collecting || !index?.canCollect) return;
     setCollecting(true); setError(""); setCollectionNotice("");
@@ -178,8 +206,35 @@ export function ResourceDepartment({ nav }: { nav: ReactNode }) {
     return n.includes(tool.tool.toLowerCase()) || n.includes(tool.name.toLowerCase());
   });
   return <section className="zo-product rc-page">
-    <header className="zo-product-head">{nav}<div><a href="#overview">全局看板 ↗</a><h1>资源成本部门</h1></div></header>
+    <header className="zo-product-head">{nav}<div><a href="#overview">全局看板 ↗</a><h1>04 · 算力与配额调度部</h1></div></header>
     <div className="rc-body">
+      <section>
+        <header>
+          <div>
+            <h2>配额感知路由 & 临期闲置额度榨取 (Quota Harvester)</h2>
+            <p>自动避开登录失效与低余量 CLI，优先消耗即将重置的付费订阅额度推进长期主线高优任务。</p>
+          </div>
+          <div className="rc-actions">
+            <button type="button" disabled={harvestBusy} onClick={() => void triggerQuotaHarvest(true)}>
+              试算临期额度派工
+            </button>
+            <button type="button" className="rc-primary" disabled={harvestBusy} onClick={() => void triggerQuotaHarvest(false)}>
+              {harvestBusy ? "调度中…" : "立即按空闲额度派发主线任务"}
+            </button>
+          </div>
+        </header>
+        {notice && <p role="status">{notice}</p>}
+        {schedulerStatus?.recentDispatches && schedulerStatus.recentDispatches.length > 0 && (
+          <ul>
+            {schedulerStatus.recentDispatches.slice(0, 5).map(d => (
+              <li key={d.id}>
+                <strong>{d.agentName}</strong> 接管任务 <code>{d.taskId}</code>
+                {d.remainingPct !== null ? `（派发时余量 ${Math.round(d.remainingPct)}%）` : ""} · <small>{d.reason}</small>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <section><header><div><h2>工具额度</h2>{hub?.generatedAt && <p>Agent Hub 快照 · {time(hub.generatedAt)}</p>}</div>
         <div className="rc-actions">
           {index?.canCollect && <button className="rc-primary" disabled={loading || collecting} onClick={() => void collect()}>

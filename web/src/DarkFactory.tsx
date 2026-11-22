@@ -160,8 +160,23 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
   const [dispatchTaskTitle, setDispatchTaskTitle] = useState("");
   const [dispatchTaskDesc, setDispatchTaskDesc] = useState("");
   const [dispatchRepoPath, setDispatchRepoPath] = useState("");
+  const [dispatchVerifyCommand, setDispatchVerifyCommand] = useState("");
   const [dispatchAgentId, setDispatchAgentId] = useState("");
   const [dispatchAutoPr, setDispatchAutoPr] = useState(false);
+  const [releases, setReleases] = useState<Array<{
+    id: string;
+    runId: string | null;
+    project: string;
+    sourceBranch: string;
+    targetBranch: string;
+    previousHeadSha: string | null;
+    releaseSha: string | null;
+    mode: string;
+    status: string;
+    steps: Array<{ step: string; status: string; commandOrUrl: string; exitCode: number | null; durationMs: number }>;
+    errorMessage: string | null;
+    createdAt: string;
+  }>>([]);
 
   // Runs filter & live SSE terminal state
   const [runFilter, setRunFilter] = useState<"all" | "active" | "delivered" | "no_output" | "failed">("all");
@@ -184,6 +199,9 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
         const firstEnabled = next.agents.find((a) => a.status !== "disabled");
         return firstEnabled?.id ?? "";
       });
+      request<{ releases: typeof releases }>("/api/opc/domains/factory/releases")
+        .then((r) => setReleases(r.releases ?? []))
+        .catch(() => {});
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "读取暗工厂总览失败");
     }
@@ -455,6 +473,7 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
           taskDescription: dispatchTaskDesc.trim(),
           project: dispatchProject.trim(),
           repoPath: dispatchRepoPath.trim() || undefined,
+          verifyCommand: dispatchVerifyCommand.trim() || undefined,
           agentId: dispatchAgentId,
           autoCreatePr: dispatchAutoPr,
         }),
@@ -526,6 +545,44 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
     } catch (reason) {
       setNotice("");
       setError(reason instanceof Error ? reason.message : "创建 PR 失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRequestRelease = async (runId: string) => {
+    setBusy(true);
+    setError("");
+    setNotice("正在生成发布单并提交至总裁审批网关…");
+    try {
+      await request(`/api/opc/domains/factory/runs/${encodeURIComponent(runId)}/request-release`, {
+        method: "POST",
+        body: "{}",
+      });
+      setNotice("已提交真上线审批包至「总裁审批网关 (#mailbox)」，批准后将自动执行分支合入、构建、部署与探针验收。");
+      await load();
+    } catch (reason) {
+      setNotice("");
+      setError(reason instanceof Error ? reason.message : "发起发布审批失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRollbackRelease = async (releaseId: string) => {
+    setBusy(true);
+    setError("");
+    setNotice("正在执行紧急回滚（git reset 恢复前置提交并执行回滚钩子）…");
+    try {
+      await request(`/api/opc/domains/factory/releases/${encodeURIComponent(releaseId)}/rollback`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "暗工厂工作台人工触发紧急回滚" }),
+      });
+      setNotice(`发布单 ${releaseId} 已回滚至上线前提交锚点。`);
+      await load();
+    } catch (reason) {
+      setNotice("");
+      setError(reason instanceof Error ? reason.message : "执行回滚失败");
     } finally {
       setBusy(false);
     }
@@ -963,12 +1020,21 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
                     />
                   </label>
                   <label>
-                    本地 Git 仓库路径（留空则在临时沙盒运行）
+                    本地 Git 仓库路径（留空则按统一资产树解析）
                     <input
                       className="df-mono-input"
                       value={dispatchRepoPath}
                       onChange={(e) => setDispatchRepoPath(e.target.value)}
                       placeholder="/Users/you/workspace/my-repo"
+                    />
+                  </label>
+                  <label>
+                    外部确定性验收门禁 (verifyCommand，留空继承资产契约)
+                    <input
+                      className="df-mono-input"
+                      value={dispatchVerifyCommand}
+                      onChange={(e) => setDispatchVerifyCommand(e.target.value)}
+                      placeholder="例如：npm test && npm run typecheck"
                     />
                   </label>
                 </div>
@@ -1068,6 +1134,11 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
                         <td>
                           <div className="df-status-stack">
                             <span className={`df-badge run-${run.status}`}>{RUN_STATUS_LABELS[run.status]}</span>
+                            {run.verification && (
+                              <span className={`df-badge ${run.verification.passed ? "audit-passed" : "run-failed"}`}>
+                                {run.verification.passed ? "✓ 外部校验通过" : `✗ 校验失败 (${run.verification.exitCode})`}
+                              </span>
+                            )}
                             {run.circuitBreakerReason && (
                               <span className={`df-badge breaker-${run.circuitBreakerReason}`}>
                                 {run.circuitBreakerReason === "protected_path_violation" ? "🛡 " : "⚡ "}
@@ -1092,13 +1163,25 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
                                 PR ↗
                               </a>
                             )}
-                            {!run.prUrl &&
+                              {!run.prUrl &&
                               run.status === "completed" &&
                               run.branchName &&
                               run.worktreePath &&
                               run.protectedViolations.length === 0 && (
                                 <button type="button" disabled={busy} onClick={() => void handleCreatePr(run.id)}>
                                   生成 PR
+                                </button>
+                              )}
+                            {(run.status === "completed" || run.status === "pr_open") &&
+                              run.branchName &&
+                              run.protectedViolations.length === 0 && (
+                                <button
+                                  type="button"
+                                  className="df-primary"
+                                  disabled={busy}
+                                  onClick={() => void handleRequestRelease(run.id)}
+                                >
+                                  🚀 申请合入真上线
                                 </button>
                               )}
                             {(run.status === "running" || run.status === "queued") && (
@@ -1321,6 +1404,84 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
                 )}
               </div>
             </div>
+          </section>
+
+          {/* 5. Real Release Pipeline & Auto-Rollback Ledger */}
+          <section className="df-section" aria-label="真发布上线与回滚流水线">
+            <div className="df-section-head">
+              <div>
+                <h2>5. 真发布上线管线 & 自动回滚台账 (ReleasePipeline)</h2>
+                <p className="df-muted">
+                  在总裁审批网关批准后，按「前置校验 → 分支合入 → 确定性测试 → 构建 → 部署命令 → 健康探针 → 失败自动 git reset 回滚」真实执行。
+                </p>
+              </div>
+              <a className="df-pr-link" href="#mailbox">
+                前往总裁审批网关拍板 ↗
+              </a>
+            </div>
+            {releases.length === 0 ? (
+              <div className="df-empty-box">暂无发布记录。在上方完工任务点击「🚀 申请合入真上线」即可发起。</div>
+            ) : (
+              <div className="df-table-wrap">
+                <table className="df-table">
+                  <thead>
+                    <tr>
+                      <th>项目与分支</th>
+                      <th>状态与模式</th>
+                      <th>提交锚点 (前 → 后)</th>
+                      <th>真实步骤轨迹</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {releases.map((rel) => (
+                      <tr key={rel.id}>
+                        <td>
+                          <div className="df-run-title">{rel.project}</div>
+                          <div className="df-run-meta">
+                            <code>{rel.sourceBranch}</code> → <code>{rel.targetBranch}</code>
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`df-badge ${rel.status === "succeeded" ? "audit-passed" : rel.status === "pending_approval" ? "run-queued" : "run-failed"}`}>
+                            {rel.status}
+                          </span>
+                          <div className="df-run-meta">{rel.mode}</div>
+                        </td>
+                        <td className="df-mono-cell">
+                          <small>
+                            {rel.previousHeadSha ? rel.previousHeadSha.slice(0, 7) : "—"} →{" "}
+                            {rel.releaseSha ? rel.releaseSha.slice(0, 7) : "—"}
+                          </small>
+                        </td>
+                        <td>
+                          <div className="df-file-chips">
+                            {rel.steps.map((st, idx) => (
+                              <code key={idx} className={st.status === "failed" ? "is-violated" : ""}>
+                                {st.status === "passed" ? "✓" : st.status === "failed" ? "✗" : "·"} {st.step}
+                              </code>
+                            ))}
+                          </div>
+                          {rel.errorMessage && <div className="df-run-err">{rel.errorMessage}</div>}
+                        </td>
+                        <td>
+                          {rel.status === "succeeded" && rel.previousHeadSha && (
+                            <button
+                              type="button"
+                              className="df-danger-btn"
+                              disabled={busy}
+                              onClick={() => void handleRollbackRelease(rel.id)}
+                            >
+                              紧急回滚
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         </>
       )}

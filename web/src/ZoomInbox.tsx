@@ -1,7 +1,8 @@
 import { DelegationProvider, DelegationDesk } from "./Delegation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AutonomyMode, GovernancePolicy } from "../../src/kernel/types";
 import type { ZoomMessage } from "../../src/zoom-types";
-import { api } from "./api";
+import { api, request } from "./api";
 import { messageViews, taskKey } from "./zoom-view";
 import { productStages, type ProductStageId } from "../../src/product-stages";
 import { WorkflowBoard } from "./WorkflowBoard";
@@ -10,6 +11,7 @@ import { ProjectShelf } from "./ProjectShelf";
 import { Overview } from "./Overview";
 import { DigitalTwin } from "./DigitalTwin";
 import { ExecutiveOffice } from "./ExecutiveOffice";
+import { FounderMailbox } from "./FounderMailbox";
 import { CommercialHub } from "./CommercialHub";
 import { SecurityDepartment } from "./SecurityDepartment";
 import { OperationsDepartment } from "./OperationsDepartment";
@@ -26,10 +28,41 @@ import { KnowledgeCanvas } from "./KnowledgeCanvas";
 import { DarkFactory } from "./DarkFactory";
 import { TaskPlanning } from "./TaskPlanning";
 import { MetabolismHub } from "./MetabolismHub";
+import { CompanyHub } from "./CompanyHub";
 import { chatRoomLink, companyDepartments, decisionTarget, inboxScope, type DepartmentPage } from "./zoom-routes";
 import "./zoom.css";
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : "请求失败";
+const WORKBENCHES_STORAGE_KEY = "opc.sidebar.workbenches.open";
+const SPECIALTY_WORKBENCH_ROUTES = new Set([
+  "executive",
+  "delegations",
+  "business-lines",
+  "security-department",
+  "growth",
+  "canvas",
+  "metabolism",
+  "opportunities",
+  "product",
+  "stage",
+  "capabilities",
+  "activity-index",
+  "worklog",
+]);
+const AUTONOMY_META: Record<AutonomyMode, { short: string; hint: string }> = {
+  assisted: {
+    short: "人工协助",
+    hint: "全人工把关：信号入池待筛、暂不自动立项/派工/免审",
+  },
+  semi_auto: {
+    short: "半自动",
+    hint: "人挑活与审批，仅后台运维自愈保持自动守护",
+  },
+  full_auto: {
+    short: "全自治",
+    hint: "低风险自动放行 + 高分自动立项 + 临期配额自动派活",
+  },
+};
 const icons = {
   all: "m3 14 3-8h12l3 8v5H3z M3 14h5l2 3h4l2-3h5",
   pending: "M12 3a9 9 0 1 1-.01 0 M12 7v5l3 2",
@@ -94,10 +127,14 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   const legacyInbox = inboxScope(hash);
   const [product, setProduct] = useState("");
   const [projects, setProjects] = useState<string[]>([]);
+  const [pendingDecisions, setPendingDecisions] = useState(0);
 
   const workflowView = workflowId !== undefined;
   const overviewView = !workflowView && (!hash || routeName === "overview");
+  const companyArchView = !workflowView && routeName === "company-architecture";
+  const strategyHubView = !workflowView && routeName === "strategy-hub";
   const twinView = !workflowView && routeName === "digital-twin";
+  const mailboxView = !workflowView && routeName === "mailbox";
   const executiveView = !workflowView && routeName === "executive";
   const activityView = !workflowView && routeName === "activity-index";
   const projectsView = !workflowView && routeName === "projects";
@@ -120,6 +157,59 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
 
   const activityIndex = useActivityIndex(overviewView || activityView || twinView);
   const [mobileView, setMobileView] = useState<"list" | "nav">("list");
+  const [policy, setPolicy] = useState<GovernancePolicy | null>(null);
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [workbenchesOpen, setWorkbenchesOpen] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(WORKBENCHES_STORAGE_KEY);
+      if (saved !== null) return saved === "1";
+    } catch { /* ignore storage errors */ }
+    return false;
+  });
+
+  useEffect(() => {
+    if (SPECIALTY_WORKBENCH_ROUTES.has(routeName)) {
+      setWorkbenchesOpen(true);
+    }
+  }, [routeName]);
+
+  useEffect(() => {
+    let active = true;
+    const loadPolicy = async () => {
+      try {
+        const res = await request<{ policy: GovernancePolicy }>("/api/opc/kernel/decisions/policy");
+        if (active) setPolicy(res.policy);
+      } catch { /* ignore transient */ }
+    };
+    const onPolicyEvent = (event: Event) => {
+      const detail = (event as CustomEvent<GovernancePolicy>).detail;
+      if (detail) setPolicy(detail);
+      else void loadPolicy();
+    };
+    void loadPolicy();
+    window.addEventListener("opc:policy-updated", onPolicyEvent);
+    return () => {
+      active = false;
+      window.removeEventListener("opc:policy-updated", onPolicyEvent);
+    };
+  }, []);
+
+  const switchAutonomyMode = async (mode: AutonomyMode) => {
+    if (policyBusy || policy?.autonomyMode === mode) return;
+    setPolicyBusy(true);
+    try {
+      const res = await request<{ policy: GovernancePolicy }>("/api/opc/kernel/decisions/policy", {
+        method: "PUT",
+        body: JSON.stringify({ autonomyMode: mode }),
+      });
+      setPolicy(res.policy);
+      window.dispatchEvent(new CustomEvent("opc:policy-updated", { detail: res.policy }));
+    } catch {
+      // ignore; user can retry or inspect in Strategy Hub
+    } finally {
+      setPolicyBusy(false);
+    }
+  };
 
   useEffect(() => {
     setMobileView("list");
@@ -133,6 +223,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       if (generation !== latest.current) return;
       setMessages(response.messages);
       setProjects([...(response.products ?? []), ...(response.projectFolders ?? [])]);
+      setPendingDecisions(Number((response as { pendingDecisions?: number }).pendingDecisions ?? 0));
       setReady(true);
       setError("");
     } catch (reason) {
@@ -191,7 +282,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   const folders = useMemo(() => folderEntries(views.all, projects), [views.all, projects]);
   const productNames = folders.filter(entry => !entry.depth).map(entry => entry.path);
 
-  const openPage = (target: DepartmentPage | "overview" | "digital-twin" | "executive" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "canvas" | "metabolism" | "planning" | "dark-factory" | "capabilities" | "activity-index" | "delegations") => {
+  const openPage = (target: DepartmentPage | "overview" | "company-architecture" | "strategy-hub" | "digital-twin" | "mailbox" | "executive" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "canvas" | "metabolism" | "planning" | "dark-factory" | "capabilities" | "activity-index" | "delegations") => {
     setMobileView("list");
     location.hash = target;
   };
@@ -202,48 +293,95 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       <div className="zo-brand"><strong lang="en">OPC OS</strong></div>
       <button type="button" className="zo-close-nav" onClick={() => setMobileView("list")}><Icon name="back" />返回</button>
       <div className="zo-sidebar-scroll">
+        {policy && (
+          <div className="zo-autonomy" role="region" aria-label="自治档位切换">
+            <div className="zo-autonomy-head">
+              <span>自治档位</span>
+              <a href="#strategy-hub?tab=habits">细项 ↗</a>
+            </div>
+            <div className="zo-autonomy-seg" role="group" aria-label="选择系统自治档位">
+              {(["assisted", "semi_auto", "full_auto"] as AutonomyMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  data-mode={mode}
+                  aria-pressed={policy.autonomyMode === mode}
+                  disabled={policyBusy}
+                  onClick={() => void switchAutonomyMode(mode)}
+                >
+                  {AUTONOMY_META[mode].short}
+                </button>
+              ))}
+            </div>
+            <p className="zo-autonomy-hint">{AUTONOMY_META[policy.autonomyMode].hint}</p>
+          </div>
+        )}
         <nav aria-label="主导航" className="zo-views">
-          <span className="zo-nav-section" aria-hidden="true">总控与群聊</span>
+          <span className="zo-nav-section" aria-hidden="true">总裁驾驶舱</span>
           <button type="button" aria-label="全局看板" aria-pressed={overviewView} onClick={() => openPage("overview")}><Icon name="board" /><span>全局看板</span></button>
-          <button type="button" aria-label="组织数字孪生" aria-pressed={twinView} onClick={() => openPage("digital-twin")}><Icon name="twin" /><span>组织数字孪生</span></button>
-          <button type="button" aria-label="总裁办 Bot 架构" aria-pressed={executiveView} onClick={() => openPage("executive")}><Icon name="executive" /><span>总裁办 · Bot 架构</span></button>
-          <button type="button" aria-label="Agent Home 群聊" aria-pressed={homeView} onClick={() => openPage("home-room")}>
-            <Icon name="channel" /><span>Agent Home 群聊</span>{views.pending.length > 0 && <small>{views.pending.length}</small>}
+          <button type="button" aria-label="公司架构与扩展落位" aria-pressed={companyArchView} onClick={() => openPage("company-architecture")}><Icon name="twin" /><span>六大部门与架构</span></button>
+          <button type="button" aria-label="总裁信箱" aria-pressed={mailboxView} onClick={() => openPage("mailbox")}>
+            <Icon name="all" /><span>总裁信箱 · 审批网关</span>{(views.pending.length + pendingDecisions) > 0 && <small>{views.pending.length + pendingDecisions}</small>}
           </button>
-          <button type="button" aria-label="委派台" aria-pressed={page === "delegations"} onClick={() => openPage("delegations")}><Icon name="thread" /><span>委派台</span></button>
 
-          <span className="zo-nav-section" aria-hidden="true">经营与公司部门</span>
-          <button type="button" className="zo-product-nav" aria-label="公司业务线" aria-pressed={businessView} onClick={() => openPage("business-lines")}><Icon name="growth" /><span>公司业务线</span></button>
-          {companyDepartments.map(department =>
-            <button type="button" key={department.page} aria-label={department.name} aria-pressed={page === department.page} onClick={() => openPage(department.page)}>
-              <Icon name={department.icon} /><span>{department.name}</span>
-            </button>
-          )}
-          <button type="button" aria-label="渠道转化" aria-pressed={growthView} onClick={() => openPage("growth")}><Icon name="growth" /><span>渠道转化</span></button>
+          <span className="zo-nav-section" aria-hidden="true">六大公司职能部门</span>
+          <button type="button" aria-label="长期主线与习惯记忆" aria-pressed={strategyHubView} onClick={() => openPage("strategy-hub")}><Icon name="executive" /><span>01 · 战略与习惯记忆</span></button>
+          <button type="button" aria-label="任务看板与 ROI" aria-pressed={planningView} onClick={() => openPage("planning")}><Icon name="planning" /><span>02 · 情报与产品拆解</span></button>
+          <button type="button" aria-label="Agent 暗工厂" aria-pressed={factoryView} onClick={() => openPage("dark-factory")}><Icon name="factory" /><span>03 · 研发暗工厂与上线</span></button>
+          <button type="button" aria-label="资源成本部门" aria-pressed={page === "resource-department"} onClick={() => openPage("resource-department")}><Icon name="wallet" /><span>04 · 算力与配额调度</span></button>
+          <button type="button" aria-label="运维部门" aria-pressed={page === "operations-department"} onClick={() => openPage("operations-department")}><Icon name="pulse" /><span>05 · 自愈运维与集群</span></button>
+          <button type="button" aria-label="商业与治理部" aria-pressed={page === "commercial"} onClick={() => openPage("commercial")}><Icon name="growth" /><span>06 · 商业与总账桥接</span></button>
 
-          <span className="zo-nav-section" aria-hidden="true">产研与资产复用</span>
+          <span className="zo-nav-section" aria-hidden="true">高频手操直达</span>
+          <button type="button" aria-label="组织数字孪生" aria-pressed={twinView} onClick={() => openPage("digital-twin")}><Icon name="twin" /><span>组织数字孪生</span></button>
+          <button type="button" aria-label="Agent Home 群聊与 Bot" aria-pressed={homeView} onClick={() => openPage("home-room")}><Icon name="channel" /><span>Agent Home 群聊</span></button>
           <button type="button" aria-label="信息与想法" aria-pressed={ideasView} onClick={() => openPage("ideas")}><Icon name="all" /><span>信息与想法</span></button>
-          <button type="button" aria-label="无界知识画布" aria-pressed={canvasView} onClick={() => openPage("canvas")}><Icon name="canvas" /><span>无界知识画布</span></button>
-          <button type="button" aria-label="信息代谢与商业闭环" aria-pressed={metabolismView} onClick={() => openPage("metabolism")}><Icon name="metabolism" /><span>信息代谢 · PM</span></button>
-          <button type="button" aria-label="任务看板与 ROI" aria-pressed={planningView} onClick={() => openPage("planning")}><Icon name="planning" /><span>任务看板 · ROI</span></button>
-          <button type="button" aria-label="Agent 暗工厂" aria-pressed={factoryView} onClick={() => openPage("dark-factory")}><Icon name="factory" /><span>Agent 暗工厂</span></button>
-          <button type="button" aria-label="研发选题" aria-pressed={opportunitiesView} onClick={() => openPage("opportunities")}><Icon name="thread" /><span>研发选题</span></button>
           <button type="button" aria-label="项目目录" aria-pressed={projectsView} onClick={() => openPage("projects")}><Icon name="folder" /><span>项目目录</span></button>
-          <button type="button" aria-label="产品进程" aria-pressed={productView || stageView} onClick={() => openPage("product")}><Icon name="board" /><span>产品进程</span></button>
-          <button type="button" aria-label="开源能力" aria-pressed={capabilitiesView} onClick={() => openPage("capabilities")}><Icon name="folder" /><span>开源能力</span></button>
 
-          <span className="zo-nav-section" aria-hidden="true">现场与投入</span>
-          <button type="button" aria-label="会话与仓库索引" aria-pressed={activityView} onClick={() => openPage("activity-index")}><Icon name="thread" /><span>会话与仓库索引</span></button>
-          <button type="button" aria-label="工作投入" aria-pressed={worklogView} onClick={() => openPage("worklog")}><Icon name="pending" /><span>工作投入</span></button>
+          <details
+            className="zo-nav-details"
+            open={workbenchesOpen}
+            onToggle={(e) => {
+              const nextOpen = (e.currentTarget as HTMLDetailsElement).open;
+              setWorkbenchesOpen(nextOpen);
+              try {
+                localStorage.setItem(WORKBENCHES_STORAGE_KEY, nextOpen ? "1" : "0");
+              } catch { /* ignore storage errors */ }
+            }}
+          >
+            <summary className="zo-nav-summary">
+              <span>各部门专项工作台</span>
+              <span className="zo-nav-summary-meta">
+                <span>12</span>
+                <span className="zo-nav-chevron" aria-hidden="true">▸</span>
+              </span>
+            </summary>
+            <div className="zo-nav-sublist">
+              <button type="button" aria-label="总裁办 Bot 架构" aria-pressed={executiveView} onClick={() => openPage("executive")}><Icon name="executive" /><span>总裁办 · Bot 架构</span></button>
+              <button type="button" aria-label="委派台" aria-pressed={page === "delegations"} onClick={() => openPage("delegations")}><Icon name="thread" /><span>委派台</span></button>
+              <button type="button" className="zo-product-nav" aria-label="公司业务线" aria-pressed={businessView} onClick={() => openPage("business-lines")}><Icon name="growth" /><span>公司业务线</span></button>
+              <button type="button" aria-label="安全部门" aria-pressed={page === "security-department"} onClick={() => openPage("security-department")}><Icon name="shield" /><span>安全评审门禁</span></button>
+              <button type="button" aria-label="渠道转化" aria-pressed={growthView} onClick={() => openPage("growth")}><Icon name="growth" /><span>渠道转化</span></button>
+              <button type="button" aria-label="无界知识画布" aria-pressed={canvasView} onClick={() => openPage("canvas")}><Icon name="canvas" /><span>无界知识画布</span></button>
+              <button type="button" aria-label="信息代谢与商业闭环" aria-pressed={metabolismView} onClick={() => openPage("metabolism")}><Icon name="metabolism" /><span>信息代谢 · 简报</span></button>
+              <button type="button" aria-label="研发选题" aria-pressed={opportunitiesView} onClick={() => openPage("opportunities")}><Icon name="thread" /><span>研发选题池</span></button>
+              <button type="button" aria-label="产品进程" aria-pressed={productView || stageView} onClick={() => openPage("product")}><Icon name="board" /><span>产品进程</span></button>
+              <button type="button" aria-label="开源能力" aria-pressed={capabilitiesView} onClick={() => openPage("capabilities")}><Icon name="folder" /><span>开源能力库</span></button>
+              <button type="button" aria-label="会话与仓库索引" aria-pressed={activityView} onClick={() => openPage("activity-index")}><Icon name="thread" /><span>会话与仓库索引</span></button>
+              <button type="button" aria-label="工作投入" aria-pressed={worklogView} onClick={() => openPage("worklog")}><Icon name="pending" /><span>个人工作投入</span></button>
+            </div>
+          </details>
         </nav>
       </div>
       <footer className="zo-sidebar-foot">
-        <a href="#channels"><Icon name="channel" />频道</a>
-        {workflowEnabled && <a href="#workflows"><Icon name="board" />工作流看板</a>}
+        <a href="#channels"><Icon name="channel" />底层调试频道</a>
+        {workflowEnabled && <a href="#workflows"><Icon name="board" />旧版工作流看板</a>}
       </footer>
     </aside>
 
     {workflowView ? <WorkflowBoard id={workflowId} nav={openNav} />
+      : companyArchView ? <CompanyHub key={`arch:${pageParams.get("tab") ?? ""}`} nav={openNav} initialTab={(["architecture", "mainlines", "habits"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "architecture" | "mainlines" | "habits" : "architecture")} />
+      : strategyHubView ? <CompanyHub key={`strat:${pageParams.get("tab") ?? ""}`} nav={openNav} initialTab={(["architecture", "mainlines", "habits"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "architecture" | "mainlines" | "habits" : "mainlines")} />
       : page === "commercial" ? <CommercialHub nav={openNav} />
       : page === "security-department" ? <SecurityDepartment key={hash} nav={openNav} />
       : page === "operations-department" ? <OperationsDepartment key={hash} nav={openNav} />
@@ -255,10 +393,11 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       : ideasView ? <CompanyIdeas nav={openNav} />
       : canvasView ? <KnowledgeCanvas nav={openNav} initialCanvasId={pageParams.get("id") ?? undefined} />
       : metabolismView ? <MetabolismHub nav={openNav} initialTab={(["briefings", "pm", "commercial", "providers"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "briefings" | "pm" | "commercial" | "providers" : undefined)} />
-      : planningView ? <TaskPlanning nav={openNav} initialTab={(["kanban", "roi", "patrol"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "kanban" | "roi" | "patrol" : undefined)} />
+      : planningView ? <TaskPlanning nav={openNav} initialTab={(["signals", "kanban", "roi", "patrol"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "signals" | "kanban" | "roi" | "patrol" : undefined)} />
       : factoryView ? <DarkFactory nav={openNav} initialRunId={pageParams.get("run") ?? undefined} />
       : worklogView ? <Worklog key={hash} line={pageParams.get("line") ?? ""} nav={openNav} />
       : businessView ? <BusinessLines nav={openNav} />
+      : mailboxView ? <FounderMailbox nav={openNav} messages={views.all} onResolved={() => void refresh()} />
       : executiveView ? <ExecutiveOffice nav={openNav} pending={views.pending} />
       : twinView ? <DigitalTwin nav={openNav} messages={views.all} pending={views.pending} handled={views.handled} folders={folders} products={productNames} workflowEnabled={workflowEnabled} activityIndex={activityIndex} />
       : overviewView ? <Overview activityIndex={activityIndex} nav={openNav} products={projects.filter(name => !name.includes("/"))} messages={views.all} pending={views.pending} ready={ready} error={error} onRetry={() => void refresh()} />

@@ -413,6 +413,14 @@ export function OperationsDepartment({ nav }: { nav: ReactNode }) {
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const [draft, setDraft] = useState<{ name: string; host?: string; endpoint?: string } | null>(null);
+  const [watchdog, setWatchdog] = useState<{
+    disk?: { freeGb: number; totalGb: number; freePct: number; healthy: boolean };
+    sqlite?: { quickCheck: string; journalMode: string; healthy: boolean };
+    uptimes?: Array<{ targetId: string; uptimePct: number; latestHealthy: boolean; latestDetail: string }>;
+    uptimeByTarget?: Array<{ targetId: string; uptimePct: number; latestHealthy: boolean; latestDetail: string }>;
+    remediations?: Array<{ id: string; targetId: string; action: string; outcome: string; detail: string; createdAt: string }>;
+  } | null>(null);
+  const [watchdogBusy, setWatchdogBusy] = useState(false);
 
   const reload = () => setRevision(n => n + 1);
 
@@ -426,8 +434,26 @@ export function OperationsDepartment({ nav }: { nav: ReactNode }) {
       .then(result => { if (!controller.signal.aborted) setTopology(result); })
       .catch(reason => { if (!controller.signal.aborted) setTopoError(reason.message); })
       .finally(() => { if (!controller.signal.aborted) setTopoBusy(false); });
+    request<NonNullable<typeof watchdog>>("/api/opc/domains/ops/watchdog", { signal: controller.signal })
+      .then(w => { if (!controller.signal.aborted) setWatchdog(w); })
+      .catch(() => {});
     return () => controller.abort();
   }, [revision]);
+
+  const runWatchdogNow = async () => {
+    setWatchdogBusy(true);
+    try {
+      await request("/api/opc/domains/ops/watchdog/run", {
+        method: "POST",
+        body: JSON.stringify({ forceHeal: true }),
+      });
+      reload();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "执行自愈巡检失败");
+    } finally {
+      setWatchdogBusy(false);
+    }
+  };
 
   const liveByServiceId = useMemo(() => {
     const map = new Map<string, DeployedServiceEntry>();
@@ -449,8 +475,50 @@ export function OperationsDepartment({ nav }: { nav: ReactNode }) {
   };
 
   return <section className="zo-product ops-dept" aria-label="运维部门">
-    <header className="zo-product-head">{nav}<h1>运维部门</h1></header>
+    <header className="zo-product-head">{nav}<h1>05 · 稳定性与自愈运维部</h1></header>
     <div className="ops-main">
+      <section className="ops-block" aria-label="常驻自愈守护">
+        <header>
+          <h2>常驻自愈守护 (OpsWatchdog)</h2>
+          <button type="button" disabled={watchdogBusy} onClick={() => void runWatchdogNow()}>
+            {watchdogBusy ? "巡检自愈中…" : "立即执行全量巡检与自愈"}
+          </button>
+        </header>
+        <p style={{ fontSize: "0.85rem", margin: "4px 0 10px" }}>
+          后台每 5 分钟自动检测本机磁盘余量、SQLite WAL 健康度、商业附属套件存活与 CLI 登录态；挂死服务自动带退避拉起，高频崩溃自动转交产品部立项修复。
+        </p>
+        {watchdog && (
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: "0.84rem", marginBottom: 8 }}>
+            {watchdog.disk && (
+              <span>
+                <strong>本机磁盘：</strong>
+                {watchdog.disk.freeGb.toFixed(1)} GB 可用 ({watchdog.disk.freePct.toFixed(1)}%) ·{" "}
+                {watchdog.disk.healthy ? "健康" : "空间告急"}
+              </span>
+            )}
+            {watchdog.sqlite && (
+              <span>
+                <strong>主库状态：</strong>
+                {watchdog.sqlite.quickCheck} ({watchdog.sqlite.journalMode})
+              </span>
+            )}
+            {(watchdog.uptimes ?? watchdog.uptimeByTarget ?? []).map(u => (
+              <span key={u.targetId}>
+                <strong>{u.targetId}：</strong>可用率 {u.uptimePct}%
+              </span>
+            ))}
+          </div>
+        )}
+        {watchdog?.remediations && watchdog.remediations.length > 0 && (
+          <ul style={{ fontSize: "0.82rem", margin: 0 }}>
+            {watchdog.remediations.slice(0, 4).map(r => (
+              <li key={r.id}>
+                <code>{r.targetId}</code> · {r.action} → <strong>{r.outcome}</strong> ({r.detail})
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <FleetSection
         topology={topology}
         busy={topoBusy}

@@ -24,14 +24,54 @@ export function CommercialHub({ nav }: { nav: ReactNode }) {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [editingPilot, setEditingPilot] = useState(false);
-  const [tab, setTab] = useState<"layers" | "license" | "gtm" | "support">("layers");
+  const [tab, setTab] = useState<"bridge" | "layers" | "license" | "gtm" | "support">("bridge");
   const [toolOutput, setToolOutput] = useState<string>("");
+  const [bridgeData, setBridgeData] = useState<{
+    ledger?: {
+      companionOnline: boolean;
+      source: string;
+      grossRevenueUsd: number;
+      refundsUsd: number;
+      commerceCostUsd: number;
+      internalAiMonthlyUsd: number;
+      factoryTokenCostUsd: number;
+      netUsd: number;
+      products: Array<{ product: string; ordersCount: number; activeLicenses: number; grossUsd: number; netUsd: number }>;
+    };
+    crm?: {
+      totalCustomers: number;
+      customers: Array<{
+        customerId: string;
+        emailMasked: string;
+        channel: string;
+        ordersCount: number;
+        activeLicenses: number;
+        openTickets: number;
+        stage: string;
+      }>;
+    };
+    crmSummary?: {
+      totalCustomers: number;
+      recentCustomers?: Array<{
+        customerId: string;
+        emailMasked: string;
+        channel: string;
+        ordersCount: number;
+        activeLicenses: number;
+        openTickets: number;
+        stage: string;
+      }>;
+    };
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
       const next = await request<CommercialOverview>("/api/opc/commercial/overview");
       setData(next);
       setError("");
+      request<NonNullable<typeof bridgeData>>("/api/opc/domains/commercial/bridge")
+        .then((b) => setBridgeData(b))
+        .catch(() => {});
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "读取商业与治理总览失败");
     }
@@ -193,9 +233,9 @@ export function CommercialHub({ nav }: { nav: ReactNode }) {
             type="button"
             className="cm-accent"
             disabled={busy}
-            onClick={() => void runAction("演练首单全闭环", "/api/opc/commercial/actions/closed-loop", {})}
+            onClick={() => void runAction("沙盒演练首单闭环", "/api/opc/commercial/actions/closed-loop", { sandbox: true })}
           >
-            3. 一键跑通首单闭环
+            3. 沙盒演练首单闭环（不污染生产）
           </button>
           <button
             type="button"
@@ -427,6 +467,9 @@ export function CommercialHub({ nav }: { nav: ReactNode }) {
 
           <section className="cm-section" aria-label="商业操作与七层资产地图">
             <div className="cm-tabs" role="tablist">
+              <button type="button" role="tab" aria-selected={tab === "bridge"} onClick={() => setTab("bridge")}>
+                统一外部总账 & 客户 CRM 桥接
+              </button>
               <button type="button" role="tab" aria-selected={tab === "layers"} onClick={() => setTab("layers")}>
                 OPC 7 层全景地图（L6→L0）
               </button>
@@ -442,6 +485,88 @@ export function CommercialHub({ nav }: { nav: ReactNode }) {
             </div>
 
             <div className="cm-panel">
+              {tab === "bridge" && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+                    <div>
+                      <h3 style={{ margin: 0 }}>外部商业三件套标准桥接（收银总账 · 内部算力成本同步 · 客户 CRM 底座）</h3>
+                      <small className="cm-muted">
+                        收支与客户档案统一归口外部 Commerce / GTM / Ops 三件套；主控自动同步 AI 月费与暗工厂 Token 成本，成单后零改造即用。
+                      </small>
+                    </div>
+                    <button
+                      type="button"
+                      className="cm-primary"
+                      disabled={busy}
+                      onClick={() => void runAction("同步内部 AI 订阅与暗工厂成本至 Commerce", "/api/opc/domains/commercial/sync-costs", {})}
+                    >
+                      同步内部算力/月费至 Commerce 总账
+                    </button>
+                  </div>
+
+                  {bridgeData?.ledger && (
+                    <div className="cm-kpis" style={{ marginBottom: 16 }}>
+                      <div className="cm-kpi">
+                        <span>外部真实订单净收款 (USD)</span>
+                        <strong>${bridgeData.ledger.grossRevenueUsd.toFixed(2)}</strong>
+                        <small>退款冲减 ${bridgeData.ledger.refundsUsd.toFixed(2)} · 来源 {bridgeData.ledger.source}</small>
+                      </div>
+                      <div className="cm-kpi">
+                        <span>内部 AI 套餐月费 / 暗工厂 Token</span>
+                        <strong>
+                          ${bridgeData.ledger.internalAiMonthlyUsd.toFixed(2)} / ${bridgeData.ledger.factoryTokenCostUsd.toFixed(4)}
+                        </strong>
+                        <small>已联通 ResourceDept 与 DarkFactory 真实消耗</small>
+                      </div>
+                      <div className="cm-kpi">
+                        <span>全公司综合净损益 (Net P&L)</span>
+                        <strong>${bridgeData.ledger.netUsd.toFixed(2)}</strong>
+                        <small>自动排除 sandbox 沙盒演练假单</small>
+                      </div>
+                      <div className="cm-kpi">
+                        <span>纳管真实客户档案 (CRM)</span>
+                        <strong>{bridgeData.crm?.totalCustomers ?? bridgeData.crmSummary?.totalCustomers ?? 0}</strong>
+                        <small>串联来源渠道 · 候补 · 购买授权 · 客服工单</small>
+                      </div>
+                    </div>
+                  )}
+
+                  {(() => {
+                    const crmCustomers = bridgeData?.crm?.customers ?? bridgeData?.crmSummary?.recentCustomers ?? [];
+                    return crmCustomers.length > 0 ? (
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.84rem" }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: "left", padding: 6 }}>客户标识</th>
+                            <th style={{ textAlign: "left", padding: 6 }}>来源渠道</th>
+                            <th style={{ textAlign: "left", padding: 6 }}>生命周期阶段</th>
+                            <th style={{ textAlign: "left", padding: 6 }}>订单 / 有效授权 / 待办工单</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {crmCustomers.slice(0, 20).map((c) => (
+                            <tr key={c.customerId} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+                              <td style={{ padding: 6 }}>
+                                <strong>{c.customerId}</strong> {c.emailMasked && <small>({c.emailMasked})</small>}
+                              </td>
+                              <td style={{ padding: 6 }}>{c.channel || "direct"}</td>
+                              <td style={{ padding: 6 }}><span className="cm-badge">{c.stage}</span></td>
+                              <td style={{ padding: 6 }}>
+                                {c.ordersCount} 单 · {c.activeLicenses} 授权 · {c.openTickets} 工单
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <p className="cm-muted">
+                        当前暂无真实客户入库（CRM 与统一总账桥接底座已就绪，后续产品推向市场产生候补、激活或订单后将在此自动汇聚客户全生命周期）。
+                      </p>
+                    );
+                  })()}
+                </div>
+              )}
+
               {tab === "layers" && (
                 <div className="cm-layers">
                   {data.layers.map((layer) => (

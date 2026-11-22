@@ -1,0 +1,322 @@
+.ch-wrap {
+  padding: 24px 28px 56px;
+  max-width: 1280px;
+  margin: 0 auto;
+  color: var(--ink, #1f1d1a);
+}
+
+.ch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line, rgba(0, 0, 0, 0.1));
+}
+
+.ch-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ch-header h1 {
+  font-size: 1.35rem;
+  margin: 0;
+}
+
+.ch-sub {
+  margin: 4px 0 0;
+  font-size: 0.88rem;
+  color: var(--muted, #6b655c);
+}
+
+.ch-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.ch-tab {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+  background: var(--paper, #fffdf9);
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.ch-tab.active {
+  background: var(--accent, #9b3b22);
+  color: #fffdf9;
+  border-color: var(--accent, #9b3b22);
+}
+
+.ch-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.ch-kpi {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.1));
+  background: var(--paper, #fffdf9);
+}
+
+.ch-kpi span {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--muted, #6b655c);
+}
+
+.ch-kpi strong {
+  font-size: 1.35rem;
+  display: block;
+  margin-top: 4px;
+}
+
+.ch-dept-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 16px;
+}
+
+.ch-dept-card {
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+  border-radius: 12px;
+  padding: 16px 18px;
+  background: var(--paper, #fffdf9);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ch-dept-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.ch-dept-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(155, 59, 34, 0.1);
+  color: var(--accent, #9b3b22);
+  font-weight: 600;
+}
+
+.ch-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.ch-badge.ok {
+  background: rgba(34, 120, 75, 0.12);
+  color: #1d6b43;
+}
+
+.ch-badge.warn {
+  background: rgba(185, 90, 25, 0.14);
+  color: #9c4411;
+}
+
+.ch-owns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ch-owns span {
+  font-size: 0.76rem;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.045);
+}
+
+.ch-slot {
+  font-size: 0.8rem;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(155, 59, 34, 0.05);
+  border-left: 3px solid var(--accent, #9b3b22);
+  color: var(--ink, #2c2925);
+}
+
+.ch-panel {
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+  border-radius: 12px;
+  padding: 18px 20px;
+  background: var(--paper, #fffdf9);
+  margin-bottom: 18px;
+}
+
+.ch-panel h2 {
+  font-size: 1.05rem;
+  margin: 0 0 12px;
+}
+
+.ch-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.ch-form-grid label,
+.ch-stack label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+
+.ch-form-grid input,
+.ch-form-grid select,
+.ch-form-grid textarea,
+.ch-stack input,
+.ch-stack textarea,
+.ch-stack select {
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.18));
+  background: #fff;
+  font: inherit;
+}
+
+.ch-mainline-card {
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: #fff;
+}
+
+.ch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ch-btn {
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.18));
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.83rem;
+}
+
+.ch-btn.primary {
+  background: var(--accent, #9b3b22);
+  color: #fff;
+  border-color: var(--accent, #9b3b22);
+}
+
+.ch-asset-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-top: 10px;
+}
+
+.ch-asset-table th,
+.ch-asset-table td {
+  text-align: left;
+  padding: 7px 8px;
+  border-top: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+}
+
+.ch-notice {
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  font-size: 0.86rem;
+  background: rgba(34, 120, 75, 0.1);
+  color: #1b5e3a;
+}
+
+.ch-notice.err {
+  background: rgba(185, 45, 35, 0.1);
+  color: #99231b;
+}
+
+.ch-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.ch-mode-card {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.14));
+  background: #fff;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ch-mode-card:hover:not(:disabled) {
+  border-color: var(--accent, #9b3b22);
+  background: #fffcf5;
+}
+
+.ch-mode-card.active {
+  border-color: var(--accent, #9b3b22);
+  background: rgba(155, 59, 34, 0.06);
+  box-shadow: inset 3px 0 0 var(--accent, #9b3b22);
+}
+
+.ch-mode-card strong {
+  font-size: 0.92rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ch-mode-card small {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--muted, #6b655c);
+}
+
+.ch-policy-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+}
+
+.ch-policy-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.ch-policy-check input[type="checkbox"] {
+  margin-top: 3px;
+  accent-color: var(--accent, #9b3b22);
+}
