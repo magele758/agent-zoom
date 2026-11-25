@@ -208,8 +208,14 @@ export class StageHomeClient {
       .map(row => ({ id: row.bot.id, name: row.bot.name })).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }
 
-  async send(botId: string, input: string, key: string) {
-    return (await this.call("/api/bot-work/tasks", z.object({ task }), { targetBotId: botId, input, idempotencyKey: key })).task;
+  async send(botId: string, input: string, key: string, requesterBotId?: string) {
+    const body: { targetBotId: string; input: string; idempotencyKey: string; requesterBotId?: string } = {
+      targetBotId: botId,
+      input,
+      idempotencyKey: key,
+    };
+    if (requesterBotId && requesterBotId !== botId) body.requesterBotId = requesterBotId;
+    return (await this.call("/api/bot-work/tasks", z.object({ task }), body)).task;
   }
 
   async read(id: string) {
