@@ -23,20 +23,163 @@ export type HomeTask = z.infer<typeof task>;
 const taskPage = z.object({ tasks: z.array(task.pick({ id: true, input: true, targetBotId: true })),
   hasMore: z.boolean(), nextCursor: z.string().nullable() });
 
+export interface ResolvedAgentHomeWeb {
+  webOrigin: string;
+  webAvailable: boolean;
+  apiOrigin: string;
+}
+
+const DEFAULT_DAEMON_PORT = "37070";
+const KNOWN_WEB_CONSOLE_PORTS = ["23000", "33815"];
+
+function normalizeLoopbackOrigin(raw: string): string | null {
+  try {
+    const url = new URL(raw.trim());
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      url.username ||
+      url.password
+    ) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function probeHtmlKind(origin: string): Promise<"web_ui" | "daemon_stub" | "other" | "unreachable"> {
+  try {
+    const res = await fetch(origin + "/", {
+      method: "GET",
+      headers: { accept: "text/html,application/xhtml+xml,*/*" },
+      signal: AbortSignal.timeout(1200),
+      redirect: "manual",
+    });
+    if (!res.ok) return "other";
+    const ct = (res.headers.get("content-type") ?? "").toLowerCase();
+    if (!ct.includes("text/html")) return "other";
+    const body = (await res.text()).slice(0, 8192);
+    if (body.includes("这是 Daemon 占位页") || body.includes("Agent Lab · API 已就绪")) {
+      return "daemon_stub";
+    }
+    if (
+      body.includes("<title>Agent Home</title>") ||
+      body.includes("Raw Agent SDK") ||
+      body.includes("/_next/static/")
+    ) {
+      return "web_ui";
+    }
+    return "other";
+  } catch {
+    return "unreachable";
+  }
+}
+
 export class StageHomeClient {
   readonly origin: string;
   readonly identity: string;
   private token: string | undefined;
+  private explicitWebOrigin: string | null;
+  private explicitApiBase: boolean;
+  private webCache: { value: ResolvedAgentHomeWeb; expiresAt: number } | null = null;
 
-  constructor(env: { PPENG_BASE_URL?: string; PPENG_TOKEN?: string } = process.env as NodeJS.ProcessEnv) {
+  constructor(
+    env: {
+      PPENG_BASE_URL?: string;
+      PPENG_TOKEN?: string;
+      PPENG_WEB_URL?: string;
+      AGENT_HOME_WEB_URL?: string;
+      RAW_AGENT_WEB_URL?: string;
+      RAW_AGENT_WEB_PORT?: string;
+    } = process.env as NodeJS.ProcessEnv,
+  ) {
     const url = new URL(env.PPENG_BASE_URL || "http://127.0.0.1:37070");
     if (!["http:", "https:"].includes(url.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
       url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
       throw new ApiError(400, "stage_home_url", "Agent Home 需要本机服务地址。");
     }
     this.origin = url.origin;
+    this.explicitApiBase = Boolean(env.PPENG_BASE_URL);
     this.token = env.PPENG_TOKEN;
     this.identity = createHash("sha256").update(this.origin + "\n" + (this.token ?? "")).digest("hex");
+
+    const rawWeb =
+      env.AGENT_HOME_WEB_URL?.trim() ||
+      env.PPENG_WEB_URL?.trim() ||
+      env.RAW_AGENT_WEB_URL?.trim() ||
+      (env.RAW_AGENT_WEB_PORT && /^\d{2,5}$/.test(env.RAW_AGENT_WEB_PORT.trim())
+        ? `http://127.0.0.1:${env.RAW_AGENT_WEB_PORT.trim()}`
+        : "");
+    this.explicitWebOrigin = rawWeb ? normalizeLoopbackOrigin(rawWeb) : null;
+  }
+
+  /**
+   * Resolve the real Agent Home Web Console origin (e.g. http://127.0.0.1:23000)
+   * separately from the Daemon API origin (http://127.0.0.1:37070), because
+   * the daemon port only serves a static API stub page (`这是 Daemon 占位页`).
+   */
+  async resolveWebOrigin(options: { force?: boolean } = {}): Promise<ResolvedAgentHomeWeb> {
+    const now = Date.now();
+    if (!options.force && this.webCache && this.webCache.expiresAt > now) {
+      return this.webCache.value;
+    }
+
+    const remember = (value: ResolvedAgentHomeWeb): ResolvedAgentHomeWeb => {
+      this.webCache = { value, expiresAt: Date.now() + 15_000 };
+      return value;
+    };
+
+    if (this.explicitWebOrigin) {
+      const kind = await probeHtmlKind(this.explicitWebOrigin);
+      return remember({
+        webOrigin: this.explicitWebOrigin,
+        webAvailable: kind === "web_ui" || kind === "other",
+        apiOrigin: this.origin,
+      });
+    }
+
+    const selfKind = await probeHtmlKind(this.origin);
+    if (selfKind === "web_ui") {
+      return remember({
+        webOrigin: this.origin,
+        webAvailable: true,
+        apiOrigin: this.origin,
+      });
+    }
+
+    const apiPort = new URL(this.origin).port || DEFAULT_DAEMON_PORT;
+    const shouldDiscoverLocalWeb = !this.explicitApiBase || apiPort === DEFAULT_DAEMON_PORT || selfKind === "daemon_stub";
+
+    if (shouldDiscoverLocalWeb) {
+      const apiHost = new URL(this.origin).hostname;
+      for (const port of KNOWN_WEB_CONSOLE_PORTS) {
+        const candidate = `http://${apiHost}:${port}`;
+        if (candidate === this.origin) continue;
+        const kind = await probeHtmlKind(candidate);
+        if (kind === "web_ui") {
+          return remember({
+            webOrigin: candidate,
+            webAvailable: true,
+            apiOrigin: this.origin,
+          });
+        }
+      }
+      if (selfKind === "daemon_stub" || apiPort === DEFAULT_DAEMON_PORT) {
+        return remember({
+          webOrigin: `http://${apiHost}:23000`,
+          webAvailable: false,
+          apiOrigin: this.origin,
+        });
+      }
+    }
+
+    return remember({
+      webOrigin: this.origin,
+      webAvailable: false,
+      apiOrigin: this.origin,
+    });
   }
 
   async call<T>(path: string, schema: z.ZodType<T>, body?: unknown, method?: "GET" | "POST" | "PATCH" | "DELETE"): Promise<T> {

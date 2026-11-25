@@ -112,6 +112,40 @@ export type ExecutiveStatus = {
   error?: string;
 };
 
+export type ExecutiveReceiptTrace = {
+  request: string;
+  background: string;
+  purpose: string;
+  result: string;
+  evidence: string[];
+  deliveryUnavailable?: boolean;
+  status: string;
+  failureReason?: string;
+  createdAt?: string;
+  requestedAt?: string;
+  returnedAt?: string;
+  origin?: {
+    kind: "zoom" | "workflow" | "delegation" | "room";
+    title: string;
+    href: string;
+    taskId?: string;
+    messageId?: string;
+    workId?: string;
+    delegationId?: string;
+    project?: string;
+    patrolRunId?: string;
+  };
+  affectedTasks: {
+    id: string; title: string; project: string; status: string; observedStatus: string; latestRunId: string | null;
+    latestRun?: { status: string; errorSummary: string; completedAt: string | null };
+  }[];
+  decisionId?: string;
+  decision?: {
+    kind: "kernel" | "zoom" | "workflow"; id: string; status: string; actionable: boolean; href: string;
+    options: { id: string; label: string }[];
+  };
+};
+
 export type ExecutiveMailItem = {
   id: string;
   source: "executive_room" | "department_task";
@@ -122,14 +156,17 @@ export type ExecutiveMailItem = {
   subject: string;
   excerpt: string;
   body: string;
-  status: "working" | "completed" | "failed" | "sent";
+  status: "working" | "completed" | "failed" | "cancelled" | "sent";
   read: boolean;
   needsDecision: boolean;
   createdAt: string;
+  /** This linked terminal record was retained locally after leaving Agent Home's recent list. */
+  historical?: true;
   roomId?: string;
   messageId?: string;
   taskId?: string;
   departmentId?: ExecutiveDepartmentId;
+  trace?: ExecutiveReceiptTrace;
 };
 
 export type ExecutiveMailboxResponse = {
@@ -141,5 +178,7 @@ export type ExecutiveMailboxResponse = {
   superBotId: string | null;
   superBotWorking: boolean;
   items: ExecutiveMailItem[];
+  /** Locally verified original patrol notifications, independent of Bot receipts. */
+  sourceTraces?: Record<string, ExecutiveReceiptTrace>;
   error?: string;
 };

@@ -8,6 +8,7 @@ import type {
   PortfolioTree,
 } from "../../src/kernel/types";
 import { request } from "./api";
+import { OpcStoryFlow } from "./OpcStoryFlow";
 import "./company-hub.css";
 
 const AUTONOMY_MODES: Array<{
@@ -76,12 +77,9 @@ export function CompanyHub({
   initialTab = "architecture",
 }: {
   nav?: ReactNode;
-  initialTab?: "architecture" | "mainlines" | "habits";
+  initialTab?: "story" | "architecture" | "mainlines" | "habits";
 }) {
-  const [tab, setTab] = useState<"architecture" | "mainlines" | "habits">(initialTab);
-  useEffect(() => {
-    setTab(initialTab);
-  }, [initialTab]);
+  const [tab, setTab] = useState<"story" | "architecture" | "mainlines" | "habits">(initialTab);
   useEffect(() => {
     setTab(initialTab);
   }, [initialTab]);
@@ -327,6 +325,15 @@ export function CompanyHub({
         <button
           type="button"
           role="tab"
+          aria-selected={tab === "story"}
+          className={tab === "story" ? "ch-tab active" : "ch-tab"}
+          onClick={() => setTab("story")}
+        >
+          来龙去脉与运作思路图谱
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === "architecture"}
           className={tab === "architecture" ? "ch-tab active" : "ch-tab"}
           onClick={() => setTab("architecture")}
@@ -379,6 +386,8 @@ export function CompanyHub({
           </div>
         </div>
       )}
+
+      {tab === "story" && <OpcStoryFlow mode="full" />}
 
       {tab === "architecture" && arch && (
         <div className="ch-dept-grid">
@@ -477,47 +486,49 @@ export function CompanyHub({
                   )}
 
                   {ml.products.length > 0 && (
-                    <table className="ch-asset-table">
-                      <thead>
-                        <tr>
-                          <th>归属产品</th>
-                          <th>仓库 / 服务资产</th>
-                          <th>确定性验收命令</th>
-                          <th>构建 / 部署命令</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {ml.products.flatMap((prod) =>
-                          prod.assets.map((asset) => (
-                            <tr key={asset.id}>
-                              <td>
-                                <strong>{prod.name}</strong> <small>({prod.role})</small>
-                              </td>
-                              <td>
-                                {asset.name}
-                                {asset.paused && <span className="ch-badge warn">已暂停</span>}
-                              </td>
-                              <td>
-                                <code>{asset.verifyCommand || "未配置"}</code>
-                              </td>
-                              <td>
-                                <code>{asset.deployCommand || asset.buildCommand || "仅合入主干"}</code>
-                              </td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="ch-btn"
-                                  onClick={() => setEditingAsset({ ...asset })}
-                                >
-                                  配置上线契约
-                                </button>
-                              </td>
-                            </tr>
-                          )),
-                        )}
-                      </tbody>
-                    </table>
+                    <div className="opc-table-scroll ch-table-scroll" role="region" aria-label={ml.name + " 的资产与交付命令"} tabIndex={0}>
+                      <table className="ch-asset-table ch-pipeline-table">
+                        <thead>
+                          <tr>
+                            <th>归属产品</th>
+                            <th>仓库 / 服务资产</th>
+                            <th>确定性验收命令</th>
+                            <th>构建 / 部署命令</th>
+                            <th>操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ml.products.flatMap((prod) =>
+                            prod.assets.map((asset) => (
+                              <tr key={asset.id}>
+                                <td>
+                                  <strong>{prod.name}</strong> <small>({prod.role})</small>
+                                </td>
+                                <td>
+                                  {asset.name}
+                                  {asset.paused && <span className="ch-badge warn">已暂停</span>}
+                                </td>
+                                <td>
+                                  <code>{asset.verifyCommand || "未配置"}</code>
+                                </td>
+                                <td>
+                                  <code>{asset.deployCommand || asset.buildCommand || "仅合入主干"}</code>
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="ch-btn"
+                                    onClick={() => setEditingAsset({ ...asset })}
+                                  >
+                                    配置上线契约
+                                  </button>
+                                </td>
+                              </tr>
+                            )),
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
               );
@@ -744,34 +755,36 @@ export function CompanyHub({
           <div className="ch-panel">
             <h2>创始人习惯与决策偏好规则库（自动从历史拍板学习 + 手工校准）</h2>
             {strategy?.rules.length ? (
-              <table className="ch-asset-table">
-                <thead>
-                  <tr>
-                    <th>规则类型</th>
-                    <th>匹配词 / 标签</th>
-                    <th>加减权分值</th>
-                    <th>命中次数</th>
-                    <th>备注说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {strategy.rules.map((r) => (
-                    <tr key={r.id}>
-                      <td>{r.kind}</td>
-                      <td>
-                        <code>{r.pattern}</code>
-                      </td>
-                      <td>
-                        <strong style={{ color: r.weight >= 0 ? "#1d6b43" : "#99231b" }}>
-                          {r.weight >= 0 ? `+${r.weight}` : r.weight}
-                        </strong>
-                      </td>
-                      <td>{r.hitCount}</td>
-                      <td>{r.note || "—"}</td>
+              <div className="opc-table-scroll ch-table-scroll" role="region" aria-label="创始人决策偏好规则" tabIndex={0}>
+                <table className="ch-asset-table">
+                  <thead>
+                    <tr>
+                      <th>规则类型</th>
+                      <th>匹配词 / 标签</th>
+                      <th>加减权分值</th>
+                      <th>命中次数</th>
+                      <th>备注说明</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {strategy.rules.map((r) => (
+                      <tr key={r.id}>
+                        <td>{r.kind}</td>
+                        <td>
+                          <code>{r.pattern}</code>
+                        </td>
+                        <td>
+                          <strong style={{ color: r.weight >= 0 ? "#1d6b43" : "#99231b" }}>
+                            {r.weight >= 0 ? `+${r.weight}` : r.weight}
+                          </strong>
+                        </td>
+                        <td>{r.hitCount}</td>
+                        <td>{r.note || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <p style={{ fontSize: "0.85rem", color: "var(--muted)" }}>暂无偏好规则。</p>
             )}

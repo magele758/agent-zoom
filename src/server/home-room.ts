@@ -664,11 +664,26 @@ export class HomeRoomBridge {
         ...(r.replyMode && { replyMode: r.replyMode }),
         ...(r.updatedAt && { updatedAt: r.updatedAt }),
       }));
-      return { available: true, origin: this.client.origin, rooms, bots, groups, links };
+      const web = await this.client.resolveWebOrigin();
+      return {
+        available: true,
+        origin: web.webOrigin,
+        apiOrigin: web.apiOrigin,
+        webOrigin: web.webOrigin,
+        webAvailable: web.webAvailable,
+        rooms,
+        bots,
+        groups,
+        links,
+      };
     } catch (error) {
+      const web = await this.client.resolveWebOrigin();
       return {
         available: false,
-        origin: this.client.origin,
+        origin: web.webOrigin,
+        apiOrigin: web.apiOrigin,
+        webOrigin: web.webOrigin,
+        webAvailable: web.webAvailable,
         reason: error instanceof ApiError ? error.message : "Agent Home 服务暂未连接，请确认本机 Agent Home 已启动。",
         rooms: [],
         bots: [],

@@ -523,3 +523,78 @@ test("direct Agent Home group chat manages multi-bot rooms, links, idea refs and
   assert.match(shopMsgs[0].text, /#business-lines\?line=shop&trial=trial-1/);
   assert.match(shopMsgs[0].text, /继续 \/ 调整 \/ 暂停/);
 });
+
+test("StageHomeClient separates real Agent Home Web Console origin from Daemon API stub", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "opc-home-web-origin-"));
+  const store = openStore(join(root, "opc.db"));
+
+  // Mock Daemon API serving the exact API stub page on "/"
+  const daemon = createServer((req, res) => {
+    const url = new URL(req.url!, "http://localhost");
+    if (url.pathname === "/") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end("<!doctype html><title>Agent Lab · API 已就绪</title><h1>这是 Daemon 占位页（仅 API）</h1>");
+      return;
+    }
+    if (url.pathname === "/api/bot-work/status") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ bots: [{ bot: { id: "super-bot", name: "Super Bot" }, control: {} }] }));
+      return;
+    }
+    if (url.pathname === "/api/bot-rooms") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ rooms: [{ id: "room-1", title: "测试群", status: "active", botIds: ["super-bot"] }] }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end("{}");
+  });
+
+  // Mock Real Agent Home Web Console (Next.js)
+  const webConsole = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end('<!doctype html><title>Agent Home</title><script src="/_next/static/chunks/app.js"></script>');
+  });
+
+  daemon.listen(0, "127.0.0.1");
+  webConsole.listen(0, "127.0.0.1");
+  await Promise.all([once(daemon, "listening"), once(webConsole, "listening")]);
+
+  const daemonOrigin = "http://127.0.0.1:" + (daemon.address() as AddressInfo).port;
+  const webOrigin = "http://127.0.0.1:" + (webConsole.address() as AddressInfo).port;
+  const old = [process.env.PPENG_BASE_URL, process.env.PPENG_TOKEN, process.env.AGENT_HOME_WEB_URL];
+  process.env.PPENG_BASE_URL = daemonOrigin;
+  delete process.env.PPENG_TOKEN;
+  process.env.AGENT_HOME_WEB_URL = webOrigin;
+
+  const created = createApp(store);
+  const cookie = (await created.app.request("/api/me")).headers.get("set-cookie")!.split(";")[0];
+
+  t.after(() => {
+    ["PPENG_BASE_URL", "PPENG_TOKEN", "AGENT_HOME_WEB_URL"].forEach((key, i) => {
+      if (old[i] === undefined) delete process.env[key];
+      else process.env[key] = old[i];
+    });
+    daemon.closeAllConnections();
+    daemon.close();
+    webConsole.closeAllConnections();
+    webConsole.close();
+    store.db.close();
+    rmSync(root, { force: true, recursive: true });
+  });
+
+  const res = await created.app.request("/api/opc/home-chat/overview", { headers: { cookie } });
+  assert.equal(res.status, 200);
+  const overview = (await res.json()) as {
+    available: boolean;
+    origin: string;
+    apiOrigin?: string;
+    webOrigin?: string;
+    webAvailable?: boolean;
+  };
+  assert.equal(overview.available, true);
+  assert.equal(overview.apiOrigin, daemonOrigin);
+  assert.equal(overview.webOrigin, webOrigin);
+  assert.equal(overview.origin, webOrigin);
+  assert.equal(overview.webAvailable, true);
+});

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { loopbackProxy } from "./workflow-proxy.mjs";
 
 // Trusted configuration supplies the role and project test argv. The host appends
 // the immutable payload and result file. No command is taken from the plan.
@@ -37,14 +38,28 @@ writeFileSync(schema, JSON.stringify({
   type: "object", required: ["outcome", "summary"], additionalProperties: false,
   properties: { outcome: { type: "string", enum: ["succeeded", "failed"] }, summary: { type: "string" } },
 }), { mode: 0o600, flag: "wx" });
+const cliEnv = { ...process.env };
+try {
+  const proxy = loopbackProxy(JSON.parse(readFileSync(join(directory, "cli-proxy.json"), "utf8")));
+  if (Object.keys(proxy).length) {
+    Object.assign(cliEnv, proxy);
+    for (const key of ["no_proxy", "NO_PROXY"]) {
+      cliEnv[key] = [cliEnv[key], "localhost", "127.0.0.1", "::1"].filter(Boolean).join(",");
+    }
+  }
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
 console.log(`Codex · ${role} · ${payload.node.title}\n会话记录 ${log}`);
 const logFile = openSync(log, "wx", 0o600);
 let codex;
 try {
-  codex = spawnSync("codex", ["--no-daemon", "-a", "never", "exec", "--sandbox",
-    role === "review" ? "read-only" : "workspace-write", "--cd", payload.worktree,
-    "--output-schema", schema, "--output-last-message", answer, "-"], {
-    cwd: payload.worktree, input: prompt, timeout: 900_000, stdio: ["pipe", logFile, logFile],
+  const codexArgs = role === "review"
+    ? ["--no-daemon", "-a", "never", "exec", "--sandbox", "read-only"]
+    : ["--no-daemon", "exec", "--dangerously-bypass-approvals-and-sandbox"];
+  codex = spawnSync("codex", [...codexArgs,
+    "--cd", payload.worktree, "--output-schema", schema, "--output-last-message", answer, "-"], {
+    cwd: payload.worktree, env: cliEnv, input: prompt, timeout: 900_000, stdio: ["pipe", logFile, logFile],
   });
 } finally {
   closeSync(logFile);

@@ -335,6 +335,20 @@
   gap: 3px;
   font-size: 12.5px;
 }
+.cm-customer-table {
+  width: 100%;
+  min-inline-size: 36rem;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+.cm-customer-table :is(th, td) {
+  padding: 6px;
+  text-align: left;
+}
+.cm-customer-table tbody tr { border-top: 1px solid var(--line); }
+.cm-customer-table th,
+.cm-customer-table td:nth-last-child(-n + 2) { white-space: nowrap; }
+.cm-customer-table td:nth-child(-n + 2) { overflow-wrap: anywhere; }
 .cm-analytics-bar {
   margin-top: 12px;
   padding: 11px 14px;

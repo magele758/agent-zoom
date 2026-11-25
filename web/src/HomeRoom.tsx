@@ -20,7 +20,22 @@ type IdeaCitation = {
 };
 
 const chatBase = "/api/opc/home-chat";
+const DEFAULT_WEB_ORIGIN = "http://127.0.0.1:23000";
 const label = (e: unknown) => (e instanceof Error ? e.message : "无法读取 Agent Home 信息");
+
+const AGENT_HOME_TABS: Array<{ id: string; label: string; hash: string }> = [
+  { id: "bot", label: "对话与群聊", hash: "#/bot" },
+  { id: "agents", label: "Bots 与 Agents", hash: "#/agents/bots" },
+  { id: "tasks", label: "任务流", hash: "#/tasks/flows" },
+  { id: "knowledge", label: "知识与记忆", hash: "#/knowledge" },
+  { id: "settings", label: "设置", hash: "#/settings" },
+];
+
+function agentHomeUrl(origin: string, hashPath: string): string {
+  const base = origin.replace(/\/+$/, "");
+  const cleanHash = hashPath.startsWith("#") ? hashPath : `#/${hashPath.replace(/^\/+/, "")}`;
+  return `${base}/${cleanHash}`;
+}
 
 const replyModeLabels: Record<string, string> = {
   coordinator: "主控协调",
@@ -675,7 +690,19 @@ export function HomeRoom({
   nav?: ReactNode;
 }) {
   const initialParams = useMemo(() => new URLSearchParams(location.hash.split("?")[1]), []);
+  const initialNeedsDirectory = Boolean(
+    initialParams.get("idea") ||
+    initialParams.get("draft") ||
+    initialParams.get("mode") === "directory",
+  );
   const [overview, setOverview] = useState<HomeChatOverview | null>(null);
+  const [viewMode, setViewMode] = useState<"live" | "directory">(initialNeedsDirectory ? "directory" : "live");
+  const [liveHash, setLiveHash] = useState<string>(() => {
+    const bot = initialParams.get("bot");
+    if (bot) return `#/agents/bots?bot=${encodeURIComponent(bot)}&focus=permissions`;
+    return "#/bot";
+  });
+  const [frameKey, setFrameKey] = useState(0);
   const [railTab, setRailTab] = useState<"rooms" | "bots">(() => (initialParams.get("bot") ? "bots" : "rooms"));
   const [search, setSearch] = useState("");
   const [selectedRoomId, setSelectedRoomId] = useState<string>(() => initialParams.get("room") ?? "");
@@ -685,6 +712,12 @@ export function HomeRoom({
   const [ideaParam, setIdeaParam] = useState<string>(() => initialParams.get("idea") ?? "");
   const [draftText, setDraftText] = useState<string>(() => initialParams.get("draft") ?? "");
   const [ideaCitation, setIdeaCitation] = useState<IdeaCitation | null>(null);
+
+  const openInLiveFrame = (hashPath: string) => {
+    setLiveHash(hashPath);
+    setViewMode("live");
+    setFrameKey((n) => n + 1);
+  };
 
   useEffect(() => {
     const sync = () => {
@@ -696,12 +729,21 @@ export function HomeRoom({
         setCreating(false);
       }
       if (params.get("bot")) {
-        setSelectedBotId(params.get("bot") ?? "");
+        const botId = params.get("bot") ?? "";
+        setSelectedBotId(botId);
         setRailTab("bots");
+        setLiveHash(`#/agents/bots?bot=${encodeURIComponent(botId)}&focus=permissions`);
         setCreating(false);
       }
-      setIdeaParam(params.get("idea") ?? "");
-      if (params.get("draft")) setDraftText(params.get("draft") ?? "");
+      const nextIdea = params.get("idea") ?? "";
+      const nextDraft = params.get("draft") ?? "";
+      setIdeaParam(nextIdea);
+      if (nextDraft) setDraftText(nextDraft);
+      if (nextIdea || nextDraft || params.get("mode") === "directory") {
+        setViewMode("directory");
+      } else if (params.get("mode") === "live") {
+        setViewMode("live");
+      }
     };
     window.addEventListener("hashchange", sync);
     return () => window.removeEventListener("hashchange", sync);
@@ -734,7 +776,9 @@ export function HomeRoom({
       .catch(
         (err): HomeChatOverview => ({
           available: false,
-          origin: "http://127.0.0.1:37070",
+          origin: DEFAULT_WEB_ORIGIN,
+          webOrigin: DEFAULT_WEB_ORIGIN,
+          webAvailable: false,
           reason: label(err),
           rooms: [],
           bots: [],
@@ -827,34 +871,150 @@ export function HomeRoom({
     return sortedBots[0];
   }, [sortedBots, selectedBotId]);
 
-  const origin = overview?.origin || "http://127.0.0.1:37070";
+  const origin = overview?.webOrigin || overview?.origin || DEFAULT_WEB_ORIGIN;
+  const webAvailable = overview?.webAvailable ?? false;
+  const liveUrl = agentHomeUrl(origin, liveHash);
+  const showLiveEmbed = viewMode === "live" && webAvailable;
 
   return (
-    <section className="zo-product hr-page" aria-label="Agent Home 群聊与 Bot">
+    <section
+      className={`zo-product hr-page${showLiveEmbed ? " hr-page-live" : ""}`}
+      aria-label="Agent Home 群聊与 Bot"
+    >
       <header className="zo-product-head hr-top-head">
         {nav}
-        <div>
-          <a href="#overview">全局看板 ↗</a>
-          {" · "}
-          <a href="#mailbox">总裁信箱 ↗</a>
-          <h1>Agent Home 群聊与 Bot</h1>
+        <div className="hr-head-title">
+          <div className="hr-head-crumbs">
+            <a href="#overview">全局看板 ↗</a>
+            {" · "}
+            <a href="#mailbox">总裁信箱 ↗</a>
+          </div>
+          <h1>Agent Home 群聊</h1>
         </div>
-        <div className="hr-top-actions">
-          <a className="hr-primary hr-launch-btn" href={`${origin}/#/bot`} target="_blank" rel="noreferrer">
-            打开原生 Agent Home ↗
-          </a>
-          <button type="button" onClick={() => setReload((n) => n + 1)}>刷新</button>
+
+        <div className="hr-mode-switch" role="tablist" aria-label="Agent Home 视图切换">
           <button
             type="button"
-            disabled={!overview?.available}
-            onClick={() => setCreating((v) => !v)}
+            role="tab"
+            aria-selected={viewMode === "live"}
+            onClick={() => setViewMode("live")}
           >
-            {creating ? "取消新建" : "+ 新建群聊"}
+            <span className="hr-status-dot" data-tone={webAvailable ? "ok" : "warn"} />
+            真实 Agent Home 页面
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === "directory"}
+            onClick={() => setViewMode("directory")}
+          >
+            OPC 群聊与 Bot 管理
+            {overview && overview.rooms.length > 0 && ` (${overview.rooms.length})`}
+          </button>
+        </div>
+
+        <div className="hr-top-actions">
+          <a className="hr-primary hr-launch-btn" href={liveUrl} target="_blank" rel="noreferrer">
+            独立窗口打开 Agent Home ↗
+          </a>
+          <button
+            type="button"
+            onClick={() => {
+              setReload((n) => n + 1);
+              setFrameKey((n) => n + 1);
+            }}
+          >
+            刷新
+          </button>
+          {viewMode === "directory" && (
+            <button
+              type="button"
+              disabled={!overview?.available}
+              onClick={() => setCreating((v) => !v)}
+            >
+              {creating ? "取消新建" : "+ 新建群聊"}
+            </button>
+          )}
         </div>
       </header>
 
-      <div className="hr-shell">
+      {viewMode === "live" ? (
+        <div className="hr-live-stage">
+          <div className="hr-live-toolbar">
+            <div className="hr-live-nav" role="navigation" aria-label="Agent Home 快捷分区">
+              {AGENT_HOME_TABS.map((item) => {
+                const active = liveHash === item.hash || liveHash.startsWith(item.hash + "?");
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => openInLiveFrame(item.hash)}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="hr-live-meta">
+              <span className="hr-live-origin" title={`Web 控制台：${origin}${overview?.apiOrigin ? ` · Daemon API：${overview.apiOrigin}` : ""}`}>
+                <span className="hr-status-dot" data-tone={webAvailable ? "ok" : "warn"} />
+                {webAvailable ? `已直连真实页面 ${origin}` : `未检测到 Web 控制台 ${origin}`}
+              </span>
+              {pending.length > 0 && (
+                <button
+                  type="button"
+                  className="hr-live-pending-btn"
+                  onClick={() => setViewMode("directory")}
+                >
+                  推送 {pending.length} 条 OPC 待决卡片 →
+                </button>
+              )}
+            </div>
+          </div>
+
+          {!overview ? (
+            <div className="hr-live-fallback">
+              <p className="hr-muted">正在探测并连接本机部署的真实 Agent Home 页面…</p>
+            </div>
+          ) : webAvailable ? (
+            <iframe
+              key={`${liveUrl}#${frameKey}`}
+              className="hr-live-frame"
+              src={liveUrl}
+              title="Agent Home 真实控制台"
+              allow="clipboard-read; clipboard-write"
+            />
+          ) : (
+            <div className="hr-live-fallback">
+              <div className="hr-offline" role="status">
+                <strong>未检测到运行中的 Agent Home Web 页面</strong>
+                <p>
+                  {overview.available
+                    ? `Agent Home Daemon API（${overview.apiOrigin || "http://127.0.0.1:37070"}）已在线，但仅提供 API 占位页；真实前端控制台（${origin}）当前未启动。`
+                    : overview.reason || "暂未连接到本机 Agent Home 服务。"}
+                </p>
+                <small>
+                  请确认本机 Agent Home Web 控制台（默认 <code>http://127.0.0.1:23000</code>）已启动，或配置环境变量{" "}
+                  <code>AGENT_HOME_WEB_URL</code> 指定实际地址。
+                </small>
+                <div className="hr-launch-actions">
+                  <button type="button" className="hr-primary" onClick={() => setReload((n) => n + 1)}>
+                    重新探测真实页面
+                  </button>
+                  <button type="button" onClick={() => setViewMode("directory")}>
+                    切换到 OPC 群聊与 Bot 管理
+                  </button>
+                  <a href={liveUrl} target="_blank" rel="noreferrer">
+                    尝试直接打开 {origin} ↗
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="hr-shell">
         <aside className="hr-rail" aria-label="群聊与 Bot 成员目录">
           <div className="hr-rail-tabs" role="tablist" aria-label="切换群聊或 Bot 列表">
             <button
@@ -1042,12 +1202,13 @@ export function HomeRoom({
             <div className="hr-empty-state">
               <h2>Agent Home 群聊与 Bot 目录</h2>
               <p>
-                左侧可随时切换查看所有「群聊」和「Bot 成员」，点击「前往原生 Agent Home ↗」直接在原生界面聊天；若希望异步收发 Super Bot 汇报和审批，请使用左侧「总裁信箱」。
+                左侧可随时切换查看所有「群聊」和「Bot 成员」，点击顶部「真实 Agent Home 页面」可直接内嵌操作完整原生界面；若希望异步收发 Super Bot 汇报和审批，请使用左侧「总裁信箱」。
               </p>
             </div>
           )}
         </div>
       </div>
+      )}
     </section>
   );
 }

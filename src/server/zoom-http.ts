@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Context, Hono } from "hono";
 import type { WorkflowRun } from "../workflow-types.ts";
 import type { ExecutiveDepartmentId } from "../executive-bots-types.ts";
+import { buildMailboxIssues } from "../executive-mailbox-issues.ts";
 import { securityStatus } from "../security-department-types.ts";
 import type { Principal, Store } from "./logic.ts";
 import { submitAuth } from "./workflow/http.ts";
@@ -21,9 +22,10 @@ import { addProjectProfileRoutes } from "./project-profiles.ts";
 import { addCommercialRoutes } from "./commercial.ts";
 import { OperationsDepartmentStore, registerOperationsDepartmentRoutes } from "./operations-department.ts";
 import { buildOperationsTopology } from "./ops-fleet.ts";
-import { readHubResources, registerResourceDepartmentRoutes } from "./resource-department.ts";
+import { readHubResourcesWithLiveAuthAsync, registerResourceDepartmentRoutes } from "./resource-department.ts";
 import { registerSecurityDepartmentRoutes, SecurityReviews } from "./security-department.ts";
 import { registerExecutiveBotRoutes, type ExecutivePulseProvider } from "./executive-bots.ts";
+import { ExecutiveReceiptTracer } from "./executive-receipt-trace.ts";
 import { registerRoleBotRoutes } from "./role-bots.ts";
 import { addProjectRoutes } from "./projects.ts";
 import { projectMessages } from "./project-mail.ts";
@@ -39,12 +41,96 @@ import { registerDarkFactoryRoutes } from "./dark-factory.ts";
 import { registerTaskPlanningRoutes } from "./task-planning.ts";
 import { registerKnowledgeCanvasRoutes } from "./knowledge-canvas.ts";
 import { registerMetabolismRoutes, toUsd } from "./metabolism.ts";
+import { registerCliLedgerRoutes } from "./cli-ledger.ts";
+import { registerTaskTriageRoutes } from "./task-triage.ts";
+import { registerBotArbitratorRoutes } from "./bot-arbitrator.ts";
+import { registerPlannotatorBridgeRoutes } from "./plannotator-bridge.ts";
+import { registerClassificationRoutes } from "./workspace-classifier.ts";
+import { registerWorkstreamRoutes } from "./workstreams.ts";
+import { registerHerdrControlRoutes } from "./herdr-control.ts";
+import type { addActivityIndex } from "./company-activity-index.ts";
 import { bootstrapCompanyRuntime, type CompanyRuntime } from "../kernel/bootstrap.ts";
+import type { DecisionOption } from "../kernel/types.ts";
+
+/** Structured choice fields only. Free text must not become an approval token. */
+export type ReplyMatchInput = {
+  matchedOptionId?: string | null;
+  matchedChoiceLabel?: string | null;
+  matchedChoiceValue?: string | null;
+  selectedLabels?: string[] | null;
+};
+
+function replyToken(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toLowerCase();
+  return trimmed ? trimmed : null;
+}
+
+export function exactReplyTokens(event: ReplyMatchInput): string[] {
+  const tokens: string[] = [];
+  const push = (value: string | null | undefined) => {
+    const next = replyToken(value);
+    if (next && !tokens.includes(next)) tokens.push(next);
+  };
+  push(event.matchedChoiceValue);
+  push(event.matchedChoiceLabel);
+  for (const label of event.selectedLabels ?? []) push(label);
+  return tokens;
+}
+
+function replyTokensWithOptionId(event: ReplyMatchInput): string[] {
+  const tokens = exactReplyTokens(event);
+  const id = replyToken(event.matchedOptionId);
+  if (id && !tokens.includes(id)) tokens.unshift(id);
+  return tokens;
+}
+
+export function matchDecisionOption(event: ReplyMatchInput, options: DecisionOption[]): DecisionOption | undefined {
+  if (event.matchedOptionId) {
+    const byId = options.find((option) => option.id === event.matchedOptionId);
+    if (byId) return byId;
+  }
+  const tokens = exactReplyTokens(event);
+  const hits = options.filter((option) =>
+    tokens.some((item) => item === option.id.toLowerCase() || item === option.label.trim().toLowerCase()),
+  );
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+type WorkflowAction = "approve" | "changes" | "reject";
+const WORKFLOW_ACTIONS: Record<WorkflowAction, readonly string[]> = {
+  approve: ["approve", "批准", "同意", "通过", "执行"],
+  changes: ["changes", "修改", "返修", "打回", "补充"],
+  reject: ["reject", "拒绝", "驳回", "关闭", "放弃", "过期"],
+};
+function matchExclusiveAction<T extends string>(tokens: string[], sets: Record<T, readonly string[]>): T | null {
+  const hits = (Object.keys(sets) as T[]).filter((action) => tokens.some((item) => sets[action].includes(item)));
+  return hits.length === 1 ? hits[0] : null;
+}
+export function matchWorkflowAction(event: ReplyMatchInput): WorkflowAction | null {
+  return matchExclusiveAction(replyTokensWithOptionId(event), WORKFLOW_ACTIONS);
+}
+export type TriageDigestAction = "enable_auto_roll" | "run_triage";
+export type ArbitratorDigestAction = "delegated_safe" | "run_arbitrator";
+const TRIAGE_ACTIONS: Record<TriageDigestAction, readonly string[]> = {
+  enable_auto_roll: ["enable_auto_roll", "开启自动轮动", "自动派工"],
+  run_triage: ["run_triage", "批审", "开始审查", "立即审查"],
+};
+const ARBITRATOR_ACTIONS: Record<ArbitratorDigestAction, readonly string[]> = {
+  delegated_safe: ["delegated_safe", "安全自动拍板"],
+  run_arbitrator: ["run_arbitrator", "立即让 bot 拍板", "自动拍板"],
+};
+export function matchTriageDigestAction(event: ReplyMatchInput): TriageDigestAction | null {
+  return matchExclusiveAction(replyTokensWithOptionId(event), TRIAGE_ACTIONS);
+}
+export function matchArbitratorDigestAction(event: ReplyMatchInput): ArbitratorDigestAction | null {
+  return matchExclusiveAction(replyTokensWithOptionId(event), ARBITRATOR_ACTIONS);
+}
 
 export function addZoomRoutes(app: Hono, store: Store, options: {
   submitToken?: string;
   opportunities: OpportunityStore;
   homeRooms: HomeRoomBridge;
+  activityIndex?: ReturnType<typeof addActivityIndex>;
   workflow?: WorkflowService;
   user: (c: Context) => Extract<Principal, { type: "user" }>;
 }) {
@@ -115,7 +201,8 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
   let pulseCache: { at: number; value: Awaited<ReturnType<ExecutivePulseProvider>> } | null = null;
   const pulseProvider: ExecutivePulseProvider = async () => {
     if (pulseCache && Date.now() - pulseCache.at < 15_000) return pulseCache.value;
-    const pendingMsgs = rawMessages(store.localUser()).filter(m => m.pending);
+    const founder = store.localUser();
+    const pendingMsgs = delegations.decorate(rawMessages(founder), founder).filter(m => m.pending);
     const comm = await commercial.overview().catch(() => null);
     const probes = comm?.services ?? [];
     const topo = await buildOperationsTopology(opsStore.index().services, probes, {
@@ -147,7 +234,7 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
       }
     }).length;
 
-    const hub = readHubResources(hubQuotaPath);
+    const hub = await readHubResourcesWithLiveAuthAsync(hubQuotaPath);
     const lowQuotaTools = hub.tools.filter(t =>
       t.windows.some(w => typeof w.reportedRemaining === "number" && w.reportedRemaining <= 20),
     );
@@ -253,7 +340,7 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
       return [];
     }
   };
-  registerExecutiveBotRoutes(app, store.db, options.user, { pulseProvider, codingAgentsProvider });
+  const executive = registerExecutiveBotRoutes(app, store.db, options.user, { pulseProvider, codingAgentsProvider, traceMessages: rawMessages });
   registerRoleBotRoutes(app, store.db, options.user);
 
   // ---- Knowledge-to-Business Full Pipeline Wiring (Providers + Dark Factory + Task Planning + Knowledge Canvas + Metabolism) ----
@@ -440,7 +527,7 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
         status: a.status,
         capabilities: a.capabilities,
       })),
-    dispatchToAgent: async (task, agentId, autoCreatePr) => {
+    dispatchToAgent: async (task, agentId, autoCreatePr, requestKey, executionHost) => {
       if (companyRef) {
         const adm = companyRef.kernel.registry.checkAdmission(task.project, {
           isEmergencyBug: task.type === "bug" && task.priority >= 9,
@@ -457,7 +544,8 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
         verifyCommand: task.verifyCommand || undefined,
         agentId,
         autoCreatePr: Boolean(autoCreatePr),
-      });
+        executionHost,
+      }, requestKey);
       return { runId: run.id, status: run.status };
     },
     getAgentMetrics: (days) => {
@@ -492,20 +580,20 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
       }
       return rev;
     },
-    notifyPatrolToZoom: (alerts) => {
+    notifyPatrolToZoom: (alerts, report) => {
       if (!alerts.length) return;
-      const day = new Date().toISOString().slice(0, 10);
+      const day = report.createdAt.slice(0, 10);
       const task = zoom.register({
         source: "OPC OS · 后台巡检卫士",
         externalId: `patrol-${day}`,
         folder: "公司/巡检告警",
-        title: `巡检发现 ${alerts.length} 项滞留任务`,
+        title: `巡检发现 ${alerts.length} 项任务异常`,
         context: alerts.map((a) => `· [${a.project}] ${a.title}（已滞留 ${a.staleDays} 天，状态 ${a.status}）`).join("\n").slice(0, 4000),
       });
       zoom.report(task.id, {
-        eventId: `patrol-report-${day}-${Date.now()}`,
+        eventId: `patrol-report-${day}-${report.id}`,
         kind: "question",
-        body: `后台巡检卫士发现 ${alerts.length} 项滞留未推进任务：\n` +
+        body: `后台巡检卫士发现 ${alerts.length} 项需要核对的任务：\n` +
           alerts.slice(0, 8).map((a) => `- [${a.project}] ${a.title}（${a.staleDays} 天未更新 · ${a.status}）`).join("\n") +
           `\n请前往 #planning?tab=patrol 处置或重新指派。`,
         choices: ["前往任务看板处理", "暂缓一周"],
@@ -597,16 +685,309 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
   });
   companyRef = company;
 
+  const resolveRepoPath = (project: string): string | null => {
+    const direct = options.workflow?.workspaceForProject(project);
+    if (direct) return direct;
+    const resolved = company.kernel.registry.resolveCanonicalRef(project);
+    if (resolved.asset?.localRepoPath) return resolved.asset.localRepoPath;
+    return null;
+  };
+
+  const taskTriage = registerTaskTriageRoutes(app, store.db, {
+    taskPlanning,
+    darkFactory,
+    resources: company.resources,
+    registry: company.kernel.registry,
+    providers,
+    resolveRepoPath,
+    user: options.user,
+    submitToken: options.submitToken,
+  });
+
+  const botArbitrator = registerBotArbitratorRoutes(app, store.db, {
+    decisions: company.kernel.decisions,
+    events: company.kernel.events,
+    registry: company.kernel.registry,
+    workflow: options.workflow,
+    darkFactory,
+    requireUser: options.user,
+    submitToken: options.submitToken,
+  });
+
+  const plannotatorBridge = registerPlannotatorBridgeRoutes(app, store.db, {
+    user: options.user,
+    submitToken: options.submitToken,
+    onDecisionAnswer: async (event) => {
+      const packet = company.kernel.decisions.get(event.entityId);
+      if (!packet || packet.status !== "pending") {
+        return { skipped: true, reason: "decision_not_pending" };
+      }
+      const option = matchDecisionOption(event, packet.options);
+      if (!option) {
+        return { skipped: true, reason: "no_matching_option" };
+      }
+      const resolved = await company.kernel.decisions.resolve(packet.id, {
+        optionId: option.id,
+        actor: "founder:plannotator",
+        note: [
+          `Plannotator Inbox 回复同步（thread ${event.threadId}）`,
+          event.note || event.otherText || event.freeText || event.matchedChoiceLabel || "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      });
+      return { decisionId: resolved.id, status: resolved.status, optionId: option.id };
+    },
+    onWorkflowAnswer: async (event) => {
+      if (!options.workflow) {
+        return { skipped: true, reason: "workflow_disabled" };
+      }
+      const run = options.workflow.get(event.entityId);
+      const latestRev = run.revisions.at(-1)?.number;
+      const openCard = run.cards.find((c) => c.status === "open" && c.revision === latestRev);
+      if (!openCard) {
+        return { skipped: true, reason: "no_open_card" };
+      }
+      const action = matchWorkflowAction(event);
+      if (!action) {
+        return { skipped: true, reason: "unrecognized_workflow_action" };
+      }
+      const note =
+        event.note ||
+        event.otherText ||
+        event.freeText ||
+        `由 Plannotator Inbox 回复同步（thread ${event.threadId}）`;
+      const detail = options.workflow.decide(
+        run.id,
+        { cardId: openCard.id, revision: openCard.revision, action, note },
+        "plannotator:founder",
+      );
+      return { runId: detail.id, cardId: openCard.id, action };
+    },
+    onTriageDigestAnswer: async (event) => {
+      const action = matchTriageDigestAction(event);
+      if (action === "enable_auto_roll") {
+        const config = taskTriage.updateConfig({ autoRollEnabled: true });
+        return { action: "enable_auto_roll", autoRollEnabled: config.autoRollEnabled };
+      }
+      if (action === "run_triage") {
+        const report = await taskTriage.runRollingCycle({ dryRun: false });
+        return { action: "run_rolling_cycle", reportId: report.id, verifiedCount: report.verifiedCount };
+      }
+      return { skipped: true, reason: "unrecognized_triage_action" };
+    },
+    onArbitratorDigestAnswer: async (event) => {
+      const action = matchArbitratorDigestAction(event);
+      if (action === "delegated_safe") {
+        const policy = botArbitrator.updatePolicy({ arbitrationMode: "delegated_safe" });
+        return { action: "policy_updated", arbitrationMode: policy.arbitrationMode };
+      }
+      if (action === "run_arbitrator") {
+        const report = await botArbitrator.arbitratePending({ trigger: "manual" });
+        return { action: "arbitrate_pending", totalProcessed: report.totalProcessed };
+      }
+      return { skipped: true, reason: "unrecognized_arbitrator_action" };
+    },
+    ...(options.workflow
+      ? {
+          closeStaleWorkflow: (params) => {
+            options.workflow!.decide(
+              params.runId,
+              { cardId: params.cardId, revision: params.revision, action: "reject", note: params.reason },
+              params.actor,
+            );
+            return { runId: params.runId, cardId: params.cardId, closed: true };
+          },
+        }
+      : {}),
+    supersedeDecision: (params) => {
+      const updated = company.kernel.decisions.supersede(params.decisionId, {
+        note: params.reason,
+        actor: params.actor,
+      });
+      return { decisionId: updated.id, status: updated.status };
+    },
+  });
+
+  company.kernel.events.subscribe("arbitrator.item_escalated", (event) => {
+    const cfg = plannotatorBridge.getConfig();
+    if (!cfg.enabled || !cfg.pushEscalatedDecisions) return;
+    if (event.payload.targetKind !== "decision") return;
+    const decisionId = String(event.payload.targetId ?? "");
+    if (!decisionId) return;
+    const packet = company.kernel.decisions.get(decisionId);
+    if (!packet || packet.status !== "pending") return;
+    void plannotatorBridge.pushEscalatedDecision(packet).catch(() => {});
+  });
+  let onClassificationMutated: (() => void) | null = null;
+  const classifier = registerClassificationRoutes(app, store.db, options.user, {
+    submitToken: options.submitToken,
+    onMutated: () => onClassificationMutated?.(),
+  });
+  taskPlanning.setClassifier(classifier);
+
+  const cliLedger = registerCliLedgerRoutes(app, options.user, {
+    submitToken: options.submitToken,
+    hubDbPath: hubQuotaPath,
+    hooks: {
+      getLiveSessions: () => {
+        const agents = options.activityIndex?.getCachedAgents() ?? [];
+        return agents.map((a) => ({
+          provider: a.provider,
+          workspace: a.workspace,
+          canonicalWorkspace: a.classification?.canonicalWorkspace ?? null,
+          state: a.state,
+          updatedAt: a.updatedAt,
+          address: a.herdr?.address ?? null,
+          title: a.title,
+          spaceName: a.herdr?.spaceName ?? null,
+          parent: a.herdr?.parent ?? null,
+          name: a.herdr?.name ?? null,
+          labels: a.herdr?.labels,
+          originTrack: a.originTrack,
+          originDetail: a.originDetail,
+        }));
+      },
+      classifyWorkspace: (input) => classifier.classify(input),
+      findLinkedTask: (input) => {
+        const task = taskPlanning.findTaskByExternalSession(input);
+        return task ? { id: task.id, title: task.title, status: task.status, project: task.project } : null;
+      },
+      promoteToTask: (input) => {
+        const s = input.session;
+        const result = taskPlanning.promoteOrSyncExternalSession({
+          title: input.title,
+          description: input.description,
+          project: input.project || "default",
+          sourceRef: input.sourceRef,
+          tags: input.tags,
+          binding: {
+            sessionId: s?.id ?? (input.sourceRef.startsWith("cli-ledger:") ? input.sourceRef.slice(11) : null),
+            herdrAddress: s?.herdrAddress ?? null,
+            herdrSpace: s?.herdrSpace ?? null,
+            provider: s?.provider ?? null,
+            workspace: s?.workspace ?? null,
+            canonicalProject: s?.classification?.canonicalProject ?? input.project,
+            liveStatus: s?.status ?? null,
+            latestProgress: s?.latestProgress ?? null,
+            filesModifiedCount: s?.stats.filesModifiedCount,
+            originTrack: s?.originTrack ?? "founder_managed",
+          },
+        });
+        return {
+          id: result.task.id,
+          project: result.task.project,
+          title: result.task.title,
+          alreadyLinked: result.alreadyLinked,
+        };
+      },
+      bindToTask: (taskId, session) => {
+        const bound = taskPlanning.bindExternalSession(taskId, {
+          sessionId: session.id,
+          herdrAddress: session.herdrAddress ?? null,
+          herdrSpace: session.herdrSpace ?? null,
+          provider: session.provider,
+          workspace: session.workspace,
+          canonicalProject: session.classification?.canonicalProject ?? session.project,
+          liveStatus: session.status,
+          latestProgress: session.latestProgress,
+          filesModifiedCount: session.stats.filesModifiedCount,
+          originTrack: session.originTrack ?? "founder_managed",
+        });
+        return { id: bound.id, project: bound.project, title: bound.title };
+      },
+    },
+  });
+
+  // Invalidate CLI Ledger cache whenever classification overrides are mutated
+  onClassificationMutated = () => cliLedger.invalidateCache();
+
+  // Wire reverse enrichment into ActivityIndex (CLI summaries + classifier + linked planning tasks)
+  options.activityIndex?.setEnrichers({
+    classifier,
+    getCliSessions: () => cliLedger.getCachedSummaries(3),
+    findLinkedTask: (input) => {
+      const t = taskPlanning.findTaskByExternalSession(input);
+      return t ? { id: t.id, title: t.title, status: t.status } : null;
+    },
+  });
+
+  // Wire live session sync into TaskPlanning so bound tasks reflect live Herdr / CLI progress
+  taskPlanning.setSessionSyncProvider((binding) => {
+    const cliSummaries = cliLedger.getCachedSummaries(3);
+    const liveAgents = options.activityIndex?.getCachedAgents() ?? [];
+    const matchedCli =
+      (binding.sessionId ? cliSummaries.find((s) => s.id === binding.sessionId) : undefined) ??
+      (binding.herdrAddress ? cliSummaries.find((s) => s.herdrAddress === binding.herdrAddress) : undefined);
+    const matchedHerdr = binding.herdrAddress
+      ? liveAgents.find((a) => a.herdr?.address === binding.herdrAddress)
+      : matchedCli?.herdrAddress
+        ? liveAgents.find((a) => a.herdr?.address === matchedCli.herdrAddress)
+        : undefined;
+
+    if (!matchedCli && !matchedHerdr) return null;
+    const herdrLiveStatus =
+      matchedHerdr?.state === "working"
+        ? ("running" as const)
+        : matchedHerdr?.state === "waiting"
+          ? ("waiting_user" as const)
+          : undefined;
+    return {
+      liveStatus: herdrLiveStatus ?? matchedCli?.status ?? binding.liveStatus ?? null,
+      latestProgress: matchedCli?.latestProgress ?? matchedHerdr?.what ?? matchedHerdr?.title ?? binding.latestProgress ?? null,
+      filesModifiedCount: matchedCli?.stats.filesModifiedCount ?? binding.filesModifiedCount,
+      herdrAddress: matchedHerdr?.herdr?.address ?? matchedCli?.herdrAddress ?? binding.herdrAddress ?? null,
+      herdrSpace: matchedHerdr?.herdr?.spaceName ?? matchedCli?.herdrSpace ?? binding.herdrSpace ?? null,
+    };
+  });
+
+  registerHerdrControlRoutes(app, options.user);
+
+  registerWorkstreamRoutes(app, store.db, {
+    user: options.user,
+    submitToken: options.submitToken,
+    getActivityAgents: async () => {
+      const snap = options.activityIndex?.getCachedSnapshot();
+      if (snap) return snap.agents;
+      if (options.activityIndex) {
+        await options.activityIndex.sync().catch(() => {});
+        return options.activityIndex.getCachedSnapshot()?.agents ?? options.activityIndex.getCachedAgents();
+      }
+      return [];
+    },
+    getActivitySnapshot: async () => {
+      const snap = options.activityIndex?.getCachedSnapshot();
+      if (snap) return snap;
+      if (options.activityIndex) {
+        await options.activityIndex.sync().catch(() => {});
+        return options.activityIndex.getCachedSnapshot();
+      }
+      return null;
+    },
+    cliLedger,
+    darkFactory,
+    classifier,
+  });
+
   app.get("/api/zoom/messages", c => {
-    const messages = delegations.decorate(rawMessages(options.user(c)))
+    const user = options.user(c);
+    const messages = delegations.decorate(rawMessages(user))
       .sort((a, b) => Number(b.pending) - Number(a.pending) || b.at.localeCompare(a.at));
     const projectFolders = store.db.prepare("SELECT product, name FROM company_projects ORDER BY product,name").all()
       .map(row => row.product + "/" + row.name);
+    const mailbox = executive.cachedMailbox(user);
+    const pendingMailboxIssues = buildMailboxIssues({
+      decisions: company.kernel.decisions.list(),
+      items: mailbox?.items ?? [],
+      messages,
+      sourceTraces: mailbox?.sourceTraces ?? new ExecutiveReceiptTracer(store.db, "", user.id, () => messages).sourceTraces(),
+    }).filter(issue => issue.pending).length;
     return c.json({
       messages,
       products: projects.names(),
       projectFolders,
       pendingDecisions: company.kernel.decisions.counts().pending,
+      pendingMailboxIssues,
     });
   });
   app.post("/api/zoom/tasks", async c => {
@@ -632,5 +1013,17 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
     if (capabilities.task(id)) return c.json(capabilities.reply(id, input, user.name));
     return c.json(zoom.reply(id, input, user.name));
   });
-  return { delegations, providers, darkFactory, taskPlanning, knowledgeCanvas, metabolism, company };
+  return {
+    delegations,
+    providers,
+    darkFactory,
+    taskPlanning,
+    knowledgeCanvas,
+    metabolism,
+    company,
+    cliLedger,
+    taskTriage,
+    botArbitrator,
+    plannotatorBridge,
+  };
 }

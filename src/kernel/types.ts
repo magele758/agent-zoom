@@ -190,7 +190,10 @@ export type DomainEventTopic =
   | "ops.service_restarted"
   | "ops.incident_escalated"
   | "ops.crash_bug_filed"
-  | "commercial.cost_synced";
+  | "commercial.cost_synced"
+  | "arbitrator.item_resolved"
+  | "arbitrator.item_escalated"
+  | "arbitrator.policy_updated";
 
 export interface DomainEventRecord<TPayload = Record<string, unknown>> {
   seq: number;
@@ -215,6 +218,15 @@ export interface DecisionOption {
   outcome: DecisionOutcome;
   handlerKey: string;
   payload?: Record<string, unknown>;
+}
+
+export interface DecisionTargetSummary {
+  mainlineName: string | null;
+  productName: string | null;
+  assetName: string | null;
+  repoFullName: string | null;
+  verifyCommand: string | null;
+  isRedline: boolean;
 }
 
 export interface DecisionPacket {
@@ -245,6 +257,40 @@ export interface DecisionPacket {
   createdAt: string;
   updatedAt: string;
   decidedAt: string | null;
+  targetSummary?: DecisionTargetSummary;
+  admissionWarning?: string | null;
+  actionBlockReason?: string;
+}
+
+export type DecisionBatchAction = "recommended" | "approve" | "reject" | "snooze";
+
+export interface BatchResolveDecisionInput {
+  ids: string[];
+  expectedUpdatedAtById?: Record<string, string>;
+  action: DecisionBatchAction;
+  note?: string;
+  actor?: string;
+  allowRedline?: boolean;
+}
+
+export interface BatchResolveItemOutcome {
+  id: string;
+  title: string;
+  status: "resolved" | "skipped" | "failed";
+  outcome?: DecisionStatus;
+  chosenOptionId?: string;
+  chosenOptionLabel?: string;
+  reason?: string;
+}
+
+export interface BatchResolveDecisionResult {
+  action: DecisionBatchAction;
+  requested: number;
+  resolvedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  results: BatchResolveItemOutcome[];
+  counts: { pending: number; autoApproved: number; total: number };
 }
 
 export interface DecisionProposeInput {
@@ -270,6 +316,45 @@ export interface DecisionProposeInput {
 
 export type AutonomyMode = "assisted" | "semi_auto" | "full_auto";
 
+export type BotArbitrationMode = "off" | "advisory" | "delegated_safe" | "full_delegated";
+export type BotReleaseMergeMode = "merge_only" | "merge_and_deploy";
+export type BotArbitrationVerdictKind =
+  | "approve"
+  | "reject"
+  | "changes"
+  | "snooze"
+  | "supersede"
+  | "escalate";
+
+export interface BotArbitratorPolicy {
+  arbitrationMode: BotArbitrationMode;
+  autoApproveVerifiedReleases: boolean;
+  releaseMergeMode: BotReleaseMergeMode;
+  allowedReleaseProjects: string[];
+  blockedReleaseProjects: string[];
+  autoCloseStaleWorkflowHours: number;
+  maxAutoApproveCostUsd: number;
+  preferredBotRole: "auto" | "super" | "rd";
+  updatedAt: string;
+}
+
+export interface DecisionBotContext {
+  arbitrationMode?: BotArbitrationMode;
+  releaseVerificationPassed?: boolean;
+  protectedViolationsCount?: number;
+  runStatus?: string;
+}
+
+export interface DecisionResolveInput {
+  optionId: string;
+  note?: string;
+  actor?: string;
+  expectedUpdatedAt?: string;
+  autoApproved?: boolean;
+  botDelegated?: boolean;
+  botContext?: DecisionBotContext;
+}
+
 export interface GovernancePolicy {
   autonomyMode: AutonomyMode;
   autoApproveLowRisk: boolean;
@@ -278,6 +363,8 @@ export interface GovernancePolicy {
   autoHarvestQuota: boolean;
   autoHealOps: boolean;
   redlineKinds: string[];
+  botArbitrationMode: BotArbitrationMode;
+  autoApproveVerifiedReleases: boolean;
   updatedAt: string;
 }
 

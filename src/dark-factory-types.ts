@@ -78,6 +78,8 @@ export interface AgentRunVerification {
   durationMs: number;
 }
 
+export type AgentExecutionHost = "subprocess" | "herdr";
+
 export interface AgentRunRecord {
   id: string;
   taskId: string;
@@ -91,6 +93,9 @@ export interface AgentRunRecord {
   branchName: string | null;
   status: AgentRunStatus;
   pid: number | null;
+  executionHost?: AgentExecutionHost;
+  herdrTerminal?: string | null;
+  herdrSpace?: string | null;
   tokenUsed: number;
   costUsd: number;
   retryCount: number;
@@ -119,6 +124,7 @@ export interface DispatchRunInput {
   agentId: string;
   autoCreatePr?: boolean;
   verifyCommand?: string;
+  executionHost?: AgentExecutionHost;
 }
 
 export interface RunLogEntry {
@@ -245,7 +251,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     name: "claude-code",
     description: "Anthropic Claude Code CLI，擅长复杂架构实现、深度重构与测试编写。",
     type: "cli",
-    cliCommand: "claude -p {{prompt}} --output-format text",
+    cliCommand: "claude --dangerously-skip-permissions -p {{prompt}} --output-format text",
     promptTemplate: DEFAULT_PROMPT_TEMPLATE,
     maxCostPerTask: 5,
     maxDurationSecs: 1800,
@@ -258,7 +264,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     name: "codex-cli",
     description: "OpenAI Codex CLI 非交互执行模式，适合精准排障与自动化代码交付。",
     type: "cli",
-    cliCommand: "codex exec {{prompt}}",
+    cliCommand: "codex exec --dangerously-bypass-approvals-and-sandbox {{prompt}}",
     promptTemplate: DEFAULT_PROMPT_TEMPLATE,
     maxCostPerTask: 5,
     maxDurationSecs: 1800,
@@ -271,7 +277,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     name: "grok-cli",
     description: "Grok CLI 通用主力模型，适合全栈功能交付与快速原型验证。",
     type: "cli",
-    cliCommand: "grok -p {{prompt}}",
+    cliCommand: "grok --permission-mode bypassPermissions --always-approve -p {{prompt}}",
     promptTemplate: DEFAULT_PROMPT_TEMPLATE,
     maxCostPerTask: 4,
     maxDurationSecs: 1500,
@@ -284,7 +290,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     name: "antigravity-cli",
     description: "Antigravity (agy) 自主工程 Agent，适合多文件协作与端到端交付。",
     type: "cli",
-    cliCommand: "agy -p {{prompt}}",
+    cliCommand: "agy --mode accept-edits --dangerously-skip-permissions -p {{prompt}}",
     promptTemplate: DEFAULT_PROMPT_TEMPLATE,
     maxCostPerTask: 5,
     maxDurationSecs: 1800,
@@ -297,7 +303,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     name: "cursor-agent",
     description: "Cursor CLI Agent，适合前端界面打磨与中大型代码库编辑。",
     type: "cli",
-    cliCommand: "cursor-agent -p {{prompt}}",
+    cliCommand: "cursor-agent --sandbox disabled --force -p {{prompt}}",
     promptTemplate: DEFAULT_PROMPT_TEMPLATE,
     maxCostPerTask: 4,
     maxDurationSecs: 1500,

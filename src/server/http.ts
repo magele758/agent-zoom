@@ -68,8 +68,19 @@ export function createApp(store: Store, options: { activityIndexEnabled?: boolea
   const homeRooms = addHomeRoomRoutes(app, store, homeUser,
     c => c.req.header("authorization") ? requireAgent(c.req.header("authorization")) : homeUser(c));
   const agentWork = agentDelegationRoutes(app, store, c => requireAgent(c.req.header("authorization")));
-  const { delegations, providers, darkFactory, taskPlanning, knowledgeCanvas, metabolism, company } = addZoomRoutes(app, store, {
-    opportunities, homeRooms,
+  const {
+    delegations,
+    providers,
+    darkFactory,
+    taskPlanning,
+    knowledgeCanvas,
+    metabolism,
+    company,
+    taskTriage,
+    botArbitrator,
+    plannotatorBridge,
+  } = addZoomRoutes(app, store, {
+    opportunities, homeRooms, activityIndex,
     submitToken: options.workflow?.submitToken ?? process.env.WORKFLOW_SUBMIT_TOKEN,
     workflow: options.workflow?.service,
     user: c => requireUser(getCookie(c, COOKIE)),
@@ -557,7 +568,24 @@ export function createApp(store: Store, options: { activityIndexEnabled?: boolea
     }),
   );
 
-  return { app, injectWebSocket, nudge, opportunities, homeRooms, activityIndex, delegations, providers, darkFactory, taskPlanning, knowledgeCanvas, metabolism, company };
+  return {
+    app,
+    injectWebSocket,
+    nudge,
+    opportunities,
+    homeRooms,
+    activityIndex,
+    delegations,
+    providers,
+    darkFactory,
+    taskPlanning,
+    knowledgeCanvas,
+    metabolism,
+    company,
+    taskTriage,
+    botArbitrator,
+    plannotatorBridge,
+  };
 }
 
 function apiFor(store: Store, agent: Principal & { type: "agent" }, work: AgentDelegations): ChatApi {

@@ -3,6 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Context, Hono } from "hono";
+import {
+  cleanMarkdownPreview,
+  isDigestOrNonActionableNoise,
+  stripCandidateTitlePrefix,
+} from "../../kernel/admission-filter.ts";
 import type { OpcKernel } from "../../kernel/index.ts";
 import type {
   DecisionPacket,
@@ -12,6 +17,7 @@ import type {
 } from "../../kernel/types.ts";
 import { ApiError } from "../../server/logic.ts";
 import type { TaskPlanningStore } from "../../server/task-planning.ts";
+import { patrolActionBlockReason } from "./patrol-decision.ts";
 import type {
   CreateEpicSubtaskInput,
   PatrolReport,
@@ -76,6 +82,7 @@ export interface PromoteSignalOptions {
   verifyCommand?: string;
   dependsOn?: string[];
   subtasks?: CreateEpicSubtaskInput[];
+  isEmergencyBug?: boolean;
 }
 
 export interface CollectSourcesOptions {
@@ -110,6 +117,8 @@ const JOURNAL_ACTION_CONTAINER_HEADINGS = new Set([
   "待办事项",
   "下一步",
   "下一步行动",
+  "研发提案",
+  "开发计划",
   "action items",
   "action item",
   "todo",
@@ -117,20 +126,10 @@ const JOURNAL_ACTION_CONTAINER_HEADINGS = new Set([
   "next steps",
 ]);
 
-const JOURNAL_BOILERPLATE_EXACT_HEADINGS = new Set([
-  "今日主题判断",
-  "信息摘要",
-  "深度吸收",
-  "技术学习补记",
-  "所属层级",
-  "机制链",
-  "经验映射",
-  "验证",
-  "30 秒口述版",
-  "总结",
-  "参考资料",
-  "参考链接",
-]);
+interface ExtractedJournalItem {
+  title: string;
+  body: string;
+}
 
 function safeJson<T>(raw: string | null | undefined, fallback: T): T {
   if (!raw) return fallback;
@@ -180,26 +179,7 @@ function parseTaskIdsFromPayload(payload?: Record<string, unknown>): string[] {
   return out;
 }
 
-function isBoilerplateJournalHeading(heading: string): boolean {
-  const normalized = heading.trim().toLowerCase();
-  if (JOURNAL_BOILERPLATE_EXACT_HEADINGS.has(normalized)) return true;
-  if (
-    normalized.startsWith("信息摘要（") ||
-    normalized.startsWith("信息摘要(") ||
-    normalized.startsWith("技术学习补记") ||
-    /^\d{2}:\d{2}\s+周期性/.test(normalized)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-interface ExtractedJournalItem {
-  title: string;
-  body: string;
-}
-
-function extractJournalActionableItems(markdown: string): ExtractedJournalItem[] {
+export function extractJournalActionableItems(markdown: string): ExtractedJournalItem[] {
   const lines = markdown.split(/\r?\n/);
   const sections: Array<{ heading: string; lines: string[] }> = [];
   let current: { heading: string; lines: string[] } | null = null;
@@ -218,53 +198,52 @@ function extractJournalActionableItems(markdown: string): ExtractedJournalItem[]
   if (current) sections.push(current);
 
   const extracted: ExtractedJournalItem[] = [];
+  const seenTitles = new Set<string>();
+  const pushCandidate = (rawTitle: string, rawBody: string) => {
+    const cleanedTitle = stripCandidateTitlePrefix(rawTitle).slice(0, 240);
+    if (!cleanedTitle) return;
+    if (isDigestOrNonActionableNoise(cleanedTitle, rawBody).noisy) return;
+    const key = cleanedTitle.toLowerCase();
+    if (seenTitles.has(key)) return;
+    seenTitles.add(key);
+    extracted.push({
+      title: cleanedTitle,
+      body: rawBody.slice(0, 2000),
+    });
+  };
+
   for (const sec of sections) {
-    const headingLower = sec.heading.toLowerCase();
+    const headingLower = sec.heading.trim().toLowerCase();
     const rawBody = sec.lines.join("\n").trim();
 
+    // Only extract from explicit action/todo sections or explicit unchecked `- [ ]` task items.
+    // Never turn arbitrary news/digest headings (e.g. Twitter / GitHub Trending roundups) into dev proposals.
     if (JOURNAL_ACTION_CONTAINER_HEADINGS.has(headingLower)) {
       const checklistMatches = sec.lines
         .map((l) => /^\s*-\s*\[\s*\]\s+(.+?)\s*$/.exec(l)?.[1]?.trim())
         .filter((x): x is string => Boolean(x));
       if (checklistMatches.length > 0) {
         for (const item of checklistMatches) {
-          extracted.push({
-            title: item.slice(0, 240),
-            body: rawBody.slice(0, 2000),
-          });
+          pushCandidate(item, rawBody);
         }
       } else {
         const plainBullets = sec.lines
           .map((l) => /^\s*[-*]\s+(.+?)\s*$/.exec(l)?.[1]?.trim())
           .filter((x): x is string => Boolean(x && !x.startsWith("[x]") && !x.startsWith("[X]")));
         for (const bullet of plainBullets) {
-          extracted.push({
-            title: bullet.slice(0, 240),
-            body: rawBody.slice(0, 2000),
-          });
+          pushCandidate(bullet, rawBody);
         }
       }
       continue;
     }
 
-    if (isBoilerplateJournalHeading(sec.heading)) {
-      // Still rescue any explicit unchecked `- [ ]` todo inside digest sections
-      for (const l of sec.lines) {
-        const unchecked = /^\s*-\s*\[\s*\]\s+(.+?)\s*$/.exec(l)?.[1]?.trim();
-        if (unchecked) {
-          extracted.push({
-            title: unchecked.slice(0, 240),
-            body: rawBody.slice(0, 2000),
-          });
-        }
+    // Outside action containers, ONLY rescue explicit unchecked `- [ ]` checklist tasks
+    for (const l of sec.lines) {
+      const unchecked = /^\s*-\s*\[\s*\]\s+(.+?)\s*$/.exec(l)?.[1]?.trim();
+      if (unchecked) {
+        pushCandidate(unchecked, `${sec.heading}\n\n${rawBody}`.trim());
       }
-      continue;
     }
-
-    extracted.push({
-      title: sec.heading.slice(0, 240),
-      body: rawBody.slice(0, 2000),
-    });
   }
 
   return extracted;
@@ -422,6 +401,7 @@ export class ProductDepartment implements DepartmentModule {
   }
 
   private registerDecisionHandlers(): void {
+    this.kernel.decisions.registerActionGuard("product", "patrol_alert", packet => patrolActionBlockReason(this.kernel.db, packet));
     this.kernel.decisions.registerHandler("product.patrol_snooze", ({ option }) => {
       const taskIds = parseTaskIdsFromPayload(option.payload);
       const days = Number(option.payload?.days ?? 7) || 7;
@@ -558,7 +538,7 @@ export class ProductDepartment implements DepartmentModule {
           description: "将告警任务重置为 todo 并广播 product.feature_ready 供调度器接管",
           outcome: "approved",
           handlerKey: "product.patrol_requeue",
-          payload: { taskIds },
+          payload: { taskIds, patrolRunId: report.id },
         },
         {
           id: "snooze",
@@ -566,7 +546,7 @@ export class ProductDepartment implements DepartmentModule {
           description: "设置 snoozed_until 延后 7 天，期间巡检不再重复打扰",
           outcome: "snoozed",
           handlerKey: "product.patrol_snooze",
-          payload: { taskIds, days: 7 },
+          payload: { taskIds, days: 7, patrolRunId: report.id },
         },
         {
           id: "archive",
@@ -574,7 +554,7 @@ export class ProductDepartment implements DepartmentModule {
           description: "将上述滞留/失败任务标记为 archived 移出活跃看板",
           outcome: "rejected",
           handlerKey: "product.patrol_archive",
-          payload: { taskIds },
+          payload: { taskIds, patrolRunId: report.id },
         },
       ],
     });
@@ -718,25 +698,42 @@ export class ProductDepartment implements DepartmentModule {
   }
 
   private inferProjectRefFromText(title: string, body: string): string {
-    const combined = `${title}\n${body}`.toLowerCase();
-    for (const asset of this.kernel.registry.listAssets()) {
+    const titleLower = title.toLowerCase();
+    const assets = this.kernel.registry.listAssets();
+    const products = this.kernel.registry.listProducts();
+
+    // 1. Prefer explicit matches in the title so news digests mentioning random tools in the body don't misbind
+    for (const asset of assets) {
       if (
-        (asset.slug && combined.includes(asset.slug.toLowerCase())) ||
-        (asset.name && combined.includes(asset.name.toLowerCase())) ||
-        (asset.repoFullName && combined.includes(asset.repoFullName.toLowerCase()))
+        (asset.slug && titleLower.includes(asset.slug.toLowerCase())) ||
+        (asset.name && titleLower.includes(asset.name.toLowerCase())) ||
+        (asset.repoFullName && titleLower.includes(asset.repoFullName.toLowerCase()))
       ) {
         return asset.slug;
       }
     }
-    for (const prod of this.kernel.registry.listProducts()) {
+    for (const prod of products) {
       if (
-        (prod.slug && combined.includes(prod.slug.toLowerCase())) ||
-        (prod.name && combined.includes(prod.name.toLowerCase()))
+        (prod.slug && titleLower.includes(prod.slug.toLowerCase())) ||
+        (prod.name && titleLower.includes(prod.name.toLowerCase()))
       ) {
         return prod.slug;
       }
     }
-    if (/(?:agent|harness|skill|dark[- ]?factory|patrol|opc|飞书|webhook)/i.test(combined)) {
+
+    // 2. Fall back to body match ONLY for explicit repoFullName or exact registered asset slug
+    const bodyLower = body.toLowerCase();
+    for (const asset of assets) {
+      if (
+        (asset.repoFullName && bodyLower.includes(asset.repoFullName.toLowerCase())) ||
+        (asset.slug && asset.slug.length >= 6 && bodyLower.includes(asset.slug.toLowerCase()))
+      ) {
+        return asset.slug;
+      }
+    }
+
+    // 3. Only bind to opc-os when the title itself explicitly targets OPC OS / Dark Factory
+    if (/(?:opc[- ]?os|dark[- ]?factory|暗工厂|总裁审批|agent[- ]?zoom)/i.test(titleLower)) {
       return "opc-os";
     }
     return "default";
@@ -784,6 +781,27 @@ export class ProductDepartment implements DepartmentModule {
       recordHits: true,
     });
 
+    // Strict pre-admission gate: never flood approvals or backlog with daily-news digest headers
+    // or unbound journal snippets that lack a concrete target repo/product and actionable scope.
+    let effectiveRecommendation = evaluation.recommendation;
+    let effectiveSummary = evaluation.summary;
+    if (evaluation.allowed && !input.isEmergencyBug) {
+      const noiseCheck = isDigestOrNonActionableNoise(title, body);
+      if (noiseCheck.noisy) {
+        effectiveRecommendation = "drop_noise";
+        effectiveSummary = `准入门禁拦截（非研发需求噪音）：${noiseCheck.reason}`;
+      } else if (
+        source.startsWith("journal:") &&
+        ((!evaluation.resolution.asset && !evaluation.resolution.product) || evaluation.clarityScore < 10)
+      ) {
+        effectiveRecommendation = "drop_noise";
+        effectiveSummary =
+          !evaluation.resolution.asset && !evaluation.resolution.product
+            ? "准入门禁拦截：该日报条目未关联任何已注册产品/仓库，已自动过滤避免产生无上下文审批"
+            : `准入门禁拦截：清晰度过低（${evaluation.clarityScore}/25），缺少具体改动目标与验收方式`;
+      }
+    }
+
     const id = `sig_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const now = new Date().toISOString();
     const mainlineId = evaluation.resolution.mainline?.id ?? null;
@@ -792,7 +810,7 @@ export class ProductDepartment implements DepartmentModule {
     let initialStatus: SignalStatus = "new";
     if (!evaluation.allowed) {
       initialStatus = "blocked";
-    } else if (evaluation.recommendation === "drop_noise") {
+    } else if (effectiveRecommendation === "drop_noise") {
       initialStatus = "dropped";
     }
 
@@ -814,8 +832,8 @@ export class ProductDepartment implements DepartmentModule {
         body,
         JSON.stringify(tags),
         evaluation.totalScore,
-        evaluation.recommendation,
-        evaluation.summary,
+        effectiveRecommendation,
+        effectiveSummary,
         initialStatus,
         now,
         now,
@@ -834,7 +852,7 @@ export class ProductDepartment implements DepartmentModule {
         projectRef,
         title,
         alignmentScore: evaluation.totalScore,
-        recommendation: evaluation.recommendation,
+        recommendation: effectiveRecommendation,
         allowed: evaluation.allowed,
       },
     });
@@ -848,18 +866,29 @@ export class ProductDepartment implements DepartmentModule {
 
     if (
       evaluation.allowed &&
-      ((autoPromote && evaluation.recommendation === "auto_promote") || Boolean(input.isEmergencyBug))
+      ((autoPromote && effectiveRecommendation === "auto_promote") || Boolean(input.isEmergencyBug))
     ) {
       const promoted = this.promoteSignal(id, {
         priority: input.priority ?? (input.isEmergencyBug ? 10 : undefined),
         type: input.taskType ?? (input.isEmergencyBug ? "bug" : undefined),
+        isEmergencyBug: Boolean(input.isEmergencyBug),
       });
       promotedTask = promoted.task;
     } else if (
       evaluation.allowed &&
-      evaluation.recommendation === "needs_review" &&
+      effectiveRecommendation === "needs_review" &&
       proposeBorderline
     ) {
+      const targetMainline = evaluation.resolution.mainline?.name ?? "未绑定长期主线";
+      const targetProduct = evaluation.resolution.product?.name ?? "未绑定产品";
+      const targetAsset = evaluation.resolution.asset
+        ? `${evaluation.resolution.asset.name}${evaluation.resolution.asset.repoFullName ? ` (${evaluation.resolution.asset.repoFullName})` : ""}`
+        : projectRef;
+      const verifyHint = evaluation.resolution.asset?.verifyCommand
+        ? `\`${evaluation.resolution.asset.verifyCommand}\``
+        : "尚未配置自动校验命令";
+      const conciseBody = body ? cleanMarkdownPreview(body, 280) : "（提交方未附带补充说明）";
+
       decisionPacket = await this.kernel.decisions.propose({
         dedupeKey: `product:signal:${id}`,
         domain: "product",
@@ -868,30 +897,32 @@ export class ProductDepartment implements DepartmentModule {
         mainlineId,
         productId: evaluation.resolution.product?.id ?? null,
         assetId,
-        title: `候选需求准入评估：${title}`,
+        title: `需求准入立项：${stripCandidateTitlePrefix(title)}`,
         backgroundSummary: [
-          `来源：${source} · 关联项目：${projectRef}`,
-          `战略对齐评分：${evaluation.totalScore}/100（主线 ${evaluation.mainlineScore} / 习惯 ${evaluation.habitScore} / 清晰度 ${evaluation.clarityScore}）`,
-          body ? `\n信号详情：\n${body.slice(0, 800)}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        whyRecommended: evaluation.summary,
+          `**要做什么**：${stripCandidateTitlePrefix(title)}`,
+          `**归属目标**：主线「${targetMainline}」 → 产品「${targetProduct}」 → 仓库「${targetAsset}」`,
+          `**内容摘要**：${conciseBody}`,
+          `**信号来源与评分**：来源 \`${source}\` ｜ 对齐总分 **${evaluation.totalScore}/100**（主线 ${evaluation.mainlineScore}/40 · 习惯 ${evaluation.habitScore >= 0 ? `+${evaluation.habitScore}` : evaluation.habitScore} · 清晰度 ${evaluation.clarityScore}/25）`,
+          `**批准后实际动作**：在任务规划看板新建待办研发任务（验收门禁：${verifyHint}），不会直接修改主分支或推送上线。`,
+        ].join("\n\n"),
+        whyRecommended: effectiveSummary,
+        diffOrEvidence: body ? `### 原始信号全文 (${source})\n${body.slice(0, 2000)}` : "",
+        rollbackPlan: "如立项后决定不做，可随时在「任务规划」中归档或取消该任务，不会改动任何代码仓库。",
         tags,
         recommendedOptionId: evaluation.totalScore >= 60 ? "promote" : "drop",
         options: [
           {
             id: "promote",
             label: "准入立项并转入研发队列",
-            description: "在 TaskPlanning 中创建正式研发任务并继承资产 verifyCommand",
+            description: "在任务规划看板创建正式研发任务并继承仓库校验门禁（不直接改代码）",
             outcome: "approved",
             handlerKey: "product.signal_promote",
             payload: { signalId: id },
           },
           {
             id: "drop",
-            label: "驳回丢弃（沉淀创始人反向偏好）",
-            description: "标记该信号为 dropped，若有批注关键词将自动写入避坑规则",
+            label: "驳回丢弃（沉淀避坑偏好）",
+            description: "标记为无效需求并丢弃；填写的批注关键词将自动沉淀为反向过滤规则",
             outcome: "rejected",
             handlerKey: "product.signal_drop",
             payload: { signalId: id },
@@ -941,12 +972,34 @@ export class ProductDepartment implements DepartmentModule {
     const inferredBug =
       signal.tags.some((t) => /^(?:bug|crash|p0)$/i.test(t)) ||
       signal.source === "ops.crash_bug_filed";
+    const isEmergency =
+      Boolean(options.isEmergencyBug) ||
+      signal.source === "ops.crash_bug_filed" ||
+      (signal.tags.includes("p0") && signal.tags.includes("crash"));
     const taskType: PlanningTaskType = options.type ?? (inferredBug ? "bug" : "task");
     const defaultPriority =
       signal.tags.includes("p0") || signal.tags.includes("crash")
         ? 10
         : clampInt(Math.round(signal.alignmentScore / 10), 6, 1, 10);
     const priority = options.priority ?? defaultPriority;
+    const stampedAt = new Date().toISOString();
+    const triageMeta = isEmergency
+      ? {
+          status: "verified",
+          verdict: "real_ready",
+          confidence: 1,
+          reason: "P0 线上崩溃自愈事件自动免审放行",
+          reviewer: "ops-emergency-fastpath",
+          reviewedAt: stampedAt,
+        }
+      : {
+          status: "unreviewed",
+          verdict: null,
+          confidence: null,
+          reason: null,
+          reviewer: null,
+          reviewedAt: null,
+        };
 
     let createdTask: PlanningTask;
     if (options.subtasks && options.subtasks.length > 0) {
@@ -965,8 +1018,19 @@ export class ProductDepartment implements DepartmentModule {
           signalId: signal.id,
           signalSource: signal.source,
           alignmentScore: signal.alignmentScore,
+          ...(isEmergency ? { isEmergencyBug: true } : {}),
+          triage: triageMeta,
         },
-        subtasks: options.subtasks,
+        subtasks: options.subtasks.map((sub) => ({
+          ...sub,
+          metadata: {
+            ...(sub.metadata ?? {}),
+            triage:
+              sub.metadata && typeof sub.metadata.triage === "object" && sub.metadata.triage !== null
+                ? sub.metadata.triage
+                : triageMeta,
+          },
+        })),
       });
       createdTask = epicRes.epic;
     } else {
@@ -986,6 +1050,8 @@ export class ProductDepartment implements DepartmentModule {
           signalId: signal.id,
           signalSource: signal.source,
           alignmentScore: signal.alignmentScore,
+          ...(isEmergency ? { isEmergencyBug: true } : {}),
+          triage: triageMeta,
         },
       });
     }

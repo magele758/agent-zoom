@@ -570,7 +570,6 @@
 }
 
 .mh-table-wrap {
-  overflow-x: auto;
   margin-top: 8px;
 }
 
@@ -580,6 +579,10 @@
   border-collapse: collapse;
   font-size: 12.5px;
 }
+
+.mh-simple-table { min-width: 36rem; }
+.mh-simple-table td:first-child { overflow-wrap: anywhere; }
+.mh-simple-table td:last-child :is(button, a) { white-space: nowrap; }
 
 .mh-heatmap-table th,
 .mh-heatmap-table td,

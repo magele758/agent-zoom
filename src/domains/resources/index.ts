@@ -12,8 +12,16 @@ import type {
   OpcKernel,
 } from "../../kernel/index.ts";
 import type { HubQuotaTool, ManualPlan, ResourceDepartmentIndex } from "../../resource-department-types.ts";
+import {
+  DEFAULT_COOLDOWN_DURATION_MS,
+  DEFAULT_COOLDOWN_FAILURE_THRESHOLD,
+  DEFAULT_COOLDOWN_WINDOW_MS,
+  type AgentCooldownStatus,
+  type DispatchRunRequest,
+} from "../../server/dark-factory.ts";
 import { ApiError } from "../../server/logic.ts";
-import { readHubResources, ResourcePlanStore } from "../../server/resource-department.ts";
+import { readHubResourcesWithLiveAuth, ResourcePlanStore } from "../../server/resource-department.ts";
+import { isTaskVerifiedForAutoDispatch } from "../../task-planning-types.ts";
 
 export type HubToolResource = HubQuotaTool;
 
@@ -29,7 +37,9 @@ export interface ReadyTaskCandidate {
 export interface DarkFactoryQuotaPort {
   listAgents(): AgentRecord[];
   listRuns(filter?: { limit?: number; status?: string; project?: string }): AgentRunRecord[];
-  dispatch(input: DispatchRunInput): AgentRunRecord;
+  dispatch(input: DispatchRunInput | DispatchRunRequest): AgentRunRecord;
+  isAgentCooledDown?(agentId: string, nowMs?: number): boolean;
+  getAgentCooldown?(agentId: string, nowMs?: number): AgentCooldownStatus;
 }
 
 export interface QuotaDispatchLogEntry {
@@ -56,6 +66,9 @@ export interface AgentCandidateScore {
   healthy: boolean;
   eligible: boolean;
   excludeReason: string | null;
+  cooledDown?: boolean;
+  cooldownUntil?: string | null;
+  consecutiveFailures?: number;
   activeLoad: number;
   matchedCapabilities: string[];
   breakdown: {
@@ -373,7 +386,7 @@ export class ResourcesDepartment implements DepartmentModule {
     this.reserveFloorPct = opts.reserveFloorPct ?? 10;
     this.onTaskDispatched = opts.onTaskDispatched;
     this.nowFn = opts.nowFn ?? (() => Date.now());
-    this.readHubFn = opts.readHubFn ?? ((nowMs) => readHubResources(this.hubQuotaPath, nowMs));
+    this.readHubFn = opts.readHubFn ?? ((nowMs) => readHubResourcesWithLiveAuth(this.hubQuotaPath, nowMs));
     this.darkFactory = opts.darkFactory ?? this.createSqliteFallbackFactoryPort();
     this.listReadyTasksFn = opts.listReadyTasks ?? (() => this.queryPlanningReadyTasks());
 
@@ -421,7 +434,16 @@ export class ResourcesDepartment implements DepartmentModule {
               return [];
             }
           })(),
-          config: {},
+          config: (() => {
+            try {
+              const parsed = JSON.parse(String(r.config ?? "{}")) as unknown;
+              return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+                ? (parsed as Record<string, unknown>)
+                : {};
+            } catch {
+              return {};
+            }
+          })(),
           createdAt: String(r.created_at),
           updatedAt: String(r.updated_at),
         }));
@@ -457,7 +479,9 @@ export class ResourcesDepartment implements DepartmentModule {
           prUrl: r.pr_url ? String(r.pr_url) : null,
           changedFiles: [],
           protectedViolations: [],
-          circuitBreakerReason: null,
+          circuitBreakerReason: r.circuit_breaker_reason
+            ? (String(r.circuit_breaker_reason) as AgentRunRecord["circuitBreakerReason"])
+            : null,
           autoCreatePr: Boolean(r.auto_create_pr),
           verifyCommand: r.verify_command ? String(r.verify_command) : "",
           verification: null,
@@ -499,32 +523,147 @@ export class ResourcesDepartment implements DepartmentModule {
     return blocking;
   }
 
-  private queryPlanningReadyTasks(): ReadyTaskCandidate[] {
+  queryPlanningReadyTasks(options?: { includeUnverified?: boolean }): ReadyTaskCandidate[] {
     if (!hasTable(this.db, "opc_planning_tasks")) return [];
+    const includeUnverified = options?.includeUnverified === true;
     const nowIso = new Date(this.nowFn()).toISOString();
     const rows = this.db
       .prepare(
-        `SELECT *
-         FROM opc_planning_tasks
-         WHERE status = 'todo' AND type != 'epic'
-         ORDER BY priority DESC, created_at ASC
-         LIMIT 50`,
+        `SELECT t.*
+         FROM opc_planning_tasks t
+         WHERE t.status = 'todo'
+           AND (t.type != 'epic' OR NOT EXISTS (SELECT 1 FROM opc_planning_tasks c WHERE c.parent_id = t.id))
+           AND NOT EXISTS (SELECT 1 FROM opc_planning_tasks c WHERE c.parent_id = t.id)
+         ORDER BY t.priority DESC, t.created_at ASC`,
       )
       .all() as Array<Record<string, unknown>>;
-    return rows
-      .filter((r) => {
-        const snoozedUntil = typeof r.snoozed_until === "string" ? r.snoozed_until.trim() : "";
-        if (snoozedUntil && snoozedUntil > nowIso) return false;
-        return this.findBlockingTaskDependencies(r).length === 0;
-      })
-      .map((r) => ({
+    const ready: ReadyTaskCandidate[] = [];
+    for (const r of rows) {
+      const snoozedUntil = typeof r.snoozed_until === "string" ? r.snoozed_until.trim() : "";
+      if (snoozedUntil && snoozedUntil > nowIso) continue;
+      if (!includeUnverified) {
+        let metadata: Record<string, unknown> = {};
+        if (typeof r.metadata === "string" && r.metadata.trim()) {
+          try {
+            const parsed = JSON.parse(r.metadata) as unknown;
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              metadata = parsed as Record<string, unknown>;
+            }
+          } catch {
+            metadata = {};
+          }
+        }
+        let tags: string[] = [];
+        if (typeof r.tags === "string" && r.tags.trim()) {
+          try {
+            const parsed = JSON.parse(r.tags) as unknown;
+            if (Array.isArray(parsed)) tags = parsed.map(String);
+          } catch {
+            tags = [];
+          }
+        }
+        if (
+          !isTaskVerifiedForAutoDispatch({
+            metadata,
+            type: String(r.type ?? "task"),
+            priority: Number(r.priority ?? 5),
+            tags,
+          })
+        ) {
+          continue;
+        }
+      }
+      if (this.findBlockingTaskDependencies(r).length > 0) continue;
+      ready.push({
         id: String(r.id),
         title: String(r.title),
         description: String(r.description ?? ""),
         project: String(r.project ?? "opc-os"),
         priority: Number(r.priority ?? 5),
         ...(r.verify_command ? { verifyCommand: String(r.verify_command) } : {}),
-      }));
+      });
+      if (ready.length >= 50) break;
+    }
+    return ready;
+  }
+
+  private resolveAgentCooldown(
+    agent: AgentRecord,
+    recentRuns: AgentRunRecord[],
+    nowMs: number,
+  ): {
+    cooledDown: boolean;
+    consecutiveFailures: number;
+    cooldownUntil: string | null;
+    reason: string | null;
+  } {
+    if (this.darkFactory.getAgentCooldown) {
+      const status = this.darkFactory.getAgentCooldown(agent.id, nowMs);
+      return {
+        cooledDown: status.cooledDown,
+        consecutiveFailures: status.consecutiveFailures,
+        cooldownUntil: status.cooldownUntil,
+        reason: status.reason,
+      };
+    }
+    if (this.darkFactory.isAgentCooledDown) {
+      const cooledDown = this.darkFactory.isAgentCooledDown(agent.id, nowMs);
+      return {
+        cooledDown,
+        consecutiveFailures: cooledDown ? DEFAULT_COOLDOWN_FAILURE_THRESHOLD : 0,
+        cooldownUntil: cooledDown ? new Date(nowMs + DEFAULT_COOLDOWN_DURATION_MS).toISOString() : null,
+        reason: cooledDown ? `Agent「${agent.name}」因连续失败正处于熔断冷却期` : null,
+      };
+    }
+
+    const resetAfterMs =
+      typeof agent.config?.cooldownResetAt === "string" ? Date.parse(agent.config.cooldownResetAt) : 0;
+
+    const terminalRuns = recentRuns
+      .filter(
+        (r) =>
+          r.agentId === agent.id &&
+          (r.status === "completed" || r.status === "pr_open" || r.status === "no_output" || r.status === "failed"),
+      )
+      .sort((a, b) => {
+        const tsA = Date.parse(a.completedAt || a.updatedAt || a.createdAt) || 0;
+        const tsB = Date.parse(b.completedAt || b.updatedAt || b.createdAt) || 0;
+        return tsB - tsA;
+      });
+
+    let consecutiveFailures = 0;
+    let lastFailureMs: number | null = null;
+    let lastReason: string | null = null;
+
+    for (const run of terminalRuns) {
+      const runMs = Date.parse(run.completedAt || run.updatedAt || run.createdAt);
+      if (Number.isFinite(runMs) && Number.isFinite(resetAfterMs) && resetAfterMs > 0 && runMs <= resetAfterMs) {
+        break;
+      }
+      const isFailure = run.status === "failed" || run.circuitBreakerReason === "duration_limit_exceeded";
+      if (!isFailure) break;
+      if (Number.isFinite(runMs) && nowMs - runMs > DEFAULT_COOLDOWN_WINDOW_MS) break;
+      consecutiveFailures += 1;
+      if (lastFailureMs === null) {
+        lastFailureMs = Number.isFinite(runMs) ? runMs : nowMs;
+        lastReason = run.circuitBreakerReason || run.errorSummary || "failed";
+      }
+    }
+
+    const cooldownUntilMs =
+      consecutiveFailures >= DEFAULT_COOLDOWN_FAILURE_THRESHOLD && lastFailureMs !== null
+        ? lastFailureMs + DEFAULT_COOLDOWN_DURATION_MS
+        : null;
+    const cooledDown = cooldownUntilMs !== null && cooldownUntilMs > nowMs;
+    const cooldownUntil = cooledDown && cooldownUntilMs !== null ? new Date(cooldownUntilMs).toISOString() : null;
+    return {
+      cooledDown,
+      consecutiveFailures,
+      cooldownUntil,
+      reason: cooledDown
+        ? `Agent「${agent.name}」连续 ${consecutiveFailures} 次失败（${lastReason ?? "执行失败"}），熔断冷却至 ${cooldownUntil}`
+        : null,
+    };
   }
 
   selectOptimalAgent(rawInput: SelectOptimalAgentInput): SelectOptimalAgentResult {
@@ -544,9 +683,8 @@ export class ResourcesDepartment implements DepartmentModule {
     const hub = this.readHubFn(nowMs);
     const manualPlans = this.planStore.list();
     const agents = this.darkFactory.listAgents().filter((a) => a.status !== "disabled");
-    const activeRuns = this.darkFactory
-      .listRuns({ limit: 200 })
-      .filter((r) => r.status === "running" || r.status === "queued");
+    const recentRuns = this.darkFactory.listRuns({ limit: 200 });
+    const activeRuns = recentRuns.filter((r) => r.status === "running" || r.status === "queued");
 
     const loadByAgent = new Map<string, number>();
     for (const run of activeRuns) {
@@ -567,6 +705,7 @@ export class ResourcesDepartment implements DepartmentModule {
 
     for (const agent of agents) {
       const mapped = matchAgentToHubTool(agent, hub.tools, manualPlans, nowMs);
+      const cooldown = this.resolveAgentCooldown(agent, recentRuns, nowMs);
       const activeLoad = loadByAgent.get(agent.id) ?? 0;
 
       // Hard exclusions
@@ -579,6 +718,8 @@ export class ResourcesDepartment implements DepartmentModule {
         mapped.remainingPct < floorPct
       ) {
         excludeReason = `配额余量 ${mapped.remainingPct}% 低于保留红线 ${floorPct}%`;
+      } else if (cooldown.cooledDown && !input.isEmergencyBug) {
+        excludeReason = cooldown.reason ?? `Agent「${agent.name}」因连续失败正处于熔断冷却期`;
       }
 
       const agentCaps = new Set(agent.capabilities.map((c) => c.toLowerCase()));
@@ -601,8 +742,9 @@ export class ResourcesDepartment implements DepartmentModule {
       }
 
       const activeLoadPenalty = activeLoad * 15;
+      const emergencyCooldownPenalty = cooldown.cooledDown && input.isEmergencyBug ? 500 : 0;
       const rawScore = round2(
-        capabilityScore + quotaHeadroomScore + urgencyBonus - activeLoadPenalty,
+        capabilityScore + quotaHeadroomScore + urgencyBonus - activeLoadPenalty - emergencyCooldownPenalty,
       );
 
       candidateScores.push({
@@ -612,9 +754,12 @@ export class ResourcesDepartment implements DepartmentModule {
         diagnostic: mapped.diagnostic,
         remainingPct: mapped.remainingPct,
         resetsAt: mapped.resetsAt,
-        healthy: mapped.healthy,
+        healthy: mapped.healthy && !cooldown.cooledDown,
         eligible: excludeReason === null,
         excludeReason,
+        cooledDown: cooldown.cooledDown,
+        cooldownUntil: cooldown.cooldownUntil,
+        consecutiveFailures: cooldown.consecutiveFailures,
         activeLoad,
         matchedCapabilities,
         breakdown: {
@@ -809,6 +954,7 @@ export class ResourcesDepartment implements DepartmentModule {
       repoPath,
       agentId: selection.chosenAgent.id,
       autoCreatePr: input.autoCreatePr,
+      isEmergency: input.isEmergencyBug,
       ...(verifyCommand ? { verifyCommand } : {}),
     });
 
@@ -997,17 +1143,31 @@ export class ResourcesDepartment implements DepartmentModule {
           candidate.task.verifyCommand ||
           selection.admission.resolution.asset?.verifyCommand ||
           undefined;
-        const run = this.darkFactory.dispatch({
-          taskId: candidate.task.id,
-          taskTitle: candidate.task.title,
-          taskDescription: candidate.task.description ?? "",
-          project: candidate.task.project,
-          repoPath,
-          agentId: selection.chosenAgent.id,
-          ...(verifyCommand ? { verifyCommand } : {}),
-        });
+        let run: AgentRunRecord;
+        try {
+          run = this.darkFactory.dispatch({
+            taskId: candidate.task.id,
+            taskTitle: candidate.task.title,
+            taskDescription: candidate.task.description ?? "",
+            project: candidate.task.project,
+            repoPath,
+            agentId: selection.chosenAgent.id,
+            ...(verifyCommand ? { verifyCommand } : {}),
+          });
+        } catch (err) {
+          if (
+            err instanceof ApiError &&
+            (err.code === "task_already_active" ||
+              err.code === "agent_cooled_down" ||
+              err.code === "epic_has_subtasks")
+          ) {
+            continue;
+          }
+          throw err;
+        }
         runId = run.id;
         dispatchedRuns.push(run);
+        activeTaskIds.add(candidate.task.id);
         this.syncDispatchedTaskState(candidate.task, run);
 
         this.recordDispatchLog({

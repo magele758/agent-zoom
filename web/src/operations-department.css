@@ -52,7 +52,7 @@
 .zoom .ops-machine-foot button { padding: 3px 8px; font-size: 12px; }
 .ops-machine-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
 .zoom .ops-machine-tabs button[aria-pressed="true"] { background: var(--ink); color: #fffaf0; border-color: var(--ink); }
-.ops-deploy-wrap { overflow-x: auto; border-top: 1px solid var(--line); }
+.ops-deploy-wrap { border-top: 1px solid var(--line); }
 .ops-deploy-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 720px; }
 .ops-deploy-table th, .ops-deploy-table td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 .ops-deploy-table th { font-size: 12px; font-weight: 600; color: var(--muted); background: var(--raise); padding-left: 8px; white-space: nowrap; }

@@ -214,9 +214,8 @@
 .ci-article-body :is(ol,ul) { padding-left: 1.45em; }
 .ci-article-body li { margin: .28em 0; }
 .ci-article-body hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
-.ci-table { overflow: auto; }
 .ci-table table { width: 100%; border-collapse: collapse; background: var(--inset); font-size: 13px; }
-.ci-table th, .ci-table td { border: 1px solid var(--line); padding: 5px 9px; }
+.ci-table th, .ci-table td { min-width: 7rem; border: 1px solid var(--line); padding: 5px 9px; }
 .ci-article-nav {
   display: flex;
   justify-content: space-between;

@@ -308,7 +308,7 @@ export function ExecutiveOffice({ nav, pending }: { nav: ReactNode; pending: Zoo
             <span style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
               <a href="#mailbox">前往总裁信箱查收回复与批示 ↗</a>
               {notice.roomId && (
-                <a href={`${status?.agentHomeOrigin || "http://127.0.0.1:37070"}/#/bot`} target="_blank" rel="noreferrer">原生 Agent Home ↗</a>
+                <a href={`${status?.agentHomeOrigin || "http://127.0.0.1:23000"}/#/bot`} target="_blank" rel="noreferrer">原生 Agent Home ↗</a>
               )}
             </span>
           </div>

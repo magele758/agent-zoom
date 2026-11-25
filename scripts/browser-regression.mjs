@@ -351,6 +351,34 @@ try {
   await expect.poll(() => meFailureSeen, { timeout: 8000 }).toBe(true);
   assert.deepEqual(failures, [], '断线期间不得出现未处理异常');
   checks.push('定时刷新遇到服务不可用时捕获错误，无未处理异常');
+
+  const verification = 'PATH=' + '/usr/local/test-bin:'.repeat(22) + '/usr/bin npm run test:quick';
+  await page.route('**/api/opc/kernel/portfolio', route => route.fulfill({ json: { mainlines: [{
+    id: 'browser-mainline', slug: 'browser-mainline', name: '布局回归主线', milestones: [],
+    priorityWeight: 85, quotaSharePct: 45, products: [{ name: '布局回归产品', role: 'open_core', assets: [{
+      id: 'asset-test', name: 'layout-fixture-repository', verifyCommand: verification, deployCommand: 'npm run deploy:fixture',
+    }] }],
+  }] } }));
+  for (const width of [1295, 390]) {
+    await page.setViewportSize({ width, height: 805 });
+    await page.goto(base + '/#strategy-hub');
+    const table = page.getByRole('region', { name: '布局回归主线 的资产与交付命令' });
+    await expect(table.getByRole('columnheader', { name: '构建 / 部署命令' })).toBeVisible();
+    assert.equal(await table.locator('tbody td:nth-child(3) code').textContent(), verification);
+    assert.ok((await table.getByRole('columnheader', { name: '操作' }).boundingBox()).width > 100);
+    assert.ok(await table.evaluate(el => el.scrollWidth > el.clientWidth), '表格应在自己的容器里横向滚动');
+    assert.ok(await table.evaluate(el => {
+      const section = el.closest('.zo-product');
+      return section.scrollWidth <= section.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth;
+    }), '宽表不能撑开页面');
+    await table.focus();
+    if (width > 400) await page.keyboard.press('ArrowRight');
+    else await table.evaluate(el => { el.scrollLeft = el.scrollWidth; });
+    await expect.poll(() => table.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+    await table.getByRole('button', { name: '配置上线契约' }).click();
+    await expect(page.getByRole('heading', { name: /配置资产交付与真上线契约/ })).toBeVisible();
+  }
+  checks.push('战略表格在 1295px 和 390px 局部横向滚动，命令完整，操作可用');
   assert.deepEqual(failures, [], '浏览器运行时异常');
   for (const check of checks) console.log('PASS ' + check);
   console.log(`PASS 浏览器无运行时异常；截图 ${output}`);

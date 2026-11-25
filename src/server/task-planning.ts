@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Context, Hono } from "hono";
+import { registerPlanningConversation } from "./planning-conversation.ts";
 import { z } from "zod";
 import {
   PLANNING_ASSIGNEE_TYPES,
   PLANNING_ENERGY_LEVELS,
   PLANNING_TASK_STATUSES,
   PLANNING_TASK_TYPES,
+  TRIAGE_STATUSES,
+  extractExternalSession,
+  extractTaskOriginTrack,
+  getTaskTriageStatus,
+  isTaskVerifiedForAutoDispatch,
   type AgentMetricsSummary,
   type CreateEpicWithSubtasksInput,
   type CreateEpicWithSubtasksResult,
@@ -35,11 +41,17 @@ import {
   type SyncRunOutcomeEvent,
   type TaskListFilters,
   type TaskPlanningHooks,
+  type TriageStatus,
   type UpdatePlanningTaskInput,
 } from "../task-planning-types.ts";
+import type {
+  ExternalSessionBinding,
+  WorkOriginTrack,
+} from "../workspace-classification-types.ts";
 import { ApiError } from "./logic.ts";
 import type { ProvidersStore } from "./providers.ts";
 import { submitAuth } from "./workflow/http.ts";
+import type { WorkspaceClassifierStore } from "./workspace-classifier.ts";
 
 export type {
   AgentMetricsSummary,
@@ -55,6 +67,7 @@ const STALE_WATCH_STATUSES: PlanningTaskStatus[] = ["todo", "assigned", "in_prog
 
 const taskTypeSchema = z.enum(PLANNING_TASK_TYPES);
 const taskStatusSchema = z.enum(PLANNING_TASK_STATUSES);
+const triageStatusSchema = z.enum(TRIAGE_STATUSES);
 const assigneeTypeSchema = z.enum(PLANNING_ASSIGNEE_TYPES);
 const energyLevelSchema = z.enum(PLANNING_ENERGY_LEVELS);
 const tagsSchema = z.array(z.string().trim().min(1).max(60)).max(20);
@@ -158,6 +171,7 @@ const assignHumanSchema = z.object({
 const dispatchSchema = z.object({
   agentId: z.string().trim().min(1, "必须指定 Agent ID").max(120),
   autoCreatePr: z.boolean().optional(),
+  executionHost: z.enum(["subprocess", "herdr"]).optional(),
 });
 
 const patrolSchema = z.object({
@@ -291,7 +305,8 @@ function isCompletedStatus(status: PlanningTaskStatus): boolean {
 }
 
 function mapTaskRow(row: TaskRow): PlanningTask {
-  return {
+  const metadata = parseJsonObject(row.metadata);
+  const task: PlanningTask = {
     id: row.id,
     project: row.project,
     parentId: row.parent_id,
@@ -319,11 +334,14 @@ function mapTaskRow(row: TaskRow): PlanningTask {
     verifyCommand: String(row.verify_command ?? ""),
     mainlineId: row.mainline_id ?? null,
     assetId: row.asset_id ?? null,
-    metadata: parseJsonObject(row.metadata),
+    metadata,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
   };
+  task.originTrack = extractTaskOriginTrack(task);
+  task.externalSession = extractExternalSession(metadata);
+  return task;
 }
 
 function mapPomodoroRow(row: PomodoroRow): PomodoroSession {
@@ -372,8 +390,19 @@ function windowStartIso(days: number): string {
   return new Date(startUtc).toISOString();
 }
 
+export type ExternalSessionLiveLookup = (binding: ExternalSessionBinding) => {
+  liveStatus?: ExternalSessionBinding["liveStatus"];
+  latestProgress?: string | null;
+  filesModifiedCount?: number;
+  herdrAddress?: string | null;
+  herdrSpace?: string | null;
+} | null;
+
 export class TaskPlanningStore {
   private hooks: TaskPlanningHooks;
+  private classifier: WorkspaceClassifierStore | null = null;
+  private sessionSyncLookup: ExternalSessionLiveLookup | null = null;
+  private lastSessionSyncAt = 0;
   private epicCompletedListeners = new Set<(epic: PlanningTaskWithSubtasks) => void>();
   private patrolListeners = new Set<(report: PatrolReport) => void>();
 
@@ -811,12 +840,277 @@ export class TaskPlanningStore {
     }
   }
 
+  setClassifier(classifier: WorkspaceClassifierStore | null): void {
+    this.classifier = classifier;
+  }
+
+  setSessionSyncProvider(lookup: ExternalSessionLiveLookup | null): void {
+    this.sessionSyncLookup = lookup;
+  }
+
+  private enrichTaskWithClassification(task: PlanningTask): PlanningTask {
+    if (!this.classifier) return task;
+    const ext = task.externalSession ?? extractExternalSession(task.metadata);
+    const classification = this.classifier.classify({
+      workspace: ext?.workspace ?? null,
+      projectHint: ext?.canonicalProject ?? task.project,
+      spaceName: ext?.herdrSpace ?? null,
+      skipFs: true,
+    });
+    return {
+      ...task,
+      originTrack: task.originTrack ?? extractTaskOriginTrack(task),
+      externalSession: ext,
+      classification,
+    };
+  }
+
+  findTaskByExternalSession(input: {
+    sessionId?: string | null;
+    herdrAddress?: string | null;
+  }): PlanningTask | null {
+    const sid = input.sessionId?.trim() || null;
+    const addr = input.herdrAddress?.trim() || null;
+    if (!sid && !addr) return null;
+
+    const candidates = this.db
+      .prepare(
+        `SELECT * FROM opc_planning_tasks
+         WHERE status != 'archived'
+           AND (source_ref LIKE 'cli-ledger:%' OR source_ref LIKE 'herdr:%' OR metadata LIKE '%externalSession%')
+         ORDER BY updated_at DESC
+         LIMIT 200`,
+      )
+      .all() as unknown as TaskRow[];
+
+    for (const row of candidates) {
+      const task = mapTaskRow(row);
+      const ext = task.externalSession;
+      if (sid && (task.sourceRef === `cli-ledger:${sid}` || ext?.sessionId === sid)) {
+        return this.enrichTaskWithClassification(task);
+      }
+      if (addr && (task.sourceRef === `herdr:${addr}` || ext?.herdrAddress === addr)) {
+        return this.enrichTaskWithClassification(task);
+      }
+    }
+    return null;
+  }
+
+  bindExternalSession(
+    taskId: string,
+    input: {
+      sessionId?: string | null;
+      herdrAddress?: string | null;
+      herdrSpace?: string | null;
+      provider?: string | null;
+      workspace?: string | null;
+      canonicalProject?: string | null;
+      liveStatus?: ExternalSessionBinding["liveStatus"];
+      latestProgress?: string | null;
+      filesModifiedCount?: number;
+      originTrack?: WorkOriginTrack;
+    },
+  ): PlanningTaskWithSubtasks {
+    const existing = this.requireRawTask(taskId);
+    const now = nowIso();
+    const prevExt = extractExternalSession(existing.metadata);
+    const nextExt: ExternalSessionBinding = {
+      sessionId: input.sessionId ?? prevExt?.sessionId ?? null,
+      herdrAddress: input.herdrAddress ?? prevExt?.herdrAddress ?? null,
+      herdrSpace: input.herdrSpace ?? prevExt?.herdrSpace ?? null,
+      provider: input.provider ?? prevExt?.provider ?? null,
+      workspace: input.workspace ?? prevExt?.workspace ?? null,
+      canonicalProject: input.canonicalProject ?? prevExt?.canonicalProject ?? existing.project,
+      liveStatus: input.liveStatus ?? prevExt?.liveStatus ?? null,
+      latestProgress: input.latestProgress ?? prevExt?.latestProgress ?? null,
+      filesModifiedCount: input.filesModifiedCount ?? prevExt?.filesModifiedCount,
+      boundAt: prevExt?.boundAt ?? now,
+      lastSyncedAt: now,
+    };
+    const nextMeta: Record<string, unknown> = {
+      ...existing.metadata,
+      externalSession: nextExt,
+      originTrack: input.originTrack ?? existing.metadata.originTrack ?? "founder_managed",
+    };
+    const nextTags = dedupeTags([
+      ...existing.tags,
+      ...(nextExt.herdrAddress ? ["herdr-live"] : []),
+      ...(nextExt.sessionId ? ["cli-ledger"] : []),
+    ]);
+    const nextStatus: PlanningTaskStatus =
+      existing.status === "todo" && nextExt.liveStatus === "running"
+        ? "in_progress"
+        : existing.status === "todo"
+          ? "assigned"
+          : existing.status;
+
+    return this.updateTask(taskId, {
+      status: nextStatus,
+      tags: nextTags,
+      metadata: nextMeta,
+      assigneeName: existing.assigneeName ?? (nextExt.herdrAddress ? `Founder · Herdr (${nextExt.herdrAddress})` : "Founder"),
+    });
+  }
+
+  unbindExternalSession(taskId: string): PlanningTaskWithSubtasks {
+    const existing = this.requireRawTask(taskId);
+    const nextMeta = { ...existing.metadata };
+    delete nextMeta.externalSession;
+    return this.updateTask(taskId, { metadata: nextMeta });
+  }
+
+  promoteOrSyncExternalSession(input: {
+    title: string;
+    description: string;
+    project: string;
+    sourceRef: string;
+    tags: string[];
+    binding: {
+      sessionId?: string | null;
+      herdrAddress?: string | null;
+      herdrSpace?: string | null;
+      provider?: string | null;
+      workspace?: string | null;
+      canonicalProject?: string | null;
+      liveStatus?: ExternalSessionBinding["liveStatus"];
+      latestProgress?: string | null;
+      filesModifiedCount?: number;
+      originTrack?: WorkOriginTrack;
+    };
+  }): { task: PlanningTaskWithSubtasks; alreadyLinked: boolean } {
+    const existing = this.findTaskByExternalSession({
+      sessionId: input.binding.sessionId,
+      herdrAddress: input.binding.herdrAddress,
+    });
+    if (existing) {
+      const synced = this.bindExternalSession(existing.id, input.binding);
+      return { task: synced, alreadyLinked: true };
+    }
+
+    const now = nowIso();
+    const binding: ExternalSessionBinding = {
+      sessionId: input.binding.sessionId ?? null,
+      herdrAddress: input.binding.herdrAddress ?? null,
+      herdrSpace: input.binding.herdrSpace ?? null,
+      provider: input.binding.provider ?? null,
+      workspace: input.binding.workspace ?? null,
+      canonicalProject: input.binding.canonicalProject ?? input.project,
+      liveStatus: input.binding.liveStatus ?? null,
+      latestProgress: input.binding.latestProgress ?? null,
+      filesModifiedCount: input.binding.filesModifiedCount,
+      boundAt: now,
+      lastSyncedAt: now,
+    };
+
+    const initialStatus: PlanningTaskStatus =
+      binding.liveStatus === "running"
+        ? "in_progress"
+        : binding.liveStatus === "waiting_user" || binding.liveStatus === "completed"
+          ? "review"
+          : "assigned";
+
+    const created = this.createTask({
+      project: input.project || "default",
+      title: input.title,
+      description: input.description,
+      type: "task",
+      status: initialStatus,
+      priority: 7,
+      assigneeType: "human",
+      assigneeName: binding.herdrAddress ? `Founder · Herdr (${binding.herdrAddress})` : "Founder",
+      tags: dedupeTags([
+        ...input.tags,
+        ...(binding.herdrAddress ? ["herdr-live"] : []),
+      ]),
+      sourceRef: input.sourceRef,
+      metadata: {
+        originTrack: input.binding.originTrack ?? "founder_managed",
+        externalSession: binding,
+        triage: {
+          status: "verified",
+          verdict: "real_ready",
+          confidence: 1,
+          reason: "由创始人活跃会话直接纳入看板持续追踪",
+          reviewer: "founder",
+          reviewedAt: now,
+        },
+      },
+    });
+    return { task: this.getTask(created.id), alreadyLinked: false };
+  }
+
+  syncBoundSessionsIfStale(force = false): number {
+    if (!this.sessionSyncLookup) return 0;
+    const nowMs = Date.now();
+    if (!force && nowMs - this.lastSessionSyncAt < 5_000) return 0;
+    this.lastSessionSyncAt = nowMs;
+
+    let synced = 0;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM opc_planning_tasks
+           WHERE status NOT IN ('done', 'published', 'archived')
+             AND metadata LIKE '%externalSession%'
+           LIMIT 100`,
+        )
+        .all() as unknown as TaskRow[];
+
+      const now = nowIso();
+      for (const row of rows) {
+        const task = mapTaskRow(row);
+        const ext = task.externalSession;
+        if (!ext) continue;
+        const fresh = this.sessionSyncLookup(ext);
+        if (!fresh) continue;
+        const nextStatus = fresh.liveStatus ?? ext.liveStatus ?? null;
+        const nextProgress = fresh.latestProgress !== undefined ? fresh.latestProgress : ext.latestProgress ?? null;
+        const nextFiles =
+          fresh.filesModifiedCount !== undefined ? fresh.filesModifiedCount : ext.filesModifiedCount;
+        const nextAddr = fresh.herdrAddress !== undefined ? fresh.herdrAddress : ext.herdrAddress ?? null;
+        const nextSpace = fresh.herdrSpace !== undefined ? fresh.herdrSpace : ext.herdrSpace ?? null;
+
+        const changed =
+          nextStatus !== ext.liveStatus ||
+          nextProgress !== ext.latestProgress ||
+          nextFiles !== ext.filesModifiedCount ||
+          nextAddr !== ext.herdrAddress ||
+          nextSpace !== ext.herdrSpace;
+        if (!changed) continue;
+
+        const nextExt: ExternalSessionBinding = {
+          ...ext,
+          liveStatus: nextStatus,
+          latestProgress: nextProgress,
+          filesModifiedCount: nextFiles,
+          herdrAddress: nextAddr,
+          herdrSpace: nextSpace,
+          lastSyncedAt: now,
+        };
+        const nextMeta = { ...task.metadata, externalSession: nextExt };
+        const promotedStatus: PlanningTaskStatus =
+          (task.status === "todo" || task.status === "assigned") && nextStatus === "running"
+            ? "in_progress"
+            : task.status;
+
+        this.db
+          .prepare("UPDATE opc_planning_tasks SET status = ?, metadata = ?, updated_at = ? WHERE id = ?")
+          .run(promotedStatus, JSON.stringify(nextMeta), now, task.id);
+        synced += 1;
+      }
+    } catch {
+      // Never block board reads on transient sync errors
+    }
+    return synced;
+  }
+
   getTask(id: string): PlanningTaskWithSubtasks {
-    const task = this.requireRawTask(id);
+    const task = this.enrichTaskWithClassification(this.requireRawTask(id));
     return this.attachSubtasks([task])[0];
   }
 
   listTasks(filters: TaskListFilters = {}): PlanningTaskWithSubtasks[] {
+    this.syncBoundSessionsIfStale();
     const clauses: string[] = [];
     const args: Array<string | number> = [];
 
@@ -863,7 +1157,11 @@ export class TaskPlanningStore {
       )
       .all(...args) as unknown as TaskRow[];
 
-    return this.attachSubtasks(rows.map(mapTaskRow));
+    const mapped = rows.map((r) => this.enrichTaskWithClassification(mapTaskRow(r)));
+    const filtered = filters.triageStatus
+      ? mapped.filter((t) => getTaskTriageStatus(t) === filters.triageStatus)
+      : mapped;
+    return this.attachSubtasks(filtered);
   }
 
   getKanban(project?: string, options?: { includeSubtasks?: boolean }): KanbanBoardResponse {
@@ -881,7 +1179,7 @@ export class TaskPlanningStore {
       failed: [],
       archived: [],
       projects: this.listProjects(),
-      agents: this.hooks.listAgents?.() ?? [],
+      agents: this.listAgents(),
       counts: {
         total: tasks.length,
         todo: 0,
@@ -934,6 +1232,10 @@ export class TaskPlanningStore {
     };
 
     return board;
+  }
+
+  listAgents(): PlanningAgentOption[] {
+    return this.hooks.listAgents?.() ?? [];
   }
 
   listProjects(): string[] {
@@ -1161,8 +1463,9 @@ export class TaskPlanningStore {
     return this.getTask(id);
   }
 
-  listReadyForAutoDispatch(limit = 20): PlanningTask[] {
+  listReadyForAutoDispatch(limit = 20, options?: { includeUnverified?: boolean }): PlanningTask[] {
     const safeLimit = clampInt(limit, 20, 1, 500);
+    const includeUnverified = options?.includeUnverified === true;
     const now = nowIso();
     const rows = this.db
       .prepare(
@@ -1173,6 +1476,7 @@ export class TaskPlanningStore {
              t.type != 'epic'
              OR NOT EXISTS (SELECT 1 FROM opc_planning_tasks c WHERE c.parent_id = t.id)
            )
+           AND NOT EXISTS (SELECT 1 FROM opc_planning_tasks c WHERE c.parent_id = t.id)
          ORDER BY t.priority DESC, t.created_at ASC`,
       )
       .all(now) as unknown as TaskRow[];
@@ -1180,6 +1484,9 @@ export class TaskPlanningStore {
     const ready: PlanningTask[] = [];
     for (const row of rows) {
       const task = mapTaskRow(row);
+      if (!includeUnverified && !isTaskVerifiedForAutoDispatch(task)) {
+        continue;
+      }
       if (this.areDependenciesMet(task.id).met) {
         ready.push(task);
         if (ready.length >= safeLimit) break;
@@ -1188,13 +1495,22 @@ export class TaskPlanningStore {
     return ready;
   }
 
-  async dispatchTask(id: string, rawInput: DispatchTaskInput | unknown): Promise<DispatchTaskResult> {
+  async dispatchTask(id: string, rawInput: DispatchTaskInput | unknown, requestKey?: string): Promise<DispatchTaskResult> {
     const parsed = dispatchSchema.safeParse(rawInput);
     if (!parsed.success) {
       throw new ApiError(400, "dispatch_input", formatZodIssues(parsed.error));
     }
-    const { agentId, autoCreatePr } = parsed.data;
+    const { agentId, autoCreatePr, executionHost } = parsed.data;
     const task = this.requireRawTask(id);
+
+    if (task.type === "epic") {
+      const childRow = this.db
+        .prepare("SELECT COUNT(*) AS cnt FROM opc_planning_tasks WHERE parent_id = ?")
+        .get(id) as { cnt?: number } | undefined;
+      if (Number(childRow?.cnt ?? 0) > 0) {
+        throw new ApiError(400, "epic_has_subtasks", "请派发具体子任务而非父级 Epic");
+      }
+    }
 
     const depCheck = this.areDependenciesMet(id);
     if (!depCheck.met) {
@@ -1214,7 +1530,7 @@ export class TaskPlanningStore {
       .find((a) => a.id === agentId);
     const agentName = matchedAgent?.name || agentId;
 
-    const outcome = await this.hooks.dispatchToAgent(task, agentId, Boolean(autoCreatePr));
+    const outcome = await this.hooks.dispatchToAgent(task, agentId, Boolean(autoCreatePr), requestKey, executionHost);
     const now = nowIso();
 
     this.db
@@ -1432,13 +1748,13 @@ export class TaskPlanningStore {
     });
 
     const alerts: StaleTaskAlert[] = [...staleTasks, ...failedTasks];
+    const reportId = `ptr_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     let notifiedZoom = false;
     if (notifyZoomRequested && alerts.length > 0 && this.hooks.notifyPatrolToZoom) {
-      this.hooks.notifyPatrolToZoom(alerts);
+      this.hooks.notifyPatrolToZoom(alerts, { id: reportId, createdAt: now });
       notifiedZoom = true;
     }
 
-    const reportId = `ptr_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     this.db
       .prepare(
         `INSERT INTO opc_patrol_runs (
@@ -1789,6 +2105,7 @@ export function registerTaskPlanningRoutes(
 
   app.use(base, guard);
   app.use(`${base}/*`, guard);
+  registerPlanningConversation(app, db, store, user);
 
   app.get(`${base}/kanban`, (c) => {
     const project = c.req.query("project") || undefined;
@@ -1801,6 +2118,7 @@ export function registerTaskPlanningRoutes(
     const typeParam = c.req.query("type");
     const assigneeTypeParam = c.req.query("assigneeType");
     const parentIdParam = c.req.query("parentId");
+    const triageStatusParam = c.req.query("triageStatus");
     const includeSubtasks = c.req.query("includeSubtasks") === "true" || c.req.query("includeSubtasks") === "1";
 
     const filters: TaskListFilters = {
@@ -1809,6 +2127,14 @@ export function registerTaskPlanningRoutes(
       assetId: c.req.query("assetId") || undefined,
       includeSubtasks,
     };
+
+    if (triageStatusParam) {
+      const parsedTriage = triageStatusSchema.safeParse(triageStatusParam);
+      if (!parsedTriage.success) {
+        throw new ApiError(400, "invalid_triage_status", `不支持的审查状态筛选: ${triageStatusParam}`);
+      }
+      filters.triageStatus = parsedTriage.data as TriageStatus;
+    }
 
     if (statusParam) {
       const parsedStatus = taskStatusSchema.safeParse(statusParam);
@@ -1893,6 +2219,79 @@ export function registerTaskPlanningRoutes(
     return c.json(await store.dispatchTask(c.req.param("id"), body));
   });
 
+  app.post(`${base}/tasks/:id/bind-session`, async (c) => {
+    const body = (await readJsonBody(c)) as Record<string, unknown>;
+    const bound = store.bindExternalSession(c.req.param("id"), {
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : null,
+      herdrAddress: typeof body.herdrAddress === "string" ? body.herdrAddress : null,
+      herdrSpace: typeof body.herdrSpace === "string" ? body.herdrSpace : null,
+      provider: typeof body.provider === "string" ? body.provider : null,
+      workspace: typeof body.workspace === "string" ? body.workspace : null,
+      canonicalProject: typeof body.canonicalProject === "string" ? body.canonicalProject : null,
+      liveStatus: typeof body.liveStatus === "string" ? (body.liveStatus as ExternalSessionBinding["liveStatus"]) : null,
+      latestProgress: typeof body.latestProgress === "string" ? body.latestProgress : null,
+      filesModifiedCount: typeof body.filesModifiedCount === "number" ? body.filesModifiedCount : undefined,
+      originTrack:
+        body.originTrack === "opc_dispatched" || body.originTrack === "founder_managed"
+          ? body.originTrack
+          : "founder_managed",
+    });
+    return c.json(bound);
+  });
+
+  app.post(`${base}/tasks/:id/unbind-session`, (c) => {
+    return c.json(store.unbindExternalSession(c.req.param("id")));
+  });
+
+  app.post(`${base}/promote-herdr`, async (c) => {
+    const body = (await readJsonBody(c)) as Record<string, unknown>;
+    const herdrAddress = typeof body.herdrAddress === "string" ? body.herdrAddress.trim() : "";
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+    if (!herdrAddress && !sessionId) {
+      throw new ApiError(400, "missing_session", "请提供 herdrAddress 或 sessionId");
+    }
+    const project = typeof body.project === "string" && body.project.trim() ? body.project.trim() : "个人工作区";
+    const provider = typeof body.provider === "string" && body.provider.trim() ? body.provider.trim() : "Herdr";
+    const rawTitle = typeof body.title === "string" && body.title.trim() ? body.title.trim() : `${provider} · ${herdrAddress || sessionId}`;
+    const result = store.promoteOrSyncExternalSession({
+      title: rawTitle.slice(0, 140),
+      description:
+        typeof body.description === "string" && body.description.trim()
+          ? body.description.trim()
+          : `由 Herdr 实时会话纳入持续追踪：\n- 终端：${herdrAddress || "—"}\n- 空间：${String(body.herdrSpace ?? "—")}\n- 目录：${String(body.workspace ?? "—")}`,
+      project,
+      sourceRef: sessionId ? `cli-ledger:${sessionId}` : `herdr:${herdrAddress}`,
+      tags: ["herdr-live", provider.toLowerCase().replace(/\s+/g, "-")],
+      binding: {
+        sessionId: sessionId || null,
+        herdrAddress: herdrAddress || null,
+        herdrSpace: typeof body.herdrSpace === "string" ? body.herdrSpace : null,
+        provider,
+        workspace: typeof body.workspace === "string" ? body.workspace : null,
+        canonicalProject: project,
+        liveStatus:
+          typeof body.liveStatus === "string"
+            ? (body.liveStatus as ExternalSessionBinding["liveStatus"])
+            : "running",
+        latestProgress: typeof body.latestProgress === "string" ? body.latestProgress : null,
+        originTrack:
+          body.originTrack === "opc_dispatched" || body.originTrack === "founder_managed"
+            ? body.originTrack
+            : "founder_managed",
+      },
+    });
+    return c.json(
+      {
+        taskId: result.task.id,
+        title: result.task.title,
+        project: result.task.project,
+        alreadyLinked: result.alreadyLinked,
+        href: `#planning?task=${encodeURIComponent(result.task.id)}`,
+      },
+      result.alreadyLinked ? 200 : 201,
+    );
+  });
+
   app.post(`${base}/tasks/:id/snooze`, async (c) => {
     const body = await readJsonBody(c, true);
     const parsed = snoozeSchema.safeParse(body);
@@ -1904,7 +2303,9 @@ export function registerTaskPlanningRoutes(
 
   app.get(`${base}/ready`, (c) => {
     const limit = clampInt(c.req.query("limit"), 20, 1, 500);
-    return c.json({ tasks: store.listReadyForAutoDispatch(limit) });
+    const includeUnverified =
+      c.req.query("includeUnverified") === "true" || c.req.query("includeUnverified") === "1";
+    return c.json({ tasks: store.listReadyForAutoDispatch(limit, { includeUnverified }) });
   });
 
   app.get(`${base}/roi`, (c) => {

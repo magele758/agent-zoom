@@ -89,6 +89,9 @@ export type HomeChatTurn = {
 export type HomeChatOverview = {
   available: boolean;
   origin: string;
+  apiOrigin?: string;
+  webOrigin?: string;
+  webAvailable?: boolean;
   reason?: string;
   rooms: HomeChatRoom[];
   bots: HomeChatBot[];

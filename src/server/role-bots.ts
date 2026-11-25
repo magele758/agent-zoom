@@ -288,16 +288,18 @@ export class RoleBotService {
         };
       });
 
+      const web = await this.client.resolveWebOrigin();
       return {
         agentHomeReachable: true,
-        agentHomeOrigin: this.client.origin,
+        agentHomeOrigin: web.webOrigin,
         principle: DUAL_ENGINE_PRINCIPLE,
         roles,
       };
     } catch (err) {
+      const web = await this.client.resolveWebOrigin();
       return {
         agentHomeReachable: false,
-        agentHomeOrigin: this.client.origin,
+        agentHomeOrigin: web.webOrigin,
         principle: DUAL_ENGINE_PRINCIPLE,
         roles: ROLE_BOT_BLUEPRINTS.map(bp => {
           const saved = bindings.get(bp.id);

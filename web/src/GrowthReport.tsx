@@ -103,12 +103,14 @@ function Funnel({ report }: { report: Report }) {
   return <>
     <section aria-label="渠道转化" className="growth-funnel">
       <div className="growth-section-head"><h2>渠道转化</h2><span>累计去重人数</span></div>
-      <table className="growth-table" aria-label="各渠道转化人数与转化率">
-        <thead><tr><th scope="col">首次渠道</th>{steps.map(step => <th key={step.id} scope="col">{step.label}</th>)}</tr></thead>
-        <tbody>{report.channels.map(counts => <FunnelRow key={counts.channel} channel={counts.channel} counts={counts}
-          selection={selection} onSelect={setSelection} />)}</tbody>
-        <tfoot><FunnelRow channel={null} counts={report.total} selection={selection} onSelect={setSelection} /></tfoot>
-      </table>
+      <div className="opc-table-scroll" role="region" aria-label="渠道转化明细" tabIndex={0}>
+        <table className="growth-table" aria-label="各渠道转化人数与转化率">
+          <thead><tr><th scope="col">首次渠道</th>{steps.map(step => <th key={step.id} scope="col">{step.label}</th>)}</tr></thead>
+          <tbody>{report.channels.map(counts => <FunnelRow key={counts.channel} channel={counts.channel} counts={counts}
+            selection={selection} onSelect={setSelection} />)}</tbody>
+          <tfoot><FunnelRow channel={null} counts={report.total} selection={selection} onSelect={setSelection} /></tfoot>
+        </table>
+      </div>
       <p className="growth-method">每位客户归入首次获客渠道。首单取激活后的第一个订单，复购取第二个不同订单。百分比为该阶段人数占上一阶段人数的比例，分母为零时显示 —。</p>
       {report.excluded.length > 0 && <button className="growth-excluded" type="button" aria-pressed={selection === "excluded"}
         onClick={() => setSelection("excluded")}>未计入漏斗 · {numbers.format(report.excluded.length)} 条记录 ↗</button>}
