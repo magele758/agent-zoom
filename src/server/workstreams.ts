@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import type { DatabaseSync } from "node:sqlite";
-import type { IndexedAgent } from "../activity-index-types.ts";
+import type { ActivityIndex, HerdrMachineInfo, IndexedAgent } from "../activity-index-types.ts";
+import type { CliSessionSummary } from "../cli-ledger-types.ts";
 import type { WorkflowRun } from "../workflow-types.ts";
 import {
   WORKSPACE_CATEGORIES,
@@ -9,6 +10,7 @@ import {
   type WorkspaceCategory,
 } from "../workspace-classification-types.ts";
 import type {
+  WorkstreamAttentionItem,
   WorkstreamCategoryCount,
   WorkstreamFactoryRun,
   WorkstreamHerdrTree,
@@ -110,6 +112,94 @@ export function buildHerdrTrees(agents: IndexedAgent[]): {
   return { trees, background };
 }
 
+const RECENT_CLI_ATTENTION_MS = 12 * 60 * 60 * 1000;
+
+export function buildAttentionItems(params: {
+  localAgents: IndexedAgent[];
+  remoteAgents?: IndexedAgent[];
+  cliSessions: CliSessionSummary[];
+  nowMs?: number;
+}): WorkstreamAttentionItem[] {
+  const nowMs = params.nowMs ?? Date.now();
+  const items: WorkstreamAttentionItem[] = [];
+  const seenHerdr = new Set<string>();
+  const seenSessions = new Set<string>();
+
+  const allHerdr = [...params.localAgents, ...(params.remoteAgents ?? [])].filter((a) => Boolean(a.herdr?.address));
+  for (const agent of allHerdr) {
+    const rawStatus = agent.herdr?.rawStatus ?? null;
+    const isBlocked = rawStatus === "blocked";
+    const needsAttention = isBlocked || rawStatus === "waiting" || agent.state === "waiting";
+    if (!needsAttention) continue;
+    const addr = agent.herdr!.address;
+    seenHerdr.add(addr);
+    if (agent.linkedSessionId) seenSessions.add(agent.linkedSessionId);
+    items.push({
+      id: `herdr:${addr}`,
+      source: "herdr",
+      severity: isBlocked ? "blocked" : "waiting",
+      provider: agent.provider,
+      title: agent.title || agent.label,
+      snippet:
+        agent.what ||
+        (isBlocked
+          ? "终端处于权限/交互阻塞态，请切到 Herdr 亲自确认"
+          : "终端正在等待你的回复或下一步指示"),
+      project: agent.classification?.canonicalProject || agent.herdr?.spaceName || agent.provider,
+      originTrack: agent.originTrack ?? "founder_managed",
+      classification: agent.classification,
+      herdrAddress: addr,
+      herdrSpace: agent.herdr?.spaceName ?? null,
+      machine: agent.herdr?.machine ?? null,
+      isBlockedPermission: isBlocked,
+      sessionId: agent.linkedSessionId ?? null,
+      linkedTaskId: agent.linkedTaskId ?? null,
+      updatedAt: agent.updatedAt,
+    });
+  }
+
+  for (const s of params.cliSessions) {
+    if (s.status !== "waiting_user" && s.status !== "blocked") continue;
+    if (seenSessions.has(s.id)) continue;
+    if (s.herdrAddress && seenHerdr.has(s.herdrAddress)) continue;
+    const ts = s.updatedAt ? Date.parse(s.updatedAt) : Number.NaN;
+    if (Number.isFinite(ts) && nowMs - ts > RECENT_CLI_ATTENTION_MS) continue;
+    seenSessions.add(s.id);
+    if (s.herdrAddress) seenHerdr.add(s.herdrAddress);
+    const isBlocked = s.status === "blocked";
+    items.push({
+      id: `cli:${s.id}`,
+      source: "cli_ledger",
+      severity: isBlocked ? "blocked" : "waiting",
+      provider: s.provider,
+      title: s.title || s.firstInstruction?.slice(0, 80) || s.project,
+      snippet: s.latestProgress || s.statusReason || null,
+      project: s.classification?.canonicalProject || s.project,
+      originTrack: s.originTrack ?? "founder_managed",
+      classification: s.classification,
+      herdrAddress: s.herdrAddress ?? null,
+      herdrSpace: s.herdrSpace ?? null,
+      machine: s.herdrAddress?.includes("/") ? s.herdrAddress.slice(0, s.herdrAddress.indexOf("/")) : null,
+      isBlockedPermission: s.herdrState === "blocked",
+      sessionId: s.id,
+      linkedTaskId: s.linkedTaskId ?? null,
+      updatedAt: s.updatedAt,
+    });
+  }
+
+  items.sort((a, b) => {
+    const sevA = a.severity === "blocked" ? 0 : 1;
+    const sevB = b.severity === "blocked" ? 0 : 1;
+    if (sevA !== sevB) return sevA - sevB;
+    const srcA = a.source === "herdr" ? 0 : 1;
+    const srcB = b.source === "herdr" ? 0 : 1;
+    if (srcA !== srcB) return srcA - srcB;
+    return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") || a.id.localeCompare(b.id);
+  });
+
+  return items;
+}
+
 export function registerWorkstreamRoutes(
   app: Hono,
   db: DatabaseSync,
@@ -117,6 +207,7 @@ export function registerWorkstreamRoutes(
     user: (c: Context) => unknown;
     submitToken?: string;
     getActivityAgents: () => Promise<IndexedAgent[]>;
+    getActivitySnapshot?: () => Promise<ActivityIndex | null>;
     cliLedger: CliLedgerService;
     darkFactory: DarkFactoryStore;
     classifier: WorkspaceClassifierStore;
@@ -143,7 +234,10 @@ export function registerWorkstreamRoutes(
         : null;
     const projectFilter = c.req.query("project")?.trim().toLowerCase() || null;
 
-    const liveAgents = await deps.getActivityAgents().catch(() => []);
+    const snapshot = deps.getActivitySnapshot ? await deps.getActivitySnapshot().catch(() => null) : null;
+    const liveAgents = snapshot ? snapshot.agents : await deps.getActivityAgents().catch(() => []);
+    const allRemoteTerminals: IndexedAgent[] = snapshot?.remoteAgents ?? [];
+    const remoteMachines: HerdrMachineInfo[] = snapshot?.remoteMachines ?? [];
     const { trees: allTrees, background: allBackground } = buildHerdrTrees(liveAgents);
 
     const cliOverview = deps.cliLedger.getOverview({ days: 3, limit: 60 });
@@ -234,6 +328,28 @@ export function registerWorkstreamRoutes(
       }),
     );
 
+    const remoteTerminals = allRemoteTerminals.filter((r) =>
+      matchFilters({
+        originTrack: r.originTrack,
+        category: r.classification?.category,
+        project: r.classification?.canonicalProject ?? r.herdr?.spaceName,
+      }),
+    );
+
+    const attentionItems = buildAttentionItems({
+      localAgents: liveAgents,
+      remoteAgents: allRemoteTerminals,
+      cliSessions: cliOverview.sessions,
+    })
+      .filter((item) =>
+        matchFilters({
+          originTrack: item.originTrack,
+          category: item.classification?.category,
+          project: item.project,
+        }),
+      )
+      .slice(0, 20);
+
     const recentCliSessions = cliOverview.sessions
       .filter((s) => !representedSessionIds.has(s.id) && (s.status === "running" || s.status === "waiting_user" || s.status === "blocked"))
       .filter((s) =>
@@ -313,10 +429,15 @@ export function registerWorkstreamRoutes(
         workingCount,
         waitingCount,
         backgroundCount: backgroundTerminals.length,
+        attentionCount: attentionItems.length,
+        remoteCount: remoteTerminals.length,
         byCategory: [...catMap.values()],
       },
       herdrTrees,
       backgroundTerminals,
+      remoteTerminals,
+      remoteMachines,
+      attentionItems,
       recentCliSessions,
       activeFactoryRuns,
       activeWorkflows,

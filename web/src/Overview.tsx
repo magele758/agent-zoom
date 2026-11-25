@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { productStages, type ProductStageId } from "../../src/product-stages";
 import type { ZoomMessage } from "../../src/zoom-types";
 import type { BusinessLineSummary } from "../../src/business-types";
+import type { WorkstreamAttentionItem, WorkstreamsOverview } from "../../src/workstreams-types";
 import { request } from "./api";
 import { messageText, taskKey } from "./zoom-view";
 import { chatRoomLink, companyDepartments, decisionTarget, stageLink } from "./zoom-routes";
 import { ActivitySummary, type useActivityIndex } from "./ActivityIndex";
+import { ClassificationBadge, HerdrBadge, OriginTrackBadge } from "./ClassificationBadge";
+import { HerdrActions } from "./HerdrActions";
 import { OpcStoryFlow } from "./OpcStoryFlow";
 import "./overview.css";
 
@@ -20,6 +23,17 @@ export function Overview({ activityIndex, nav, products, messages, pending, read
   const current = products.includes(selection) ? selection : "";
   const [lines, setLines] = useState<BusinessLineSummary[]>([]);
   const [lineError, setLineError] = useState("");
+  const [attentionItems, setAttentionItems] = useState<WorkstreamAttentionItem[]>([]);
+
+  const loadAttention = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const ws = await request<WorkstreamsOverview>("/api/opc/workstreams", { signal });
+      if (!signal?.aborted) setAttentionItems(ws.attentionItems ?? []);
+    } catch {
+      /* Workstream attention is additive; ignore transient errors */
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     request<{lines:BusinessLineSummary[]}>("/api/opc/business/catalog", { signal: controller.signal })
@@ -27,6 +41,12 @@ export function Overview({ activityIndex, nav, products, messages, pending, read
       .catch(error => { if (!controller.signal.aborted) setLineError(error.message); });
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadAttention(controller.signal);
+    return () => controller.abort();
+  }, [activityIndex.data, loadAttention]);
   const maintenance = messages.filter(item => item.repository);
   const unfiled = new Set(messages.filter(item => !item.stage).map(taskKey)).size;
   const counts = useMemo(() => {
@@ -70,13 +90,75 @@ export function Overview({ activityIndex, nav, products, messages, pending, read
     {!ready && !error && <p role="status">正在读取项目与待办…</p>}
     {ready && <>
       <section className="overview-decisions" aria-label="等待你决定的事项">
-        <header><h2>待我处理 <small>{pending.length}</small></h2><a href="#mailbox">打开总裁信箱 ↗</a></header>
-        {pending.length ? <>
+        <header>
+          <h2>待我处理 <small>{pending.length + attentionItems.length}</small></h2>
+          <a href="#mailbox">打开总裁信箱 ↗</a>
+        </header>
+        {pending.length > 0 && <>
           <p>数字员工遇到需你拍板的计划、实验复盘或异常卡点时会汇总在此——点击条目即可进入对应页面批准、打回修改或一键关闭。</p>
           <ul>{pending.slice(0, 5).map(item => <li key={item.id}>
             <a href={decisionTarget(item)}><span>{item.folder.split("/")[0]}</span><strong>{messageText(item).title}</strong><small>{item.source} · 去处理 ↗</small></a>
           </li>)}</ul>
-        </> : <p>当前没有需要你答复或审批的事项（数字员工推进任务遇到需拍板的分叉或计划确认时会自动出现在这里）。</p>}
+        </>}
+        {attentionItems.length > 0 && (
+          <div className="dt-attention-block" aria-label="Herdr 与 CLI 现场待确认和阻塞项">
+            <h3>
+              <span>⚡ Herdr & CLI 现场卡点 / 等你确认（{attentionItems.length}）</span>
+              <a href="#activity-index" style={{ marginLeft: "auto", fontSize: 12, fontWeight: 500 }}>查看完整工作现场 ↗</a>
+            </h3>
+            <ul className="dt-attention-list">
+              {attentionItems.slice(0, 6).map((item) => (
+                <li key={item.id} className={`dt-attention-item${item.severity === "blocked" ? " is-blocked" : ""}`}>
+                  <div className="dt-attention-top">
+                    <span className={`dt-attention-sev is-${item.severity}`}>
+                      {item.severity === "blocked" ? "⛔ 阻塞需确认" : "💬 等你回复"}
+                    </span>
+                    <OriginTrackBadge track={item.originTrack} />
+                    <ClassificationBadge classification={item.classification} />
+                    {item.machine && <span className="dt-pill dt-machine-pill">🖥 {item.machine}</span>}
+                    <HerdrBadge address={item.herdrAddress} spaceName={item.herdrSpace} />
+                    <span style={{ fontSize: 11.5, color: "#526258" }}>
+                      {item.project} · {item.provider}
+                    </span>
+                  </div>
+                  <div className="dt-attention-title">{item.title}</div>
+                  {item.snippet && <div className="dt-attention-snippet">{item.snippet}</div>}
+                  <div className="dt-row-badges">
+                    <HerdrActions
+                      address={item.herdrAddress}
+                      isBlocked={item.isBlockedPermission}
+                      compact
+                      onSent={() => {
+                        void loadAttention();
+                        void activityIndex.load(true);
+                      }}
+                    />
+                    {item.sessionId && (
+                      <a
+                        className="dt-mini-btn"
+                        href={`#cli-ledger?session=${encodeURIComponent(item.sessionId)}`}
+                        style={{ textDecoration: "none" }}
+                      >
+                        查看台账详情 ↗
+                      </a>
+                    )}
+                    {item.linkedTaskId && (
+                      <a
+                        className="dt-pill dt-linked-task"
+                        href={`#planning?task=${encodeURIComponent(item.linkedTaskId)}`}
+                      >
+                        ✓ 关联看板任务 ↗
+                      </a>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {pending.length === 0 && attentionItems.length === 0 && (
+          <p>当前没有需要你答复或审批的事项（数字员工推进任务或 Herdr 终端遇到阻塞/需拍板时会自动汇总到这里）。</p>
+        )}
       </section>
       <section aria-label="产品与阶段" className="overview-matrix">
         <header><h2>产品与阶段</h2><a href="#projects">打开项目目录 ↗</a></header>

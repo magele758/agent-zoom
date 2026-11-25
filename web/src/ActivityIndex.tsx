@@ -10,6 +10,7 @@ import {
 } from "../../src/workspace-classification-types";
 import { request } from "./api";
 import { ClassificationBadge, HerdrBadge, OriginTrackBadge } from "./ClassificationBadge";
+import { HerdrActions } from "./HerdrActions";
 import { RepositoryIndexContent } from "./RepositoryIndexContent";
 import "./activity-index.css";
 
@@ -292,10 +293,21 @@ function AgentRow({
         <div className="dt-row-badges">
           <OriginTrackBadge track={agent.originTrack} />
           <ClassificationBadge classification={agent.classification} editable onChanged={onClassified} />
+          {agent.herdr?.machine && (
+            <span className="dt-pill dt-machine-pill" title={`远程机器 ${agent.herdr.machine}`}>
+              🖥 {agent.herdr.machine}
+            </span>
+          )}
           <HerdrBadge
             address={agent.herdr?.address}
             spaceName={agent.herdr?.spaceName}
             subCount={children.length}
+          />
+          <HerdrActions
+            address={agent.herdr?.address}
+            isBlocked={agent.herdr?.rawStatus === "blocked"}
+            compact
+            onSent={onClassified}
           />
           {agent.linkedTaskId ? (
             <a
@@ -334,7 +346,12 @@ function AgentRow({
         ) : (
           <span>仓库未识别</span>
         )}
-        {agent.workspace && <code>{agent.workspace}</code>}
+        {(agent.workspace || agent.herdr?.remoteCwd) && (
+          <code>
+            {agent.herdr?.machine ? `${agent.herdr.machine}:` : ""}
+            {agent.workspace || agent.herdr?.remoteCwd}
+          </code>
+        )}
         {repo && repo.managed.length > 0 && (
           <small>
             <ManagedProjects repo={repo} />
@@ -355,6 +372,12 @@ function AgentRow({
                 <strong>{child.label}</strong>
                 <span>{cp.empty ? child.herdr?.name || child.herdr?.address : cp.head}</span>
                 {child.workspace && <code style={{ fontSize: 11 }}>{basename(child.workspace)}</code>}
+                <HerdrActions
+                  address={child.herdr?.address}
+                  isBlocked={child.herdr?.rawStatus === "blocked"}
+                  compact
+                  onSent={onClassified}
+                />
               </div>
             );
           })}
@@ -784,6 +807,40 @@ export function ActivityPage({
                       />
                     ))}
                   </ul>
+                  {((index.data.remoteMachines?.length ?? 0) > 0 || (index.data.remoteAgents?.length ?? 0) > 0) && (
+                    <section className="dt-remote-strip" aria-label="远程机器与终端">
+                      <div className="dt-remote-head">
+                        <strong>🌐 远程机器（Herdr Mesh）</strong>
+                        {(index.data.remoteMachines ?? []).map((m) => (
+                          <span key={m.name} className="dt-pill dt-machine-pill" title={m.detail || m.status}>
+                            🖥 {m.name} · {m.status}
+                          </span>
+                        ))}
+                        <span style={{ fontSize: 12, color: "#4d6484" }}>
+                          远程活跃终端 {index.data.remoteAgents?.length ?? 0} 个
+                        </span>
+                      </div>
+                      {(index.data.remoteAgents?.length ?? 0) > 0 ? (
+                        <ul className="idx-results" style={{ marginTop: 8 }}>
+                          {(index.data.remoteAgents ?? []).map((a) => (
+                            <AgentRow
+                              key={a.id}
+                              agent={a}
+                              selected={a.id === id}
+                              repo={undefined}
+                              promoting={promotingId === a.id}
+                              onPromote={(target) => void handlePromoteAgent(target)}
+                              onClassified={() => void index.load(true)}
+                            />
+                          ))}
+                        </ul>
+                      ) : (
+                        <p style={{ margin: 0, fontSize: 12, color: "#506480" }}>
+                          远程节点已联通，当前没有运行中的远程 Agent 终端（其工作目录已自动与本机 Git 索引隔离）。
+                        </p>
+                      )}
+                    </section>
+                  )}
                   {backgroundRows.length > 0 && (
                     <details className="dt-background-drawer">
                       <summary>

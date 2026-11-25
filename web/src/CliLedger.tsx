@@ -27,6 +27,7 @@ import {
 } from "../../src/workspace-classification-types";
 import { request } from "./api";
 import { ClassificationBadge, HerdrBadge, OriginTrackBadge } from "./ClassificationBadge";
+import { HerdrActions } from "./HerdrActions";
 import "./cli-ledger.css";
 
 type WindowDays = 3 | 7 | 14 | 30;
@@ -1966,6 +1967,14 @@ export function CliLedger({
                     </span>
                   )}
                 </>
+              )}
+
+              {activeDrawerSession?.herdrAddress && (
+                <HerdrActions
+                  address={activeDrawerSession.herdrAddress}
+                  isBlocked={activeDrawerSession.herdrState === "blocked"}
+                  onSent={() => void loadOverview(windowDays, true)}
+                />
               )}
 
               <button

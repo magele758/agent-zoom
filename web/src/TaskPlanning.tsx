@@ -43,6 +43,7 @@ import {
 import type { WorkstreamHerdrTree, WorkstreamsOverview } from "../../src/workstreams-types";
 import { request } from "./api";
 import { ClassificationBadge, HerdrBadge, OriginTrackBadge } from "./ClassificationBadge";
+import { HerdrActions } from "./HerdrActions";
 import { PlanningConversation } from "./PlanningConversation";
 import "./task-planning.css";
 
@@ -546,6 +547,15 @@ function TaskCard({
             {ext.latestProgress && (
               <div style={{ opacity: 0.88, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ext.latestProgress}>
                 {ext.latestProgress}
+              </div>
+            )}
+            {ext.herdrAddress && (
+              <div style={{ marginTop: 2 }}>
+                <HerdrActions
+                  address={ext.herdrAddress}
+                  isBlocked={ext.liveStatus === "blocked"}
+                  compact
+                />
               </div>
             )}
           </div>
@@ -2267,23 +2277,30 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                           {tree.classification?.canonicalProject || tree.spaceName || tree.provider}
                           {tree.subAgents.length > 0 ? ` · ${tree.subAgents.length} 子 worker` : ""}
                         </span>
-                        {tree.linkedTaskId ? (
-                          <a
-                            className="dt-pill dt-linked-task"
-                            href={`#planning?task=${encodeURIComponent(tree.linkedTaskId)}`}
-                          >
-                            ✓ 已绑定任务 ↗
-                          </a>
-                        ) : (
-                          <button
-                            type="button"
-                            className="dt-mini-btn"
-                            disabled={promotingHerdrId === tree.id}
-                            onClick={() => void handlePromoteWorkstream(tree)}
-                          >
-                            {promotingHerdrId === tree.id ? "纳入中…" : "📌 纳入看板同步"}
-                          </button>
-                        )}
+                        <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                          <HerdrActions
+                            address={tree.address}
+                            compact
+                            onSent={() => void loadWorkstreams()}
+                          />
+                          {tree.linkedTaskId ? (
+                            <a
+                              className="dt-pill dt-linked-task"
+                              href={`#planning?task=${encodeURIComponent(tree.linkedTaskId)}`}
+                            >
+                              ✓ 已绑定任务 ↗
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              className="dt-mini-btn"
+                              disabled={promotingHerdrId === tree.id}
+                              onClick={() => void handlePromoteWorkstream(tree)}
+                            >
+                              {promotingHerdrId === tree.id ? "纳入中…" : "📌 纳入看板同步"}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </article>
                   ))}

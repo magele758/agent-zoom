@@ -14,6 +14,7 @@ import {
   type RunLogsResponse,
 } from "../../src/dark-factory-types";
 import { request } from "./api";
+import { HerdrActions } from "./HerdrActions";
 import "./dark-factory.css";
 
 const API_BASE = "/api/opc/factory";
@@ -1222,6 +1223,14 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
                               <button type="button" disabled={busy} onClick={() => void handleRetryRun(run.id)}>
                                 重试
                               </button>
+                            )}
+                            {run.herdrTerminal && (
+                              <HerdrActions
+                                address={run.herdrTerminal}
+                                compact
+                                allowSend={run.status === "running"}
+                                onSent={() => void load()}
+                              />
                             )}
                             <button
                               type="button"

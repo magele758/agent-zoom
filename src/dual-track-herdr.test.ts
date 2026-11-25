@@ -13,13 +13,21 @@ import {
   WorkspaceClassifierStore,
 } from "./server/workspace-classifier.ts";
 import { resolveProjectHerdrSpace } from "./server/herdr-space-router.ts";
-import { buildHerdrTrees } from "./server/workstreams.ts";
+import { buildAttentionItems, buildHerdrTrees } from "./server/workstreams.ts";
+import { HerdrController, redactScreenLine, registerHerdrControlRoutes } from "./server/herdr-control.ts";
+import {
+  getHubCircuitBreakerState,
+  parseHerdrMachinesOutput,
+  readAgentIndex,
+  resetHubCircuitBreaker,
+} from "./server/company-agents-index.ts";
 import { CliLedgerService } from "./server/cli-ledger.ts";
 import { createApp } from "./server/http.ts";
 import { openStore } from "./server/logic.ts";
 import type { IndexedAgent } from "./activity-index-types.ts";
 import type { WorkstreamsOverview } from "./workstreams-types.ts";
-import type { CliLedgerOverview } from "./cli-ledger-types.ts";
+import type { CliLedgerOverview, CliSessionSummary } from "./cli-ledger-types.ts";
+import { Hono } from "hono";
 
 test("resolveCanonicalWorkspace collapses real git worktrees, herdr split-tasks, factory worktrees, and filters home/probe dirs", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "opc-classifier-wt-"));
@@ -460,4 +468,285 @@ process.stdout.write(JSON.stringify({
   });
   assert.equal(fresh.reused, false);
   assert.equal(fresh.spaceName, "OPC OS · password-one");
+});
+
+test("P2 HerdrController focus, send blocked-guard, screen redaction, and HTTP auth", async (t) => {
+  const calls: Array<{ file: string; args: string[] }> = [];
+  const statuses: Record<string, { state: string; status: string }> = {
+    t90: { state: "live", status: "waiting" },
+    t94: { state: "live", status: "blocked" },
+    t99: { state: "exited", status: "done" },
+    "ubuntu1/t3": { state: "live", status: "idle" },
+  };
+
+  const ctrl = new HerdrController({
+    hcBin: "mock-hc",
+    herdrAppBin: "mock-herdr-app",
+    execFn: async (file, args) => {
+      calls.push({ file, args });
+      if (file === "mock-herdr-app" && args[1] === "agent.focus") {
+        if (args[3] === "ubuntu1/t3") throw new Error("not an agent");
+        return { stdout: "{}", stderr: "" };
+      }
+      if (file === "mock-herdr-app" && args[1] === "pane.focus") {
+        return { stdout: "{}", stderr: "" };
+      }
+      if (file === "mock-hc" && args[0] === "get") {
+        const addr = args[2];
+        const info = statuses[addr];
+        if (!info) throw new Error("not found");
+        return { stdout: JSON.stringify(info), stderr: "" };
+      }
+      if (file === "mock-hc" && args[0] === "send") {
+        assert.ok(!args.includes("--force"), "must NEVER pass --force to hc send");
+        return { stdout: "ok", stderr: "" };
+      }
+      if (file === "mock-hc" && args[0] === "screen") {
+        return {
+          stdout: "line 1\nAPI_KEY=sk-abcdefghijklmnopqrstuvwxyz123456\nWaiting for reply?\n\n",
+          stderr: "",
+        };
+      }
+      throw new Error(`unexpected call ${file} ${args.join(" ")}`);
+    },
+  });
+
+  // Focus succeeds with agent.focus, and falls back to pane.focus for non-agent terminals
+  const f1 = await ctrl.focusTerminal("t90");
+  assert.equal(f1.command, "agent.focus");
+  const f2 = await ctrl.focusTerminal("ubuntu1/t3");
+  assert.equal(f2.command, "pane.focus");
+
+  // Send succeeds on live waiting terminal and never passes --force
+  const s1 = await ctrl.sendInstruction("t90", "继续执行测试");
+  assert.equal(s1.ok, true);
+  assert.equal(s1.previousStatus, "waiting");
+
+  // Blocked terminal is strictly rejected with 409 terminal_blocked
+  await assert.rejects(
+    ctrl.sendInstruction("t94", "yes"),
+    (err: { status?: number; code?: string }) => err.status === 409 && err.code === "terminal_blocked",
+  );
+
+  // Exited terminal is rejected with 409 terminal_not_live
+  await assert.rejects(
+    ctrl.sendInstruction("t99", "ping"),
+    (err: { status?: number; code?: string }) => err.status === 409 && err.code === "terminal_not_live",
+  );
+
+  // Invalid address is rejected with 400
+  await assert.rejects(
+    ctrl.focusTerminal("; rm -rf /"),
+    (err: { status?: number; code?: string }) => err.status === 400 && err.code === "invalid_herdr_address",
+  );
+
+  // Screen tail redacts secrets
+  const scr = await ctrl.readScreenTail("t90", 10);
+  assert.equal(scr.lines.length, 3);
+  assert.doesNotMatch(scr.lines.join("\n"), /sk-abc/);
+  assert.match(scr.lines[1], /\[REDACTED\]/);
+  assert.match(redactScreenLine("bearer: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaaaaaaaaaa.bbbbbb"), /\[REDACTED\]/);
+
+  // HTTP routes enforce human session authentication (401 without session)
+  const dir = mkdtempSync(join(tmpdir(), "opc-herdr-ctrl-http-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = openStore(join(dir, "test.db"));
+  t.after(() => store.db.close());
+  const { app } = createApp(store, { activityIndexEnabled: false });
+  assert.equal(
+    (await app.request("/api/opc/herdr/focus", { method: "POST", body: JSON.stringify({ address: "t90" }) })).status,
+    401,
+  );
+  const cookie = (await app.request("/api/me")).headers.get("set-cookie")!.split(";")[0];
+  assert.equal(
+    (
+      await app.request("/api/opc/herdr/focus", {
+        method: "POST",
+        headers: { cookie, "Content-Type": "application/json" },
+        body: JSON.stringify({ address: "../bad" }),
+      })
+    ).status,
+    400,
+  );
+
+  // Isolated route test with mocked runner
+  const isolated = new Hono();
+  registerHerdrControlRoutes(isolated, () => ({ id: "human" }), {
+    hcBin: "mock-hc",
+    herdrAppBin: "mock-herdr-app",
+    execFn: async (file, args) => {
+      if (file === "mock-herdr-app") return { stdout: "{}", stderr: "" };
+      if (args[0] === "get") return { stdout: JSON.stringify({ state: "live", status: "waiting" }), stderr: "" };
+      return { stdout: "ok", stderr: "" };
+    },
+  });
+  const okFocus = await isolated.request("/api/opc/herdr/focus", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ address: "ubuntu1/t3" }),
+  });
+  assert.equal(okFocus.status, 200);
+});
+
+test("P2 buildAttentionItems unifies blocked/waiting Herdr + recent CLI items, deduplicates, and ignores stale CLI", () => {
+  const nowMs = Date.parse("2026-11-25T06:00:00.000Z");
+  const blockedHerdr: IndexedAgent = {
+    id: "herdr-t94",
+    provider: "Antigravity",
+    state: "waiting",
+    sources: ["Herdr"],
+    workspace: "/Users/tester/ppeng-agent-core",
+    repository: null,
+    updatedAt: null,
+    label: "Antigravity · t94",
+    title: "构建代码库速通 skill",
+    what: null,
+    taskWhat: null,
+    originTrack: "founder_managed",
+    linkedSessionId: "agy:s1",
+    herdr: {
+      address: "t94",
+      name: null,
+      parent: null,
+      where: "ppeng-agent-core / 1",
+      spaceName: "ppeng-agent-core",
+      tabName: "1",
+      labels: {},
+      isSubAgent: false,
+      isBackground: false,
+      rawStatus: "blocked",
+      machine: null,
+      remoteCwd: null,
+    },
+  };
+  const remoteWaiting: IndexedAgent = {
+    ...blockedHerdr,
+    id: "herdr-ubuntu1-t3",
+    workspace: null,
+    label: "Codex · ubuntu1/t3",
+    title: "远端 GPU 训练脚本待确认",
+    linkedSessionId: null,
+    herdr: {
+      ...blockedHerdr.herdr!,
+      address: "ubuntu1/t3",
+      rawStatus: "waiting",
+      machine: "ubuntu1",
+      remoteCwd: "/home/ubuntu/trainer",
+    },
+  };
+  const makeCli = (over: Partial<CliSessionSummary>): CliSessionSummary => ({
+    id: over.id ?? "cli-1",
+    rawSessionId: over.rawSessionId ?? "r1",
+    providerId: "codex",
+    provider: "Codex",
+    project: over.project ?? "agent-chatroom",
+    workspace: "/Users/tester/agent-chatroom",
+    repository: null,
+    branch: "main",
+    model: null,
+    title: over.title ?? "CLI session",
+    firstInstruction: "first",
+    latestInstruction: "latest",
+    latestProgress: over.latestProgress ?? "等待确认部署方案",
+    status: over.status ?? "waiting_user",
+    statusReason: "wait",
+    progressStage: "implementing",
+    progressPct: 60,
+    startedAt: new Date(nowMs - 30 * 60_000).toISOString(),
+    updatedAt: over.updatedAt ?? new Date(nowMs - 20 * 60_000).toISOString(),
+    durationMins: 10,
+    stats: {
+      totalTurns: 2,
+      instructionCount: 1,
+      totalToolCalls: 4,
+      filesModifiedCount: 1,
+      filesTouched: [],
+      commandsRun: 0,
+      tokensTotal: 100,
+    },
+    recentTurnsPreview: [],
+    sourcePath: "/tmp/session.jsonl",
+    herdrAddress: over.herdrAddress ?? null,
+    originTrack: over.originTrack ?? "founder_managed",
+  });
+
+  const items = buildAttentionItems({
+    localAgents: [blockedHerdr],
+    remoteAgents: [remoteWaiting],
+    cliSessions: [
+      makeCli({ id: "agy:s1", herdrAddress: "t94", status: "blocked", title: "duplicate of t94" }),
+      makeCli({ id: "cli-fresh", status: "waiting_user", title: "等待确认 PR 合入", updatedAt: new Date(nowMs - 30 * 60_000).toISOString() }),
+      makeCli({ id: "cli-stale", status: "blocked", title: "两天前的历史阻塞", updatedAt: new Date(nowMs - 36 * 3600_000).toISOString() }),
+    ],
+    nowMs,
+  });
+
+  assert.equal(items.length, 3);
+  assert.equal(items[0].id, "herdr:t94");
+  assert.equal(items[0].severity, "blocked");
+  assert.equal(items[0].isBlockedPermission, true);
+  assert.equal(items[1].id, "herdr:ubuntu1/t3");
+  assert.equal(items[1].machine, "ubuntu1");
+  assert.equal(items[2].id, "cli:cli-fresh");
+});
+
+test("P2 remote Herdr terminals and machines stay isolated from localWorkspaces, and Hub circuit breaker degrades fast", async (t) => {
+  const machines = parseHerdrMachinesOutput(
+    "ubuntu1          connected  ubuntu1 · hc 0.1.17\nubuntu2          connected  ubuntu2 · hc 0.1.17\n{\"terminals\":[]}\n",
+  );
+  assert.deepEqual(machines, [
+    { name: "ubuntu1", status: "connected", detail: "ubuntu1 · hc 0.1.17" },
+    { name: "ubuntu2", status: "connected", detail: "ubuntu2 · hc 0.1.17" },
+  ]);
+
+  const view = await readAgentIndex({
+    hub: async () => ({ running: { at: "2026-11-25T05:00:00Z", window_min: 5, items: [], errors: [] } }),
+    herdr: async () => ({
+      machines,
+      terminals: [
+        { address: "t1", agent: "grok", cwd: "/tmp/local-proj", state: "live", status: "working" },
+        { address: "ubuntu1/t3", agent: "codex", cwd: "/home/ubuntu/gpu-repo", state: "live", status: "blocked", where: "gpu / 1" },
+      ],
+    }),
+    processes: async () => ({ rows: [], missingDirectories: false }),
+  });
+
+  // Local agents & localWorkspaces strictly exclude remote terminals
+  assert.equal(view.agents.length, 1);
+  assert.equal(view.agents[0].herdr?.address, "t1");
+  assert.deepEqual(view.localWorkspaces, ["/tmp/local-proj"]);
+
+  // Remote terminals & connected machines are surfaced cleanly
+  assert.equal(view.remoteMachines?.length, 2);
+  assert.equal(view.remoteAgents?.length, 1);
+  assert.equal(view.remoteAgents?.[0].herdr?.address, "ubuntu1/t3");
+  assert.equal(view.remoteAgents?.[0].herdr?.machine, "ubuntu1");
+  assert.equal(view.remoteAgents?.[0].herdr?.rawStatus, "blocked");
+  assert.equal(view.remoteAgents?.[0].herdr?.remoteCwd, "/home/ubuntu/gpu-repo");
+  assert.equal(view.remoteAgents?.[0].workspace, null);
+
+  // Hub circuit breaker opens after failure and short-circuits subsequent call immediately
+  const prevHubUrl = process.env.OPC_HUB_URL;
+  process.env.OPC_HUB_URL = "http://127.0.0.1:1";
+  resetHubCircuitBreaker();
+  t.after(() => {
+    resetHubCircuitBreaker();
+    if (prevHubUrl === undefined) delete process.env.OPC_HUB_URL;
+    else process.env.OPC_HUB_URL = prevHubUrl;
+  });
+
+  const first = await readAgentIndex({
+    herdr: async () => ({ terminals: [] }),
+    processes: async () => ({ rows: [], missingDirectories: false }),
+  });
+  assert.equal(first.sources.find((s) => s.name === "Agent Hub")?.status, "unavailable");
+  assert.equal(getHubCircuitBreakerState().open, true);
+
+  const t0 = Date.now();
+  const second = await readAgentIndex({
+    herdr: async () => ({ terminals: [] }),
+    processes: async () => ({ rows: [], missingDirectories: false }),
+  });
+  assert.ok(Date.now() - t0 < 200, "second call should short-circuit immediately while circuit is open");
+  assert.match(second.sources.find((s) => s.name === "Agent Hub")?.detail ?? "", /冷却 60s/);
 });

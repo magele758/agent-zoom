@@ -47,6 +47,7 @@ import { registerBotArbitratorRoutes } from "./bot-arbitrator.ts";
 import { registerPlannotatorBridgeRoutes } from "./plannotator-bridge.ts";
 import { registerClassificationRoutes } from "./workspace-classifier.ts";
 import { registerWorkstreamRoutes } from "./workstreams.ts";
+import { registerHerdrControlRoutes } from "./herdr-control.ts";
 import type { addActivityIndex } from "./company-activity-index.ts";
 import { bootstrapCompanyRuntime, type CompanyRuntime } from "../kernel/bootstrap.ts";
 import type { DecisionOption } from "../kernel/types.ts";
@@ -940,6 +941,8 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
     };
   });
 
+  registerHerdrControlRoutes(app, options.user);
+
   registerWorkstreamRoutes(app, store.db, {
     user: options.user,
     submitToken: options.submitToken,
@@ -951,6 +954,15 @@ export function addZoomRoutes(app: Hono, store: Store, options: {
         return options.activityIndex.getCachedSnapshot()?.agents ?? options.activityIndex.getCachedAgents();
       }
       return [];
+    },
+    getActivitySnapshot: async () => {
+      const snap = options.activityIndex?.getCachedSnapshot();
+      if (snap) return snap;
+      if (options.activityIndex) {
+        await options.activityIndex.sync().catch(() => {});
+        return options.activityIndex.getCachedSnapshot();
+      }
+      return null;
     },
     cliLedger,
     darkFactory,

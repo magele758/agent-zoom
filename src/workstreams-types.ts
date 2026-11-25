@@ -1,4 +1,4 @@
-import type { IndexedAgent } from "./activity-index-types.ts";
+import type { HerdrMachineInfo, IndexedAgent } from "./activity-index-types.ts";
 import type { CliSessionSummary } from "./cli-ledger-types.ts";
 import type {
   WorkOriginDetail,
@@ -6,6 +6,25 @@ import type {
   WorkspaceCategory,
   WorkspaceClassification,
 } from "./workspace-classification-types.ts";
+
+export interface WorkstreamAttentionItem {
+  id: string;
+  source: "herdr" | "cli_ledger";
+  severity: "blocked" | "waiting";
+  provider: string;
+  title: string;
+  snippet: string | null;
+  project: string;
+  originTrack: WorkOriginTrack;
+  classification?: WorkspaceClassification;
+  herdrAddress: string | null;
+  herdrSpace: string | null;
+  machine: string | null;
+  isBlockedPermission: boolean;
+  sessionId: string | null;
+  linkedTaskId: string | null;
+  updatedAt: string | null;
+}
 
 export interface WorkstreamHerdrTree {
   id: string;
@@ -72,10 +91,15 @@ export interface WorkstreamsOverview {
     workingCount: number;
     waitingCount: number;
     backgroundCount: number;
+    attentionCount: number;
+    remoteCount: number;
     byCategory: WorkstreamCategoryCount[];
   };
   herdrTrees: WorkstreamHerdrTree[];
   backgroundTerminals: IndexedAgent[];
+  remoteTerminals: IndexedAgent[];
+  remoteMachines: HerdrMachineInfo[];
+  attentionItems: WorkstreamAttentionItem[];
   recentCliSessions: CliSessionSummary[];
   activeFactoryRuns: WorkstreamFactoryRun[];
   activeWorkflows: WorkstreamWorkflowItem[];

@@ -4,13 +4,31 @@ import { readlink } from "node:fs/promises";
 import { basename, isAbsolute, normalize } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
-import type { AgentIndex, IndexedAgent, IndexSource } from "../activity-index-types.ts";
+import type { AgentIndex, HerdrMachineInfo, IndexedAgent, IndexSource } from "../activity-index-types.ts";
 import { detectWorkOrigin, parseHerdrWhere } from "./workspace-classifier.ts";
 
 const HUB = "Agent Hub";
 const HERDR = "Herdr";
 const OS = "本机进程";
 const exec = promisify(execFile);
+
+const HUB_TIMEOUT_MS = 1500;
+const HUB_BACKOFF_MS = 60_000;
+let hubBackoffUntil = 0;
+let hubLastFailureReason = "";
+
+export function resetHubCircuitBreaker(): void {
+  hubBackoffUntil = 0;
+  hubLastFailureReason = "";
+}
+
+export function getHubCircuitBreakerState(): { open: boolean; retryAt: number; reason: string } {
+  return {
+    open: Date.now() < hubBackoffUntil,
+    retryAt: hubBackoffUntil,
+    reason: hubLastFailureReason,
+  };
+}
 const providerNames: Record<string, string> = {
   codex: "Codex",
   claude: "Claude Code",
@@ -96,7 +114,12 @@ function terminalPurpose(title: string | null | undefined, agent: string): strin
   const stripped = title.endsWith(suffix) ? title.slice(0, -suffix.length) : title;
   return oneLine(stripped);
 }
-type Reading = { agents: IndexedAgent[]; source: IndexSource };
+type Reading = {
+  agents: IndexedAgent[];
+  remoteAgents?: IndexedAgent[];
+  remoteMachines?: HerdrMachineInfo[];
+  source: IndexSource;
+};
 type ObservedProcess = { pid: number; provider: string; workspace: string | null; underHerdr: boolean };
 type ProcessReading = { rows: ObservedProcess[]; missingDirectories: boolean };
 type Inputs = {
@@ -192,9 +215,29 @@ const terminalRow = z.object({
   where: z.string().nullish(),
   labels: z.record(z.string(), z.string()).optional(),
 });
+const machineRow = z.object({
+  name: z.string().min(1),
+  status: z.string().min(1),
+  detail: z.string().default(""),
+});
+
 function fromHerdr(value: unknown, now: string): Reading {
-  const { terminals } = z.object({ terminals: z.array(z.unknown()) }).parse(value);
+  const parsedRoot = z
+    .object({
+      terminals: z.array(z.unknown()),
+      machines: z.array(z.unknown()).optional(),
+    })
+    .parse(value);
+  const { terminals } = parsedRoot;
   const seen = new Map<string, IndexedAgent>();
+  const seenRemote = new Map<string, IndexedAgent>();
+  const remoteMachines: HerdrMachineInfo[] = [];
+  if (Array.isArray(parsedRoot.machines)) {
+    for (const m of parsedRoot.machines) {
+      const parsedM = machineRow.safeParse(m);
+      if (parsedM.success) remoteMachines.push(parsedM.data);
+    }
+  }
   let invalid = 0;
   for (const item of terminals) {
     const result = terminalRow.safeParse(item);
@@ -203,13 +246,18 @@ function fromHerdr(value: unknown, now: string): Reading {
       continue;
     }
     const r = result.data;
-    // Remote terminals carry a machine/address pair. Their cwd is unrelated to the local filesystem.
-    if (r.state !== "live" || r.address.includes("/")) continue;
+    if (r.state !== "live") continue;
+    const isRemote = r.address.includes("/");
+    const machine = isRemote ? r.address.slice(0, r.address.indexOf("/")).trim() || null : null;
     const provider = providerNames[r.agent.toLowerCase()] ?? (r.status ? "Herdr agent" : null);
     if (!provider) continue;
     const id = "herdr-" + key(r.address);
-    const workspace = directory(r.cwd);
+    const rawCwd = directory(r.cwd);
+    // Remote terminals carry a machine/address pair. Their cwd is unrelated to the local filesystem,
+    // so keep `workspace: null` for local git indexing and store the path in `herdr.remoteCwd`.
+    const workspace = isRemote ? null : rawCwd;
     const mappedState = status(r.status ?? undefined);
+    const rawStatus = r.status?.trim() || null;
     const labels = r.labels && typeof r.labels === "object" ? r.labels : {};
     const whereRaw = r.where?.trim() || labels.where?.trim() || null;
     const { spaceName, tabName } = parseHerdrWhere(whereRaw);
@@ -218,22 +266,23 @@ function fromHerdr(value: unknown, now: string): Reading {
     const isSubAgent = Boolean(parent);
     const hasSpaceLabel = Boolean(whereRaw || labels["herdr.space"]);
     const isBackground =
+      !isRemote &&
       !hasSpaceLabel &&
       !isSubAgent &&
       mappedState !== "working" &&
       mappedState !== "waiting";
     const origin = detectWorkOrigin({
       labels,
-      rawWorkspace: workspace,
+      rawWorkspace: rawCwd,
       hasHerdrAddress: true,
     });
-    seen.set(id, {
+    const entry: IndexedAgent = {
       id,
       provider,
       state: mappedState,
       workspace,
       repository: null,
-      sources: [HERDR],
+      sources: [isRemote && machine ? `${HERDR} (${machine})` : HERDR],
       updatedAt: null,
       label: provider + " · " + (name ? `${name} (${r.address})` : r.address),
       title: terminalPurpose(r.title, r.agent),
@@ -249,23 +298,58 @@ function fromHerdr(value: unknown, now: string): Reading {
         labels,
         isSubAgent,
         isBackground,
+        rawStatus,
+        machine,
+        remoteCwd: isRemote ? rawCwd : null,
       },
       originTrack: origin.originTrack,
       originDetail: origin.originDetail,
-    });
+    };
+    if (isRemote) {
+      seenRemote.set(id, entry);
+    } else {
+      seen.set(id, entry);
+    }
   }
+  const remoteDetail =
+    remoteMachines.length > 0
+      ? ` 已连接远程机器：${remoteMachines.map((m) => `${m.name}(${m.status})`).join("、")}（远程终端 ${seenRemote.size} 个）。`
+      : seenRemote.size > 0
+        ? ` 另监测到 ${seenRemote.size} 个远程机器终端。`
+        : "";
   return {
     agents: [...seen.values()],
+    remoteAgents: [...seenRemote.values()],
+    remoteMachines,
     source: {
       name: HERDR,
       status: invalid ? "partial" : "ok",
       asOf: now,
-      detail: "本机终端自报的工作或等待状态（含 Space/父子关系/派工标签）。普通 shell 与已退出的终端不计入。",
+      detail: `本机终端自报的工作或等待状态（含 Space/父子关系/派工标签）。普通 shell 与已退出的终端不计入。${remoteDetail}`,
     },
   };
 }
 
+export function parseHerdrMachinesOutput(stdout: string): HerdrMachineInfo[] {
+  const out: HerdrMachineInfo[] = [];
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("{") || line.startsWith("[")) continue;
+    const match = /^([A-Za-z0-9._-]+)\s+(connected|disconnected|offline|online|connecting)\b\s*(.*)$/i.exec(line);
+    if (!match) continue;
+    out.push({
+      name: match[1],
+      status: match[2].toLowerCase(),
+      detail: match[3].trim(),
+    });
+  }
+  return out;
+}
+
 async function hubRequest() {
+  if (Date.now() < hubBackoffUntil) {
+    throw new Error(`hub circuit open (${hubLastFailureReason || "timeout"})`);
+  }
   const origin = new URL(process.env.OPC_HUB_URL || "http://127.0.0.1:28790");
   if (
     !["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname) ||
@@ -277,18 +361,36 @@ async function hubRequest() {
     origin.hash
   )
     throw Error("local hub required");
-  const res = await fetch(new URL("/api/breakpoint/preview", origin), {
-    redirect: "error",
-    signal: AbortSignal.timeout(4000),
-  });
-  if (!res.ok || !res.headers.get("content-type")?.includes("application/json")) throw Error("hub unavailable");
-  return res.json();
+  try {
+    const res = await fetch(new URL("/api/breakpoint/preview", origin), {
+      redirect: "error",
+      signal: AbortSignal.timeout(HUB_TIMEOUT_MS),
+    });
+    if (!res.ok || !res.headers.get("content-type")?.includes("application/json")) {
+      throw Error(`hub HTTP ${res.status}`);
+    }
+    hubBackoffUntil = 0;
+    hubLastFailureReason = "";
+    return await res.json();
+  } catch (err) {
+    hubBackoffUntil = Date.now() + HUB_BACKOFF_MS;
+    hubLastFailureReason = err instanceof Error ? err.name || err.message : "unavailable";
+    throw err;
+  }
 }
+
 async function herdrList() {
   const hc = process.env.HC_BIN ?? "hc";
-  const { stdout } = await exec(hc, ["ls", "--json"], { timeout: 3500, maxBuffer: 4 * 1024 * 1024 });
-  const data = JSON.parse(stdout) as { terminals?: unknown[] };
+  const [lsRes, machinesRes] = await Promise.allSettled([
+    exec(hc, ["ls", "--json"], { timeout: 3500, maxBuffer: 4 * 1024 * 1024 }),
+    exec(hc, ["machine", "ls"], { timeout: 1500, maxBuffer: 256 * 1024 }),
+  ]);
+  if (lsRes.status !== "fulfilled") throw lsRes.reason;
+  const data = JSON.parse(lsRes.value.stdout) as { terminals?: unknown[]; machines?: HerdrMachineInfo[] };
   const terminals = Array.isArray(data.terminals) ? data.terminals : [];
+  if (machinesRes.status === "fulfilled") {
+    data.machines = parseHerdrMachinesOutput(machinesRes.value.stdout);
+  }
   // `hc ls` 不带标题和标签；`hc get` 返回 title / labels（用于识别派工来源与 Space/Tab）。
   await Promise.all(
     terminals.map(async (item) => {
@@ -306,11 +408,16 @@ async function herdrList() {
       };
       if (row.state !== "live" || typeof row.agent !== "string") return;
       if (!providerNames[row.agent.toLowerCase()] && !row.status) return;
-      if (typeof row.address !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(row.address)) return;
+      if (
+        typeof row.address !== "string" ||
+        !/^(?:[A-Za-z0-9._-]{1,64}\/)?[A-Za-z0-9_-]{1,64}$/.test(row.address)
+      ) {
+        return;
+      }
       if (typeof row.title === "string" && row.labels && typeof row.labels === "object") return;
       try {
         const { stdout: detail } = await exec(hc, ["get", "--json", row.address], {
-          timeout: 2000,
+          timeout: row.address.includes("/") ? 1500 : 2000,
           maxBuffer: 1024 * 1024,
         });
         const parsed = JSON.parse(detail) as {
@@ -410,6 +517,8 @@ export async function readAgentIndex(inputs: Partial<Inputs> = {}): Promise<Agen
     (inputs.processes ?? processList)(),
   ]);
   const agents: IndexedAgent[] = [],
+    remoteAgents: IndexedAgent[] = [],
+    remoteMachines: HerdrMachineInfo[] = [],
     sources: IndexSource[] = [];
   for (const [result, name] of [
     [hub, HUB],
@@ -417,9 +526,16 @@ export async function readAgentIndex(inputs: Partial<Inputs> = {}): Promise<Agen
   ] as const) {
     if (result.status === "fulfilled") {
       agents.push(...result.value.agents);
+      if (result.value.remoteAgents?.length) remoteAgents.push(...result.value.remoteAgents);
+      if (result.value.remoteMachines?.length) remoteMachines.push(...result.value.remoteMachines);
       sources.push(result.value.source);
-    } else
-      sources.push({ name, asOf: null, status: "unavailable", detail: name + " 的本机只读接口未返回有效状态。" });
+    } else {
+      const detail =
+        name === HUB && Date.now() < hubBackoffUntil
+          ? "Agent Hub 本机接口超时或无响应，已自动快速降级（冷却 60s 后重试，不影响 Herdr 与 CLI 台账）。"
+          : name + " 的本机只读接口未返回有效状态。";
+      sources.push({ name, asOf: null, status: "unavailable", detail });
+    }
   }
   if (processes.status === "fulfilled") {
     // A process is weaker evidence than a session. Add project-level process signals only where neither
@@ -471,6 +587,12 @@ export async function readAgentIndex(inputs: Partial<Inputs> = {}): Promise<Agen
       (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") ||
       a.id.localeCompare(b.id),
   );
+  remoteAgents.sort(
+    (a, b) =>
+      rank[a.state] - rank[b.state] ||
+      (a.herdr?.machine ?? "").localeCompare(b.herdr?.machine ?? "") ||
+      a.id.localeCompare(b.id),
+  );
   // Retain real local cwd observations even when Agent Hub already represents the same process.
   const localWorkspaces = new Set<string>();
   if (herdr.status === "fulfilled") {
@@ -479,5 +601,5 @@ export async function readAgentIndex(inputs: Partial<Inputs> = {}): Promise<Agen
   if (processes.status === "fulfilled") {
     for (const process of processes.value.rows) if (process.workspace) localWorkspaces.add(process.workspace);
   }
-  return { agents, sources, localWorkspaces: [...localWorkspaces] };
+  return { agents, remoteAgents, remoteMachines, sources, localWorkspaces: [...localWorkspaces] };
 }

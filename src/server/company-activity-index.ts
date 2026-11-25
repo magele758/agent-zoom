@@ -174,6 +174,8 @@ export function joinActivity(
     }),
     repositories: repos.repositories,
     sources: [...agents.sources, ...repos.sources, maintenance],
+    ...(agents.remoteAgents ? { remoteAgents: agents.remoteAgents } : {}),
+    ...(agents.remoteMachines ? { remoteMachines: agents.remoteMachines } : {}),
   };
 }
 
@@ -317,7 +319,34 @@ export function addActivityIndex(app: Hono, db: DatabaseSync, people: (c: Contex
           }),
         }))
       : raw.repositories;
-    return { ...raw, agents, repositories };
+    const remoteAgents = raw.remoteAgents?.map((agent) => {
+      const remoteBase = agent.herdr?.remoteCwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? null;
+      const classification = enrichers.classifier
+        ? enrichers.classifier.classify({
+            workspace: null,
+            repository: agent.repository,
+            projectHint: remoteBase,
+            spaceName: agent.herdr?.spaceName ?? null,
+            skipFs: true,
+          })
+        : agent.classification;
+      const linkedTask = enrichers.findLinkedTask?.({
+        herdrAddress: agent.herdr?.address ?? null,
+      });
+      return {
+        ...agent,
+        ...(classification ? { classification } : {}),
+        linkedTaskId: linkedTask?.id ?? agent.linkedTaskId ?? null,
+        linkedTaskTitle: linkedTask?.title ?? agent.linkedTaskTitle ?? null,
+        linkedTaskStatus: linkedTask?.status ?? agent.linkedTaskStatus ?? null,
+      };
+    });
+    return {
+      ...raw,
+      agents,
+      repositories,
+      ...(remoteAgents ? { remoteAgents } : {}),
+    };
   }
 
   async function latest(force = false, refreshMaintenance = false): Promise<ActivityIndex> {

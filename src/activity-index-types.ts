@@ -21,6 +21,18 @@ export type HerdrAgentMeta = {
   labels: Record<string, string>;
   isSubAgent: boolean;
   isBackground: boolean;
+  /** 原始 Herdr 状态（working / waiting / blocked / idle / done）。 */
+  rawStatus?: string | null;
+  /** 远程机器名（本机终端为 null，如 ubuntu1 / ubuntu2）。 */
+  machine?: string | null;
+  /** 远程机器上的工作目录（仅作展示，绝不进入本机 Git 索引）。 */
+  remoteCwd?: string | null;
+};
+
+export type HerdrMachineInfo = {
+  name: string;
+  status: string;
+  detail: string;
 };
 
 export type IndexedAgent = {
@@ -67,12 +79,19 @@ export type IndexedRepo = {
   classification?: WorkspaceClassification;
 };
 
-export type AgentIndex = { agents: IndexedAgent[]; sources: IndexSource[] };
+export type AgentIndex = {
+  agents: IndexedAgent[];
+  sources: IndexSource[];
+  remoteAgents?: IndexedAgent[];
+  remoteMachines?: HerdrMachineInfo[];
+};
 export type RepoIndex = { repositories: IndexedRepo[]; sources: IndexSource[] };
 export type ActivityIndex = {
   agents: IndexedAgent[];
   repositories: IndexedRepo[];
   sources: IndexSource[];
+  remoteAgents?: IndexedAgent[];
+  remoteMachines?: HerdrMachineInfo[];
 };
 
 export type RepoContent = {
