@@ -90,8 +90,15 @@ test("Zoom projects the active plan, its human response, reconciliation and retr
   const store = new Store(db);
   const { app } = createApp(store, { workflow: { service, db, submitToken: "test-credential-only-for-agents" } });
   const cookie = "ac_session=" + store.session("消息读者").token;
-  const messages = async (): Promise<ZoomMessage[]> => (await (await app.request("/api/zoom/messages", { headers: { cookie } })).json()).messages;
-  const pending = async () => (await messages()).filter(message => message.pending);
+  const mailboxSnapshot = async (): Promise<{ messages: ZoomMessage[]; pendingMailboxIssues: number }> =>
+    (await (await app.request("/api/zoom/messages", { headers: { cookie } })).json());
+  const messages = async () => (await mailboxSnapshot()).messages;
+  const pending = async () => {
+    const snapshot = await mailboxSnapshot();
+    const active = snapshot.messages.filter(message => message.pending);
+    assert.equal(snapshot.pendingMailboxIssues, active.length);
+    return active;
+  };
   let run = service.submit({ ...request, folder: "项目/执行", stage: "development" });
   const oldPlan = (await pending())[0];
   assert.deepEqual(oldPlan.action, { kind: "decision", ...card(run, "plan") });

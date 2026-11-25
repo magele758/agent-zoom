@@ -212,9 +212,11 @@ test("Patrol Guard detects tasks stale > patrolStaleDays and failed tasks, persi
   providers.update({ system: { patrolStaleDays: 7 } });
 
   const zoomNotifications: StaleTaskAlert[][] = [];
+  let notifiedReportId: string | undefined;
   const store = new TaskPlanningStore(db, providers, {
-    notifyPatrolToZoom: (alerts) => {
+    notifyPatrolToZoom: (alerts, report) => {
       zoomNotifications.push(alerts);
+      notifiedReportId = report.id;
     },
   });
 
@@ -252,6 +254,7 @@ test("Patrol Guard detects tasks stale > patrolStaleDays and failed tasks, persi
   const report2 = store.runPatrol({ staleDays: 5, notifyZoom: true });
   assert.equal(report2.staleDays, 5);
   assert.equal(report2.notifiedZoom, true);
+  assert.equal(notifiedReportId, report2.id);
   assert.equal(zoomNotifications.length, 1);
   assert.equal(zoomNotifications[0].length, 2);
 
@@ -525,4 +528,73 @@ test("Hono HTTP routes end-to-end verification under /api/opc/planning", async (
   // 12. 404 check on deleted task
   const missingRes = await app.request(`/api/opc/planning/tasks/${epicBody.epic.id}`);
   assert.equal(missingRes.status, 404);
+});
+
+test("Auto-dispatch gate strictly requires verified leaf tasks (or P0 crash bugs), supports includeUnverified & triageStatus filter, and blocks parent Epic dispatch", async () => {
+  const db = new DatabaseSync(":memory:");
+  const app = new Hono();
+  app.onError((err, c) => {
+    if (err instanceof ApiError) return c.json({ error: err.code, message: err.message }, err.status as 400);
+    return c.json({ error: "internal", message: String(err) }, 500);
+  });
+
+  const store = registerTaskPlanningRoutes(app, db, undefined, () => ({ id: "u1", name: "Founder" }), {
+    hooks: {
+      listAgents: () => [{ id: "agy", name: "agy", status: "idle", capabilities: ["coding"] }],
+      dispatchToAgent: async () => ({ runId: "run_mock_1", status: "running" }),
+    },
+  });
+
+  const unreviewed = store.createTask({ project: "opc-os", title: "待审查任务" });
+  const verified = store.createTask({
+    project: "opc-os",
+    title: "已验真任务",
+    metadata: { triage: { status: "verified", verdict: "real_ready", confidence: 0.95 } },
+  });
+  const emergencyBug = store.createTask({
+    project: "opc-os",
+    title: "[P0] 崩溃自愈",
+    type: "bug",
+    priority: 10,
+    tags: ["crash", "p0"],
+    metadata: { signalSource: "ops.crash_bug_filed", isEmergencyBug: true },
+  });
+  const { epic, subtasks } = store.createEpicWithSubtasks({
+    project: "opc-os",
+    title: "父级 Epic",
+    metadata: { triage: { status: "verified" } },
+    subtasks: [
+      {
+        title: "已验真子任务",
+        metadata: { triage: { status: "verified" } },
+      },
+      { title: "未审查子任务" },
+    ],
+  });
+
+  // Default ready queue returns ONLY verified leaf tasks + P0 crash bug (NEVER unreviewed, NEVER parent Epic)
+  const readyIds = store.listReadyForAutoDispatch(20).map((t) => t.id).sort();
+  assert.deepEqual(readyIds, [emergencyBug.id, subtasks[0].id, verified.id].sort());
+
+  // Manual preview with includeUnverified=true includes unreviewed leaf tasks (still excluding parent Epic)
+  const previewRes = await app.request("/api/opc/planning/ready?includeUnverified=true");
+  assert.equal(previewRes.status, 200);
+  const previewBody = (await previewRes.json()) as { tasks: Array<{ id: string }> };
+  assert.equal(previewBody.tasks.some((t) => t.id === unreviewed.id), true);
+  assert.equal(previewBody.tasks.some((t) => t.id === epic.id), false);
+
+  // Filter tasks by triageStatus=verified
+  const verifiedListRes = await app.request("/api/opc/planning/tasks?triageStatus=verified&includeSubtasks=true");
+  assert.equal(verifiedListRes.status, 200);
+  const verifiedList = (await verifiedListRes.json()) as { tasks: Array<{ id: string }> };
+  assert.equal(verifiedList.tasks.some((t) => t.id === verified.id), true);
+  assert.equal(verifiedList.tasks.some((t) => t.id === unreviewed.id), false);
+
+  // Dispatching parent Epic with subtasks must throw 400 epic_has_subtasks
+  await assert.rejects(
+    () => store.dispatchTask(epic.id, { agentId: "agy" }),
+    (err: unknown) => err instanceof ApiError && err.status === 400 && err.code === "epic_has_subtasks",
+  );
+
+  db.close();
 });

@@ -8,6 +8,7 @@ import type { Context, Hono } from "hono";
 import { z } from "zod";
 import {
   AGENT_PRESETS,
+  type AgentExecutionHost,
   type AgentRecord,
   type AgentRegistryStatus,
   type AgentRunRecord,
@@ -33,6 +34,7 @@ import {
 import { ApiError } from "./logic.ts";
 import type { ProvidersStore } from "./providers.ts";
 import { submitAuth } from "./workflow/http.ts";
+import { resolveProjectHerdrSpace } from "./herdr-space-router.ts";
 
 export { AGENT_PRESETS };
 
@@ -80,13 +82,45 @@ export interface DarkFactoryHooks {
   resolveVerifyCommand?: (project: string) => string | null;
 }
 
+export interface AgentCooldownStatus {
+  agentId: string;
+  cooledDown: boolean;
+  consecutiveFailures: number;
+  threshold: number;
+  windowMins: number;
+  cooldownMins: number;
+  lastFailureAt: string | null;
+  lastFailureReason: string | null;
+  cooldownUntil: string | null;
+  remainingSecs: number;
+  reason: string | null;
+}
+
+export interface DarkFactoryOverviewWithCooldowns extends DarkFactoryOverview {
+  agentCooldowns: Record<string, AgentCooldownStatus>;
+}
+
+export interface DispatchRunRequest extends DispatchRunInput {
+  forceNew?: boolean;
+  bypassCooldown?: boolean;
+  isEmergency?: boolean;
+}
+
 export interface DarkFactoryOptions {
   hooks?: DarkFactoryHooks;
   worktreeBase?: string;
   defaultRepoRoot?: string;
   defaultCostPerMillionTokens?: number;
   durationUnitMs?: number;
+  cooldownFailureThreshold?: number;
+  cooldownWindowMs?: number;
+  cooldownDurationMs?: number;
+  nowFn?: () => number;
 }
+
+export const DEFAULT_COOLDOWN_FAILURE_THRESHOLD = 2;
+export const DEFAULT_COOLDOWN_WINDOW_MS = 60 * 60_000;
+export const DEFAULT_COOLDOWN_DURATION_MS = 60 * 60_000;
 
 export interface RegisterDarkFactoryOptions extends DarkFactoryOptions {
   submitToken?: string;
@@ -121,6 +155,10 @@ const dispatchSchema = z.object({
   agentId: z.string().trim().min(1, "agentId 不能为空").max(120),
   autoCreatePr: z.boolean().default(false),
   verifyCommand: z.string().trim().max(2000).optional(),
+  executionHost: z.enum(["subprocess", "herdr"]).optional(),
+  forceNew: z.boolean().default(false),
+  bypassCooldown: z.boolean().default(false),
+  isEmergency: z.boolean().default(false),
 });
 
 const cleanupWorktreesSchema = z
@@ -530,6 +568,8 @@ interface ActiveRunRuntime {
   runId: string;
   agentId: string;
   child: ChildProcess | null;
+  herdrTerminal?: string | null;
+  herdrPollHandle?: ReturnType<typeof setInterval> | null;
   timeoutHandle: ReturnType<typeof setTimeout> | null;
   finalized: boolean;
   seq: number;
@@ -592,6 +632,9 @@ function rowToRun(row: Record<string, unknown>): AgentRunRecord {
     branchName: row.branch_name == null ? null : String(row.branch_name),
     status: String(row.status ?? "queued") as AgentRunStatus,
     pid: row.pid == null ? null : Number(row.pid),
+    executionHost: row.execution_host === "herdr" ? ("herdr" as AgentExecutionHost) : ("subprocess" as AgentExecutionHost),
+    herdrTerminal: row.herdr_terminal == null ? null : String(row.herdr_terminal),
+    herdrSpace: row.herdr_space == null ? null : String(row.herdr_space),
     tokenUsed: Number(row.token_used ?? 0),
     costUsd: Number(row.cost_usd ?? 0),
     retryCount: Number(row.retry_count ?? 0),
@@ -640,10 +683,16 @@ export class DarkFactoryStore {
   private defaultRepoRoot: string;
   private defaultCostPerMillionTokens: number;
   private durationUnitMs: number;
+  private cooldownFailureThreshold: number;
+  private cooldownWindowMs: number;
+  private cooldownDurationMs: number;
+  private nowFn: () => number;
   private activeRuns = new Map<string, ActiveRunRuntime>();
   private cancelRequested = new Set<string>();
   private logListeners = new Map<string, Set<(event: RunStreamEvent) => void>>();
   private runStatusListeners = new Set<(run: AgentRunRecord) => void>();
+  private cooldownResets = new Map<string, number>();
+  private cooldownCache = new Map<string, AgentCooldownStatus>();
 
   constructor(
     private db: DatabaseSync,
@@ -655,6 +704,13 @@ export class DarkFactoryStore {
     this.defaultRepoRoot = resolve(options.defaultRepoRoot ?? process.cwd());
     this.defaultCostPerMillionTokens = options.defaultCostPerMillionTokens ?? DEFAULT_COST_PER_MILLION_TOKENS;
     this.durationUnitMs = options.durationUnitMs ?? 1000;
+    this.cooldownFailureThreshold = Math.max(
+      1,
+      Math.floor(options.cooldownFailureThreshold ?? DEFAULT_COOLDOWN_FAILURE_THRESHOLD),
+    );
+    this.cooldownWindowMs = Math.max(1000, Math.floor(options.cooldownWindowMs ?? DEFAULT_COOLDOWN_WINDOW_MS));
+    this.cooldownDurationMs = Math.max(1000, Math.floor(options.cooldownDurationMs ?? DEFAULT_COOLDOWN_DURATION_MS));
+    this.nowFn = options.nowFn ?? (() => Date.now());
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS opc_agent_registry (
@@ -688,6 +744,9 @@ export class DarkFactoryStore {
         base_commit TEXT,
         status TEXT NOT NULL DEFAULT 'queued',
         pid INTEGER,
+        execution_host TEXT NOT NULL DEFAULT 'subprocess',
+        herdr_terminal TEXT,
+        herdr_space TEXT,
         token_used INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL NOT NULL DEFAULT 0,
         retry_count INTEGER NOT NULL DEFAULT 0,
@@ -742,6 +801,15 @@ export class DarkFactoryStore {
     }
     if (!cols.has("base_commit")) {
       this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN base_commit TEXT");
+    }
+    if (!cols.has("execution_host")) {
+      this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN execution_host TEXT NOT NULL DEFAULT 'subprocess'");
+    }
+    if (!cols.has("herdr_terminal")) {
+      this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN herdr_terminal TEXT");
+    }
+    if (!cols.has("herdr_space")) {
+      this.db.exec("ALTER TABLE opc_agent_runs ADD COLUMN herdr_space TEXT");
     }
 
     const auditCols = new Set(
@@ -982,9 +1050,158 @@ export class DarkFactoryStore {
     return { deleted: true, id };
   }
 
+  private hasTable(tableName: string): boolean {
+    try {
+      return Boolean(
+        this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(tableName),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // ---- Per-Agent Consecutive Failure Circuit Breaker (Cooldown) ----
+
+  getAgentCooldown(agentId: string, nowMs = this.nowFn()): AgentCooldownStatus {
+    const windowMins = Math.round(this.cooldownWindowMs / 60_000);
+    const cooldownMins = Math.round(this.cooldownDurationMs / 60_000);
+
+    let resetAfterMs = this.cooldownResets.get(agentId) ?? 0;
+    try {
+      const agentRow = this.db
+        .prepare("SELECT config FROM opc_agent_registry WHERE id = ?")
+        .get(agentId) as { config?: string } | undefined;
+      if (agentRow?.config) {
+        const cfg = safeJsonParse<Record<string, unknown>>(agentRow.config, {});
+        if (typeof cfg.cooldownResetAt === "string") {
+          const parsedReset = Date.parse(cfg.cooldownResetAt);
+          if (Number.isFinite(parsedReset) && parsedReset > resetAfterMs) {
+            resetAfterMs = parsedReset;
+          }
+        }
+      }
+    } catch {
+      // ignore registry lookup failure
+    }
+
+    const recentRows = this.db
+      .prepare(
+        `SELECT status, circuit_breaker_reason, error_summary, error_message, completed_at, updated_at, created_at
+         FROM opc_agent_runs
+         WHERE agent_id = ? AND status IN ('completed', 'pr_open', 'no_output', 'failed')
+         ORDER BY COALESCE(completed_at, updated_at, created_at) DESC, rowid DESC
+         LIMIT 20`,
+      )
+      .all(agentId) as Array<{
+      status?: string;
+      circuit_breaker_reason?: string | null;
+      error_summary?: string | null;
+      error_message?: string | null;
+      completed_at?: string | null;
+      updated_at?: string | null;
+      created_at?: string | null;
+    }>;
+
+    let consecutiveFailures = 0;
+    let lastFailureMs: number | null = null;
+    let lastFailureAt: string | null = null;
+    let lastFailureReason: string | null = null;
+
+    for (const row of recentRows) {
+      const tsStr = String(row.completed_at || row.updated_at || row.created_at || "");
+      const runMs = Date.parse(tsStr);
+      if (Number.isFinite(runMs) && resetAfterMs > 0 && runMs <= resetAfterMs) {
+        break;
+      }
+
+      const status = String(row.status ?? "");
+      const cbReason = row.circuit_breaker_reason ? String(row.circuit_breaker_reason) : null;
+      const isFailure = status === "failed" || cbReason === "duration_limit_exceeded";
+
+      if (!isFailure) {
+        break;
+      }
+
+      if (Number.isFinite(runMs) && nowMs - runMs > this.cooldownWindowMs) {
+        break;
+      }
+
+      consecutiveFailures += 1;
+      if (lastFailureMs === null) {
+        lastFailureMs = Number.isFinite(runMs) ? runMs : nowMs;
+        lastFailureAt = tsStr || new Date(lastFailureMs).toISOString();
+        lastFailureReason =
+          cbReason ||
+          (row.error_summary ? String(row.error_summary) : null) ||
+          (row.error_message ? String(row.error_message) : null) ||
+          "failed";
+      }
+    }
+
+    const cooldownUntilMs =
+      consecutiveFailures >= this.cooldownFailureThreshold && lastFailureMs !== null
+        ? lastFailureMs + this.cooldownDurationMs
+        : null;
+    const cooledDown = cooldownUntilMs !== null && cooldownUntilMs > nowMs;
+    const remainingSecs = cooledDown && cooldownUntilMs !== null ? Math.max(0, Math.ceil((cooldownUntilMs - nowMs) / 1000)) : 0;
+    const cooldownUntil = cooledDown && cooldownUntilMs !== null ? new Date(cooldownUntilMs).toISOString() : null;
+    const reason = cooledDown
+      ? `Agent 连续 ${consecutiveFailures} 次失败（最近原因：${lastFailureReason ?? "执行失败"}），熔断冷却中（剩余约 ${Math.max(1, Math.ceil(remainingSecs / 60))} 分钟）`
+      : null;
+
+    const statusObj: AgentCooldownStatus = {
+      agentId,
+      cooledDown,
+      consecutiveFailures,
+      threshold: this.cooldownFailureThreshold,
+      windowMins,
+      cooldownMins,
+      lastFailureAt,
+      lastFailureReason,
+      cooldownUntil,
+      remainingSecs,
+      reason,
+    };
+    this.cooldownCache.set(agentId, statusObj);
+    return statusObj;
+  }
+
+  isAgentCooledDown(agentId: string, nowMs = this.nowFn()): boolean {
+    return this.getAgentCooldown(agentId, nowMs).cooledDown;
+  }
+
+  listAgentCooldowns(nowMs = this.nowFn()): Record<string, AgentCooldownStatus> {
+    const out: Record<string, AgentCooldownStatus> = {};
+    for (const agent of this.listAgents()) {
+      out[agent.id] = this.getAgentCooldown(agent.id, nowMs);
+    }
+    return out;
+  }
+
+  resetAgentCooldown(agentId: string): AgentCooldownStatus {
+    const agent = this.getAgent(agentId);
+    const nowMs = this.nowFn();
+    const resetIso = new Date(nowMs).toISOString();
+    this.cooldownResets.set(agentId, nowMs);
+
+    const nextConfig: Record<string, unknown> = {
+      ...agent.config,
+      cooldownResetAt: resetIso,
+    };
+    this.db
+      .prepare("UPDATE opc_agent_registry SET config = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(nextConfig), resetIso, agentId);
+
+    if (agent.status === "error") {
+      this.syncAgentStatus(agentId, "idle");
+    }
+
+    return this.getAgentCooldown(agentId, nowMs);
+  }
+
   // ---- Dispatch & Concurrency Queue ----
 
-  dispatch(raw: DispatchRunInput | unknown): AgentRunRecord {
+  dispatch(raw: DispatchRunRequest | unknown, requestKey?: string): AgentRunRecord {
     const parsed = dispatchSchema.safeParse(raw);
     if (!parsed.success) {
       throw new ApiError(
@@ -999,6 +1216,77 @@ export class DarkFactoryStore {
       throw new ApiError(400, "agent_disabled", `Agent「${agent.name}」已被禁用，无法派发任务`);
     }
 
+    const id = requestKey ? `run_plan_${requestKey}` : `run_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+
+    // 1. Idempotent requestKey reuse / conflict guard
+    if (requestKey) {
+      const existingByKey = this.db
+        .prepare("SELECT * FROM opc_agent_runs WHERE id = ?")
+        .get(id) as Record<string, unknown> | undefined;
+      if (existingByKey) {
+        const existing = rowToRun(existingByKey);
+        if (existing.taskId !== input.taskId || existing.agentId !== input.agentId) {
+          throw new ApiError(409, "dispatch_conflict", "这次派发已关联另一项任务。");
+        }
+        return existing;
+      }
+    }
+
+    // 2. Block dispatching parent Epics that have subtasks directly
+    if (this.hasTable("opc_planning_tasks")) {
+      const planningRow = this.db
+        .prepare("SELECT type FROM opc_planning_tasks WHERE id = ?")
+        .get(input.taskId) as { type?: string } | undefined;
+      if (planningRow && String(planningRow.type ?? "") === "epic") {
+        const childRow = this.db
+          .prepare("SELECT COUNT(*) AS cnt FROM opc_planning_tasks WHERE parent_id = ?")
+          .get(input.taskId) as { cnt?: number } | undefined;
+        const childCount = Number(childRow?.cnt ?? 0);
+        if (childCount > 0) {
+          throw new ApiError(
+            400,
+            "epic_has_subtasks",
+            `禁止直接派发包含 ${childCount} 个子任务的父级 Epic（${input.taskId}），请派发具体叶子子任务`,
+          );
+        }
+      }
+    }
+
+    // 3. In-flight deduplication by taskId (never pile up duplicate queued/running runs)
+    if (!input.forceNew) {
+      const existingActiveRow = this.db
+        .prepare(
+          `SELECT * FROM opc_agent_runs
+           WHERE task_id = ? AND status IN ('queued', 'running')
+           ORDER BY created_at ASC, rowid ASC
+           LIMIT 1`,
+        )
+        .get(input.taskId) as Record<string, unknown> | undefined;
+      if (existingActiveRow) {
+        const existingActive = rowToRun(existingActiveRow);
+        if (existingActive.agentId === agent.id) {
+          return existingActive;
+        }
+        throw new ApiError(
+          409,
+          "task_already_active",
+          `任务 ${input.taskId} 已有进行中的运行（${existingActive.id} · ${existingActive.agentName} · ${existingActive.status}），禁止重复派发`,
+        );
+      }
+    }
+
+    // 4. Per-agent consecutive failure circuit breaker
+    if (!input.bypassCooldown && !input.isEmergency) {
+      const cooldown = this.getAgentCooldown(agent.id);
+      if (cooldown.cooledDown) {
+        throw new ApiError(
+          409,
+          "agent_cooled_down",
+          cooldown.reason || `Agent「${agent.name}」因连续失败正处于熔断冷却期`,
+        );
+      }
+    }
+
     const resolvedRepoPath =
       (input.repoPath && input.repoPath.trim()) ||
       (input.project ? this.hooks.resolveRepoPath?.(input.project) ?? null : null);
@@ -1010,18 +1298,23 @@ export class DarkFactoryStore {
           ? (this.hooks.resolveVerifyCommand?.(input.project)?.trim() ?? "")
           : "";
 
-    const id = `run_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+    const executionHost: AgentExecutionHost =
+      input.executionHost ??
+      (agent.config?.executionHost === "herdr" ? "herdr" : "subprocess");
+
     const ts = nowIso();
 
-    this.db
+    const inserted = this.db
       .prepare(
         `INSERT INTO opc_agent_runs (
           id, task_id, task_title, task_description, project, agent_id, agent_name,
-          repo_path, worktree_path, branch_name, status, pid, token_used, cost_usd,
+          repo_path, worktree_path, branch_name, status, pid, execution_host, herdr_terminal, herdr_space,
+          token_used, cost_usd,
           retry_count, log_file_path, error_summary, error_message, pr_url, changed_files,
           protected_violations, circuit_breaker_reason, auto_create_pr, verify_command, verification_json,
           started_at, completed_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'queued', NULL, 0, 0, 0, NULL, NULL, NULL, NULL, '[]', '[]', NULL, ?, ?, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'queued', NULL, ?, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, '[]', '[]', NULL, ?, ?, NULL, NULL, NULL, ?, ?)
+        ON CONFLICT(id) DO NOTHING`,
       )
       .run(
         id,
@@ -1032,6 +1325,7 @@ export class DarkFactoryStore {
         agent.id,
         agent.name,
         resolvedRepoPath ? resolve(resolvedRepoPath) : null,
+        executionHost,
         input.autoCreatePr ? 1 : 0,
         resolvedVerifyCommand,
         ts,
@@ -1039,6 +1333,11 @@ export class DarkFactoryStore {
       );
 
     const created = this.getRun(id);
+    if (!inserted.changes) {
+      if (!requestKey || created.taskId !== input.taskId || created.agentId !== input.agentId)
+        throw new ApiError(409, "dispatch_conflict", "这次派发已关联另一项任务。");
+      return created;
+    }
     this.notifyRunChanged(created);
     this.tickQueue();
     return this.getRun(id);
@@ -1134,6 +1433,7 @@ export class DarkFactoryStore {
       )
       .run(summary, summary, ts, ts, runId);
     const updated = this.getRun(runId);
+    this.getAgentCooldown(updated.agentId);
     this.notifyRunChanged(updated);
     this.emitStreamEvent(runId, { type: "done", run: updated });
   }
@@ -1320,6 +1620,10 @@ export class DarkFactoryStore {
       clearTimeout(runtime.timeoutHandle);
       runtime.timeoutHandle = null;
     }
+    if (runtime.herdrPollHandle) {
+      clearInterval(runtime.herdrPollHandle);
+      runtime.herdrPollHandle = null;
+    }
 
     if (update.systemMessage) {
       this.appendLog(runtime, "system", update.systemMessage);
@@ -1366,6 +1670,7 @@ export class DarkFactoryStore {
     this.cancelRequested.delete(runtime.runId);
 
     this.syncAgentStatus(runtime.agentId, update.status === "failed" ? "error" : "idle");
+    this.getAgentCooldown(runtime.agentId);
 
     const finished = this.getRun(runtime.runId);
     this.notifyRunChanged(finished);
@@ -1385,6 +1690,10 @@ export class DarkFactoryStore {
     if (runtime.finalized) return;
     if (runtime.child) {
       forceKillChild(runtime.child);
+    }
+    if (runtime.herdrTerminal) {
+      const hc = process.env.HC_BIN ?? "hc";
+      void execFileAsync(hc, ["kill", runtime.herdrTerminal], { timeout: 3000 }).catch(() => {});
     }
     this.finalizeRun(runtime, {
       status: "failed",
@@ -1510,8 +1819,13 @@ export class DarkFactoryStore {
       this.appendLog(
         runtime,
         "system",
-        `启动执行：${spawnSpec.command} ${spawnSpec.args.map((a) => (a.length > 80 ? a.slice(0, 80) + "…" : a)).join(" ")}`,
+        `启动执行（${run.executionHost === "herdr" ? "Herdr 项目空间" : "后台子进程"}）：${spawnSpec.command} ${spawnSpec.args.map((a) => (a.length > 80 ? a.slice(0, 80) + "…" : a)).join(" ")}`,
       );
+
+      if (run.executionHost === "herdr") {
+        await this.executeRunInHerdr(run, agent, runtime, workspace, spawnSpec, env);
+        return;
+      }
 
       const child = spawn(spawnSpec.command, spawnSpec.args, {
         cwd: workspace.workdir,
@@ -1590,6 +1904,161 @@ export class DarkFactoryStore {
         systemMessage: `暗工厂调度失败：${msg}`,
       });
     }
+  }
+
+  private async executeRunInHerdr(
+    run: AgentRunRecord,
+    agent: AgentRecord,
+    runtime: ActiveRunRuntime,
+    workspace: { workdir: string; branchName: string | null; isGitWorktree: boolean },
+    spawnSpec: { command: string; args: string[]; renderedPrompt: string },
+    env: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    const hc = process.env.HC_BIN ?? "hc";
+    const herdrApp = process.env.HERDR_APP_BIN ?? "herdr-app";
+    const cleanId = run.id.replace(/[^a-z0-9]/gi, "");
+    const resolvedSpace = await resolveProjectHerdrSpace({
+      workspace: run.repoPath ?? workspace.workdir,
+      project: run.project,
+      fallbackSpaceId: `spdf${cleanId.slice(-16)}`,
+      fallbackSpaceName: `OPC OS · ${run.project || cleanId.slice(0, 8)}`,
+      herdrApp,
+      env,
+    });
+    const tabId = `tbdf${cleanId.slice(-16)}`;
+    const termName = `df-${cleanId.slice(-16)}`;
+
+    const envPairs: string[] = [
+      "OPC_SANDBOX=1",
+      `OPC_RUN_ID=${run.id}`,
+      `OPC_TASK_ID=${run.taskId}`,
+      `OPC_WORKTREE=${workspace.workdir}`,
+      `OPC_BRANCH=${workspace.branchName ?? ""}`,
+      "HFLOW_WORKER=1",
+    ];
+    if (agent.config && typeof agent.config.env === "object" && agent.config.env !== null) {
+      for (const [k, v] of Object.entries(agent.config.env as Record<string, unknown>)) {
+        if (typeof v === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+          envPairs.push(`${k}=${v}`);
+        }
+      }
+    }
+
+    const hcArgs = [
+      "run",
+      "--bg",
+      "--json",
+      "--no-parent",
+      "--no-notify",
+      "--name",
+      termName,
+      "--cwd",
+      workspace.workdir,
+      "--label",
+      "opc.source=dark-factory",
+      "--label",
+      `opc.run=${run.id}`,
+      "--label",
+      `opc.task=${run.taskId}`,
+      "--label",
+      `opc.project=${run.project || "default"}`,
+      "--label",
+      `herdr.space=${resolvedSpace.spaceId}`,
+      "--label",
+      `herdr.tab=${tabId}`,
+      "--",
+      "/usr/bin/env",
+      ...envPairs,
+      spawnSpec.command,
+      ...spawnSpec.args,
+    ];
+
+    const { stdout } = await execFileAsync(hc, hcArgs, { timeout: 8000, maxBuffer: 512 * 1024, env });
+    const parsed = JSON.parse(stdout) as { address?: string };
+    const terminal = typeof parsed.address === "string" && parsed.address ? parsed.address : termName;
+    runtime.herdrTerminal = terminal;
+
+    this.db
+      .prepare("UPDATE opc_agent_runs SET herdr_terminal = ?, herdr_space = ?, updated_at = ? WHERE id = ?")
+      .run(terminal, resolvedSpace.spaceName, nowIso(), run.id);
+
+    this.appendLog(
+      runtime,
+      "system",
+      `已在 Herdr 项目空间「${resolvedSpace.spaceName}」挂载执行终端 ${terminal}（${resolvedSpace.reused ? "复用已有项目 Space" : "新建项目 Space"}，可随时切入观察或接管）`,
+    );
+
+    // Best-effort presentation naming in Herdr desktop
+    void (async () => {
+      try {
+        for (let i = 0; i < 6; i++) {
+          const lsOut = (await execFileAsync(herdrApp, ["ls"], { timeout: 1200, env })).stdout;
+          const state = JSON.parse(lsOut) as { spaces?: Array<{ id: string; tabs?: Array<{ id: string }> }> };
+          const sp = state.spaces?.find((s) => s.id === resolvedSpace.spaceId);
+          if (sp?.tabs?.some((t) => t.id === tabId)) {
+            if (!resolvedSpace.reused) {
+              await execFileAsync(herdrApp, ["do", "space.rename", "--id", resolvedSpace.spaceId, "--name", resolvedSpace.spaceName], { timeout: 1200, env }).catch(() => {});
+            }
+            const tabTitle = `[OPC] ${run.taskTitle.replace(/\s+/g, " ").slice(0, 26)}`;
+            await execFileAsync(herdrApp, ["do", "tab.rename", "--id", tabId, "--name", tabTitle], { timeout: 1200, env }).catch(() => {});
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      } catch {
+        // Desktop may be headless; hc retains space/tab labels
+      }
+    })();
+
+    // Duration watchdog
+    const timeoutMs = Math.max(50, Math.round(agent.maxDurationSecs * this.durationUnitMs));
+    runtime.timeoutHandle = setTimeout(() => {
+      this.triggerCircuitBreaker(
+        runtime,
+        "duration_limit_exceeded",
+        `超时熔断：Herdr 终端 ${terminal} 运行时间超过上限 ${agent.maxDurationSecs}s`,
+      );
+    }, timeoutMs);
+
+    let polling = false;
+    const poll = async () => {
+      if (polling || runtime.finalized) return;
+      polling = true;
+      try {
+        const detailOut = (await execFileAsync(hc, ["get", "--json", terminal], { timeout: 3000, env })).stdout;
+        const info = JSON.parse(detailOut) as { state?: string; exit_code?: number | null; signal?: number | null };
+        if (info.state === "finished") {
+          if (runtime.herdrPollHandle) {
+            clearInterval(runtime.herdrPollHandle);
+            runtime.herdrPollHandle = null;
+          }
+          try {
+            const screenOut = (await execFileAsync(hc, ["read", "--lines", "120", terminal], { timeout: 3000, maxBuffer: 2 * 1024 * 1024, env })).stdout;
+            for (const line of screenOut.split(/\r?\n/)) {
+              if (runtime.finalized) break;
+              if (line.trim()) this.handleOutputLine(runtime, agent, "stdout", line);
+            }
+          } catch {
+            // Screen snapshot optional if already evicted
+          }
+          if (!runtime.finalized) {
+            const code = typeof info.exit_code === "number" ? info.exit_code : 0;
+            const sig = typeof info.signal === "number" ? (`SIG${info.signal}` as NodeJS.Signals) : null;
+            await this.handleProcessExit(runtime, run, agent, workspace, code, sig);
+          }
+        }
+      } catch {
+        // Transient hc lookup glitch; keep waiting until watchdog or next poll
+      } finally {
+        polling = false;
+      }
+    };
+
+    runtime.herdrPollHandle = setInterval(() => {
+      void poll();
+    }, 1500);
+    runtime.herdrPollHandle.unref?.();
+    void poll();
   }
 
   private async runExternalVerification(
@@ -1730,6 +2199,10 @@ export class DarkFactoryStore {
     if (runtime.timeoutHandle) {
       clearTimeout(runtime.timeoutHandle);
       runtime.timeoutHandle = null;
+    }
+    if (runtime.herdrPollHandle) {
+      clearInterval(runtime.herdrPollHandle);
+      runtime.herdrPollHandle = null;
     }
     runtime.child = null;
 
@@ -2218,6 +2691,10 @@ export class DarkFactoryStore {
       if (runtime.child) {
         forceKillChild(runtime.child);
       }
+      if (runtime.herdrTerminal) {
+        const hc = process.env.HC_BIN ?? "hc";
+        void execFileAsync(hc, ["kill", runtime.herdrTerminal], { timeout: 3000 }).catch(() => {});
+      }
       return this.finalizeRun(runtime, {
         status: "cancelled",
         errorSummary: "已被人工强行终止 (SIGKILL)",
@@ -2226,6 +2703,10 @@ export class DarkFactoryStore {
     }
 
     // Orphaned running record (e.g., after server restart)
+    if (run.herdrTerminal) {
+      const hc = process.env.HC_BIN ?? "hc";
+      void execFileAsync(hc, ["kill", run.herdrTerminal], { timeout: 3000 }).catch(() => {});
+    }
     if (run.pid) {
       try {
         process.kill(run.pid, "SIGKILL");
@@ -2260,6 +2741,7 @@ export class DarkFactoryStore {
       agentId: original.agentId,
       autoCreatePr: original.autoCreatePr,
       verifyCommand: original.verifyCommand || undefined,
+      executionHost: original.executionHost,
     });
   }
 
@@ -2602,7 +3084,7 @@ export class DarkFactoryStore {
     };
   }
 
-  getOverview(): DarkFactoryOverview {
+  getOverview(): DarkFactoryOverviewWithCooldowns {
     const cfg = this.providers.get();
     const activeRow = this.db
       .prepare("SELECT COUNT(*) AS cnt FROM opc_agent_runs WHERE status = 'running'")
@@ -2613,6 +3095,7 @@ export class DarkFactoryStore {
 
     return {
       agents: this.listAgents(),
+      agentCooldowns: this.listAgentCooldowns(),
       presets: AGENT_PRESETS,
       runs: this.listRuns({ limit: 50 }),
       activeCount: Number(activeRow?.cnt ?? 0),
@@ -2810,9 +3293,12 @@ export function registerDarkFactoryRoutes(
   });
 
   // Agent Registry CRUD
-  app.get(`${base}/agents`, (c) => c.json({ agents: store.listAgents(), presets: AGENT_PRESETS }));
+  app.get(`${base}/agents`, (c) =>
+    c.json({ agents: store.listAgents(), presets: AGENT_PRESETS, cooldowns: store.listAgentCooldowns() }),
+  );
   app.post(`${base}/agents`, async (c) => c.json(store.createAgent(await c.req.json()), 201));
   app.patch(`${base}/agents/:id`, async (c) => c.json(store.updateAgent(c.req.param("id"), await c.req.json())));
+  app.post(`${base}/agents/:id/reset-cooldown`, (c) => c.json(store.resetAgentCooldown(c.req.param("id"))));
   app.delete(`${base}/agents/:id`, (c) => c.json(store.deleteAgent(c.req.param("id"))));
 
   // Dispatch & Runs

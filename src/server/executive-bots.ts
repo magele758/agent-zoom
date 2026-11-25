@@ -17,6 +17,7 @@ import type {
 import type { ZoomMessage } from "../zoom-types.ts";
 import { ApiError, type Principal } from "./logic.ts";
 import { StageHomeClient } from "./stage-home-client.ts";
+import { ExecutiveReceiptTracer, type TraceTask } from "./executive-receipt-trace.ts";
 
 type User = Extract<Principal, { type: "user" }>;
 
@@ -341,17 +342,30 @@ type AgentHomeRoom = {
   replyMode?: string;
 };
 
-type AgentHomeTask = {
+type RawRoomMessage = {
   id: string;
-  requesterBotId?: string;
-  targetBotId: string;
-  input: string;
-  status: string;
-  result?: string;
-  failureReason?: string;
-  updatedAt: string;
-  delivery?: { report?: string };
+  roomId?: string;
+  seq?: number;
+  turnId?: string;
+  text: string;
+  createdAt: string;
+  sender: { type: "user" | "bot"; id: string; name: string };
 };
+
+type AgentHomeTask = TraceTask & {
+  requesterBotId?: string;
+};
+
+// This flag only routes an unlinked explicit request into the founder's reading queue.
+// Only a verified receipt trace can identify an executable action.
+function asksFounderToDecide(report: string): boolean {
+  return report.split(/[\n。！!]/u).some(line => {
+    if (/^\s*(?:>|\x60{3})|(?:无需|无须|不需|不用|不必|没有|暂无|均无|已获|已经批准)/u.test(line)) return false;
+    const ask = /(?:^|[，,：:；;]\s*)(?:[\s#>*\-\d.、①②③④⑤]*)(?:待你(?:批准|审批|拍板|签字)|需(?:要)?(?:你|创始人)(?:批准|审批|拍板|签字)|请(?:你|创始人)?(?:批准|拍板|签字)|请求(?:创始人)?审批|是否批准)/u.exec(line);
+    if (!ask) return false;
+    return !/(?:[：:]\s*(?:无|暂无|无须|无新增|无待办)(?:[\s。！!？?）)]|$)|无则写)/u.test(line.slice(ask.index));
+  });
+}
 
 type AgentHomeCronJob = {
   id: string;
@@ -370,12 +384,20 @@ export type ExecutivePulseProvider = () => Promise<{
 }>;
 
 export class ExecutiveBotService {
+  private readonly mailDeliveries = new Map<string, AgentHomeTask["delivery"]>();
+  private readonly mailboxSnapshots = new Map<string, {
+    checkedAt: number;
+    response?: ExecutiveMailboxResponse;
+    inFlight?: Promise<ExecutiveMailboxResponse>;
+  }>();
+
   constructor(
     private db: DatabaseSync,
     private client: StageHomeClient,
     private opcOrigin: string,
     private pulseProvider?: ExecutivePulseProvider,
     private codingAgentsProvider?: CodingAgentsProvider,
+    private traceMessages?: (user: User) => ZoomMessage[],
   ) {
     db.exec(`CREATE TABLE IF NOT EXISTS opc_executive_state(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -387,6 +409,13 @@ export class ExecutiveBotService {
       mail_id TEXT NOT NULL,
       read_at TEXT NOT NULL,
       PRIMARY KEY(user_id, mail_id)
+    );
+    CREATE TABLE IF NOT EXISTS opc_executive_mail_history(
+      user_id TEXT NOT NULL,
+      connection TEXT NOT NULL,
+      mail_id TEXT NOT NULL,
+      snapshot TEXT NOT NULL,
+      PRIMARY KEY(user_id, connection, mail_id)
     );
     CREATE TABLE IF NOT EXISTS opc_coding_resource_requests(
       id TEXT PRIMARY KEY,
@@ -470,7 +499,7 @@ export class ExecutiveBotService {
       ON CONFLICT(singleton) DO UPDATE SET config=excluded.config, updated_at=excluded.updated_at`).run(JSON.stringify(config), now);
   }
 
-  private async ahRequest<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  private async ahRequest<T>(path: string, init?: { method?: string; body?: unknown; signal?: AbortSignal }): Promise<T> {
     const headers: Record<string, string> = { accept: "application/json" };
     const token = process.env.PPENG_TOKEN;
     if (token) headers.authorization = "Bearer " + token;
@@ -479,7 +508,7 @@ export class ExecutiveBotService {
       method: init?.method ?? (init?.body !== undefined ? "POST" : "GET"),
       headers,
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-      signal: AbortSignal.timeout(10_000),
+      signal: init?.signal ?? AbortSignal.timeout(10_000),
       redirect: "error",
     });
     const text = await res.text();
@@ -679,9 +708,10 @@ export class ExecutiveBotService {
       const tasksById = new Map((tasksRes.tasks ?? []).map(t => [t.id, t]));
       const codingRequests = this.listCodingRequests(tasksById);
 
+      const web = await this.client.resolveWebOrigin();
       return {
         agentHomeReachable: true,
-        agentHomeOrigin: this.client.origin,
+        agentHomeOrigin: web.webOrigin,
         bootstrapped,
         group: group ? { id: group.id, name: group.name } : null,
         room: room
@@ -716,9 +746,10 @@ export class ExecutiveBotService {
         companyPulse,
       };
     } catch (err) {
+      const web = await this.client.resolveWebOrigin();
       return {
         agentHomeReachable: false,
-        agentHomeOrigin: this.client.origin,
+        agentHomeOrigin: web.webOrigin,
         bootstrapped: false,
         group: null,
         room: null,
@@ -1069,6 +1100,53 @@ export class ExecutiveBotService {
     return new Set(rows.map(r => r.mail_id));
   }
 
+  private mergeLinkedMailHistory(user: User, live: ExecutiveMailItem[], sources: ExecutiveMailboxResponse["sourceTraces"]): ExecutiveMailItem[] {
+    const connection = this.client.identity;
+    const retained = new Map<string, ExecutiveMailItem>();
+    for (const row of this.db.prepare("SELECT mail_id,snapshot FROM opc_executive_mail_history WHERE user_id=? AND connection=?").all(user.id, connection)) {
+      try {
+        const item = JSON.parse(String(row.snapshot)) as ExecutiveMailItem;
+        if (item.id === row.mail_id && item.status !== "working" && (item.trace?.origin?.messageId || item.trace?.decisionId)) {
+          retained.set(item.id, item);
+        }
+      } catch { /* A malformed retained record must not prevent viewing the rest of the mailbox. */ }
+    }
+    const save = this.db.prepare(`INSERT INTO opc_executive_mail_history(user_id,connection,mail_id,snapshot) VALUES(?,?,?,?)
+      ON CONFLICT(user_id,connection,mail_id) DO UPDATE SET snapshot=excluded.snapshot
+      WHERE snapshot<>excluded.snapshot`);
+    const result = new Map<string, ExecutiveMailItem>();
+    for (const item of live) {
+      const trace = item.trace;
+      if (item.status === "working" || !(trace?.origin?.messageId || trace?.decisionId)) {
+        result.set(item.id, item);
+        continue;
+      }
+      const previous = retained.get(item.id);
+      // A temporary detail failure must not replace evidence already verified for this exact version.
+      if (trace.deliveryUnavailable && previous?.createdAt === item.createdAt && !previous.trace?.deliveryUnavailable) {
+        result.set(item.id, previous);
+        continue;
+      }
+      result.set(item.id, item);
+      const snapshot = { ...item, read: false, needsDecision: false, trace: { ...trace,
+        ...(trace.decision && { decision: { ...trace.decision, actionable: false } }) } };
+      save.run(user.id, connection, item.id, JSON.stringify(snapshot));
+    }
+    for (const item of retained.values()) {
+      if (result.has(item.id)) continue;
+      const trace = item.trace!;
+      const current = trace.origin?.messageId ? sources?.[trace.origin.messageId] : undefined;
+      result.set(item.id, { ...item, historical: true, needsDecision: false, trace: current ? {
+        ...trace,
+        origin: { ...trace.origin!, ...current.origin!, patrolRunId: current.origin?.patrolRunId },
+        affectedTasks: current.affectedTasks,
+        decisionId: current.decisionId,
+        decision: current.decision,
+      } : { ...trace, ...(trace.decision && { decision: { ...trace.decision, actionable: false } }) } });
+    }
+    return [...result.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
   setMailRead(user: User, mailId: string, rawInput: unknown) {
     const parsed = mailReadSchema.safeParse(rawInput);
     if (!parsed.success || !mailId || mailId.length > 200) {
@@ -1084,12 +1162,85 @@ export class ExecutiveBotService {
     } else {
       this.db.prepare("DELETE FROM opc_executive_mail_reads WHERE user_id=? AND mail_id=?").run(user.id, mailId);
     }
+    const cached = this.mailboxSnapshots.get(user.id);
+    if (cached?.response) {
+      cached.response = { ...cached.response, items: cached.response.items.map(item => item.id === mailId
+        ? { ...item, read: item.direction === "outbound" || parsed.data.read }
+        : item) };
+    }
     return { id: mailId, read: parsed.data.read };
   }
 
-  async mailbox(user: User): Promise<ExecutiveMailboxResponse> {
+  private async mailTaskDetails(tasks: AgentHomeTask[]): Promise<AgentHomeTask[]> {
+    const deadline = AbortSignal.timeout(1500);
+    const result = [...tasks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    let next = 0;
+    const read = async () => {
+      while (next < result.length) {
+        const i = next++;
+        const task = result[i];
+        if (task.delivery || !["completed", "failed", "cancelled", "unknown", "error", "canceled"].includes(task.status)) continue;
+        const key = JSON.stringify([task.id, task.targetBotId, task.attempt, task.updatedAt]);
+        if (this.mailDeliveries.has(key)) {
+          result[i] = { ...task, delivery: this.mailDeliveries.get(key) };
+          continue;
+        }
+        result[i] = { ...task, deliveryUnavailable: true };
+        if (deadline.aborted) continue;
+        try {
+          const { task: detail } = await this.ahRequest<{ task: AgentHomeTask }>(
+            "/api/bot-work/tasks/" + encodeURIComponent(task.id), { signal: deadline });
+          if (detail.id !== task.id || detail.targetBotId !== task.targetBotId || detail.input !== task.input ||
+            detail.attempt !== task.attempt || detail.updatedAt !== task.updatedAt) continue;
+          const delivery = detail.delivery;
+          if (delivery && (delivery.taskId !== task.id || delivery.attempt !== task.attempt)) continue;
+          if (this.mailDeliveries.size >= 80) this.mailDeliveries.delete(this.mailDeliveries.keys().next().value!);
+          this.mailDeliveries.set(key, delivery);
+          result[i] = { ...task, delivery };
+        } catch { /* Keep the list snapshot when the delivery service is unavailable. */ }
+      }
+    };
+    await Promise.all(Array.from({length: Math.min(4, tasks.length)}, read));
+    return result;
+  }
+
+  /** Used by the sidebar's frequent local poll without adding Agent Home I/O to its response path. */
+  cachedMailbox(user: User): ExecutiveMailboxResponse | undefined {
+    const entry = this.mailboxSnapshots.get(user.id);
+    if (!entry?.inFlight && (!entry || Date.now() - entry.checkedAt >= 60_000) &&
+        process.env.KUNLUN_PREVIEW !== "1" && process.env.DEMO_MODE !== "1" && this.readConfig()) {
+      void this.mailbox(user).catch(() => { /* Next poll can retry after the refresh interval. */ });
+    }
+    return entry?.response;
+  }
+
+  mailbox(user: User): Promise<ExecutiveMailboxResponse> {
+    const entry = this.mailboxSnapshots.get(user.id) ?? { checkedAt: 0 };
+    if (entry.inFlight) return entry.inFlight;
+    entry.checkedAt = Date.now();
+    const pending = this.fetchMailbox(user).then(value => {
+      // A user may have acknowledged a letter while Agent Home was still loading.
+      const reads = this.readMailIds(user.id);
+      const items = this.mergeLinkedMailHistory(user, value.items, value.sourceTraces);
+      const response = { ...value, items: items.map(item => ({ ...item, read: item.direction === "outbound" || reads.has(item.id) })) };
+      entry.response = response;
+      return response;
+    }).finally(() => { entry.inFlight = undefined; });
+    entry.inFlight = pending;
+    this.mailboxSnapshots.set(user.id, entry);
+    return pending;
+  }
+
+  private async fetchMailbox(user: User): Promise<ExecutiveMailboxResponse> {
     const persisted = this.readConfig();
     const readSet = this.readMailIds(user.id);
+    const traceProvider = this.traceMessages;
+    const tracer = new ExecutiveReceiptTracer(this.db, this.client.identity, user.id,
+      traceProvider && (() => traceProvider(user)));
+    let sourceTraces: ExecutiveMailboxResponse["sourceTraces"];
+    try {
+      sourceTraces = tracer.sourceTraces();
+    } catch { /* Local source trace lookup is optional; the mailbox still shows the original messages. */ }
     try {
       const [superDefault, roomsRes, tasksRes, botsRes] = await Promise.all([
         this.ahRequest<{ bot: AgentHomeRawBot }>("/api/bot-work/default"),
@@ -1122,15 +1273,7 @@ export class ExecutiveBotService {
       let superBotWorking = false;
 
       if (room) {
-        type RawRoomMessage = {
-          id: string;
-          roomId?: string;
-          seq?: number;
-          text: string;
-          createdAt: string;
-          sender: { type: "user" | "bot"; id: string; name: string };
-        };
-        type RawRoomTurn = { id: string; status?: string };
+        type RawRoomTurn = { id: string; status?: string; roomId?: string; messageId?: string };
         const [msgRes, turnRes] = await Promise.all([
           this.ahRequest<{ messages: RawRoomMessage[] }>(`/api/bot-rooms/${encodeURIComponent(room.id)}/messages?limit=40`).catch(() => ({ messages: [] })),
           this.ahRequest<{ turns: RawRoomTurn[] }>(`/api/bot-rooms/${encodeURIComponent(room.id)}/turns`).catch(() => ({ turns: [] })),
@@ -1140,8 +1283,7 @@ export class ExecutiveBotService {
           const isBot = msg.sender.type === "bot";
           const meta = isBot ? botMeta.get(msg.sender.id) : undefined;
           const id = `room:${msg.id}`;
-          const needsDecision =
-            isBot && /(?:待拍板|需创始人拍板|需要你拍板|请批准|审批清单|请求审批|是否批准|需你签字)/.test(msg.text);
+          const trace = tracer.room(room.id, msg, msgRes.messages, turnRes.turns);
           items.push({
             id,
             source: "executive_room",
@@ -1154,7 +1296,8 @@ export class ExecutiveBotService {
             body: msg.text,
             status: isBot ? "completed" : "sent",
             read: !isBot || readSet.has(id),
-            needsDecision,
+            needsDecision: trace ? trace.decision?.actionable === true : isBot && asksFounderToDecide(msg.text),
+            ...(trace && { trace }),
             createdAt: msg.createdAt,
             roomId: room.id,
             messageId: msg.id,
@@ -1163,38 +1306,38 @@ export class ExecutiveBotService {
         }
       }
 
-      for (const t of tasksRes.tasks ?? []) {
-        const isDeptTask =
+      const departmentTasks = (tasksRes.tasks ?? []).filter(t =>
           deptBotIdSet.has(t.targetBotId) ||
           Boolean(t.requesterBotId && deptBotIdSet.has(t.requesterBotId)) ||
-          (t.targetBotId === superBotId && /(?:OPC|总裁|五大部门|部门\s*Bot)/i.test(t.input));
-        if (!isDeptTask) continue;
+          (t.targetBotId === superBotId && /(?:OPC|总裁|五大部门|部门\s*Bot)/i.test(t.input)));
+      for (const t of await this.mailTaskDetails(departmentTasks)) {
         const meta = botMeta.get(t.targetBotId);
-        const report = (t.delivery?.report || t.result || "").trim();
+        const trace = tracer.task(t);
+        const report = trace.result;
         const isWorking = t.status === "running" || t.status === "in_progress" || t.status === "queued" || t.status === "pending";
         if (isWorking) superBotWorking = true;
         const isFailed = t.status === "failed" || t.status === "error";
+        const cancelled = t.status === "cancelled" || t.status === "canceled";
+        const waiting = !cancelled && !isFailed && t.status !== "completed";
+        const inbound = Boolean(report) || isFailed || cancelled || t.status === "completed";
         const id = `task:${t.id}`;
         const body = report
           ? `### 派单内容\n${t.input}\n\n---\n\n### 部门回执\n${report}`
-          : isFailed
-            ? `### 派单内容\n${t.input}\n\n---\n\n### 执行异常\n${t.failureReason || "任务执行失败"}`
-            : `### 派单内容\n${t.input}\n\n> 部门 Bot 正在查证执行中，回执将自动同步至此信箱。`;
-        const needsDecision =
-          Boolean(report) && /(?:待拍板|需创始人拍板|需要你拍板|请批准|审批|建议批准|红线)/.test(report);
+          : `### 派单内容\n${t.input}\n\n${t.failureReason || (cancelled ? "任务已取消。" : isFailed ? "任务执行失败。" : waiting ? "等待部门回执。" : "任务已结束，暂无回执正文。")}`;
         items.push({
           id,
           source: "department_task",
-          direction: report ? "inbound" : "outbound",
+          direction: inbound ? "inbound" : "outbound",
           senderId: t.targetBotId,
           senderName: meta?.name || t.targetBotId,
           senderRole: meta?.role ? `${meta.role} · 部门回执` : "部门回执",
           subject: extractMailSubject(report || t.input, `${meta?.name || "部门 Bot"} 巡检回执`),
           excerpt: extractMailExcerpt(report || t.failureReason || t.input),
           body,
-          status: isFailed ? "failed" : isWorking ? "working" : "completed",
-          read: !report || readSet.has(id),
-          needsDecision,
+          status: cancelled ? "cancelled" : isFailed ? "failed" : waiting ? "working" : "completed",
+          read: !inbound || readSet.has(id),
+          needsDecision: trace.origin ? trace.decision?.actionable === true : t.status === "completed" && asksFounderToDecide(report),
+          trace,
           createdAt: t.updatedAt,
           taskId: t.id,
           ...(meta?.deptId ? { departmentId: meta.deptId } : {}),
@@ -1203,28 +1346,56 @@ export class ExecutiveBotService {
 
       items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
+      const web = await this.client.resolveWebOrigin();
       return {
         agentHomeReachable: true,
-        agentHomeOrigin: this.client.origin,
+        agentHomeOrigin: web.webOrigin,
         bootstrapped: Boolean(room && deptBotIdSet.size === EXECUTIVE_DEPARTMENTS.length),
         roomId: room?.id ?? null,
         roomTitle: room?.title ?? null,
         superBotId,
         superBotWorking,
         items,
+        sourceTraces,
       };
     } catch (err) {
+      const web = await this.client.resolveWebOrigin();
       return {
         agentHomeReachable: false,
-        agentHomeOrigin: this.client.origin,
+        agentHomeOrigin: web.webOrigin,
         bootstrapped: false,
         roomId: persisted?.roomId ?? null,
         roomTitle: OPC_ROOM_TITLE,
         superBotId: persisted?.superBotId ?? null,
         superBotWorking: false,
         items: [],
+        sourceTraces,
         error: err instanceof Error ? err.message : "暂时无法连接 Agent Home",
       };
+    }
+  }
+
+  private async roomReplyQuote(roomId: string, messageId: string) {
+    let before: number | undefined;
+    for (;;) {
+      const query = new URLSearchParams({ limit: "200" });
+      if (before !== undefined) query.set("beforeSeq", String(before));
+      const page = await this.ahRequest<{ messages: RawRoomMessage[]; hasMore: boolean; nextCursor: number | null }>(
+        `/api/bot-rooms/${encodeURIComponent(roomId)}/messages?${query}`,
+      );
+      const message = page.messages.find(m => m.id === messageId && (!m.roomId || m.roomId === roomId));
+      if (message) {
+        if (message.sender.type !== "bot") throw new ApiError(400, "executive_quote_sender", "只能引用总控群中的 Bot 来信。");
+        const excerpt = [...message.text.replace(/\s+/g, " ").trim()].slice(0, 120).join("");
+        if (!excerpt) throw new ApiError(400, "executive_quote_empty", "这封来信没有可引用的正文。");
+        return { messageId, botId: message.sender.id, excerpt };
+      }
+      if (!page.hasMore) throw new ApiError(404, "executive_quote_missing", "总控群中找不到这封来信，请刷新信箱。");
+      const next = page.nextCursor;
+      if (next === null || !Number.isSafeInteger(next) || next < 1 || (before !== undefined && next >= before)) {
+        throw new ApiError(502, "executive_quote_history", "暂时无法读取总控群历史，请稍后重试。");
+      }
+      before = next;
     }
   }
 
@@ -1236,10 +1407,11 @@ export class ExecutiveBotService {
       return this.dispatchDepartment(user, departmentId, { instruction: text });
     }
     let current = await this.status(user);
-    if (!current.bootstrapped) current = await this.bootstrap(user);
+    if (!current.bootstrapped && !replyToMessageId) current = await this.bootstrap(user);
     const superBotId = current.superBot.botId;
     const roomId = current.room?.id;
     if (!superBotId || !roomId) throw new ApiError(409, "executive_not_ready", "请先完成总裁办建制。");
+    const replyTo = replyToMessageId ? await this.roomReplyQuote(roomId, replyToMessageId) : undefined;
 
     const actionPrefix =
       action === "approve"
@@ -1258,7 +1430,7 @@ export class ExecutiveBotService {
           text: actionPrefix + text,
           mentions: [superBotId],
           idempotencyKey: `opc-mail-reply-${randomUUID()}`,
-          ...(replyToMessageId ? { replyTo: { messageId: replyToMessageId } } : {}),
+          ...(replyTo && { replyTo }),
         },
       },
     );
@@ -1354,11 +1526,12 @@ export function registerExecutiveBotRoutes(
     opcOrigin?: string;
     pulseProvider?: ExecutivePulseProvider;
     codingAgentsProvider?: CodingAgentsProvider;
+    traceMessages?: (user: User) => ZoomMessage[];
   } = {},
 ) {
   const client = options.client ?? new StageHomeClient();
   const opcOrigin = options.opcOrigin ?? process.env.KUNLUN_URL ?? `http://127.0.0.1:${process.env.PORT ?? 52328}`;
-  const service = new ExecutiveBotService(db, client, opcOrigin, options.pulseProvider, options.codingAgentsProvider);
+  const service = new ExecutiveBotService(db, client, opcOrigin, options.pulseProvider, options.codingAgentsProvider, options.traceMessages);
   const base = "/api/opc/executive";
 
   app.use(base + "/*", async (c, next) => {

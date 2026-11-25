@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { loopbackProxy } from "../../../scripts/workflow-proxy.mjs";
 import type { WorkflowAttempt, WorkflowEvent, WorkflowEvidence, WorkflowNode, WorkflowRun } from "../../workflow-types.ts";
+import { resolveProjectHerdrSpace } from "../herdr-space-router.ts";
 
 const exec = promisify(execFile);
 const worker = fileURLToPath(new URL("../../../scripts/workflow-worker.mjs", import.meta.url));
@@ -43,7 +44,26 @@ export class HerdrExecutor implements WorkflowExecutor {
 
   async launch(spec: LaunchSpec) {
     const { attemptId, runId, nodeId, cwd, payload } = spec;
-    const space = this.space ?? `sp${runId.replaceAll("-", "")}`;
+    let projectHint: string | null = null;
+    try {
+      const parsed = JSON.parse(readFileSync(payload, "utf8")) as { request?: { folder?: string } };
+      if (typeof parsed.request?.folder === "string" && parsed.request.folder.trim()) {
+        projectHint = parsed.request.folder.trim();
+      }
+    } catch {
+      // Optional metadata read
+    }
+    const resolvedSpace = this.space
+      ? { spaceId: this.space, spaceName: this.space, reused: true }
+      : await resolveProjectHerdrSpace({
+          workspace: cwd,
+          project: projectHint,
+          fallbackSpaceId: `sp${runId.replaceAll("-", "")}`,
+          fallbackSpaceName: `OPC OS · ${runId.slice(0, 8)}`,
+          herdrApp: this.herdrApp,
+          env: childEnvironment,
+        });
+    const space = resolvedSpace.spaceId;
     const tab = `tb${attemptId.replaceAll("-", "")}`;
     const labels = ["--label", `kunlun.attempt=${attemptId}`, "--label", `kunlun.run=${runId}`,
       "--label", `kunlun.node=${nodeId}`, "--label", `herdr.space=${space}`, "--label", `herdr.tab=${tab}`];
@@ -52,18 +72,18 @@ export class HerdrExecutor implements WorkflowExecutor {
 
     // Core adopts the labelled terminal even when the desktop is closed. Naming the
     // adopted pane is presentation only and must never trigger a second launch.
-    await this.nameTab(space, tab, runId, nodeId, attemptId);
+    await this.nameTab(space, resolvedSpace.spaceName, resolvedSpace.reused, tab, nodeId, attemptId);
   }
 
-  private async nameTab(space: string, tab: string, runId: string, nodeId: string, attemptId: string) {
+  private async nameTab(space: string, spaceName: string, reusedSpace: boolean, tab: string, nodeId: string, attemptId: string) {
     const desktop = (args: string[]) => exec(this.herdrApp, args, { timeout: 1200, env: childEnvironment });
     try {
       for (let check = 0; check < 8; check++) {
         const state = JSON.parse((await desktop(["ls"])).stdout);
         const runSpace = state.spaces.find((item: { id: string }) => item.id === space);
         if (runSpace?.tabs.some((item: { id: string }) => item.id === tab)) {
-          if (!this.space) await desktop(["do", "space.rename", "--id", space, "--name", `OPC OS · ${runId.slice(0, 8)}`]);
-          await desktop(["do", "tab.rename", "--id", tab, "--name", `${nodeId} · ${attemptId.slice(0, 8)}`]);
+          if (!this.space && !reusedSpace) await desktop(["do", "space.rename", "--id", space, "--name", spaceName]);
+          await desktop(["do", "tab.rename", "--id", tab, "--name", `[OPC] ${nodeId} · ${attemptId.slice(0, 6)}`]);
           return;
         }
         await delay(100);
@@ -284,7 +304,7 @@ export async function prepareAttempt(root: string, run: Pick<WorkflowRun, "works
     const previous = payload.upstream.findLast(({ evidence }) => evidence.nodeId === payload.node.id)?.evidence;
     if (previous?.outcome === "failed" && previous.patch) await applyEvidence(previous);
   }
-  if (payload.backend === "herdr" && basename(payload.runner[1] ?? "") === "workflow-cli-agent.mjs") {
+  if (payload.backend === "herdr") {
     const proxy = loopbackProxy(process.env);
     if (Object.keys(proxy).length) {
       writeFileSync(join(directory, "cli-proxy.json"), JSON.stringify(proxy), { flag: "wx", mode: 0o600 });

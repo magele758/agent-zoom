@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Context, Hono } from "hono";
+import { ApiError } from "../server/logic.ts";
 import { DecisionGateway } from "./decisions.ts";
 import { DomainEventBus } from "./events.ts";
 import { AssetRegistry } from "./registry.ts";
@@ -7,6 +8,7 @@ import {
   COMPANY_DEPARTMENTS,
   type CompanyArchitectureSnapshot,
   type CompanyDepartmentId,
+  type DecisionBatchAction,
   type DecisionStatus,
   type DepartmentHealth,
   type DepartmentModule,
@@ -165,6 +167,13 @@ export class OpcKernel {
       return c.json({ policy: this.decisions.getPolicy() });
     });
 
+    app.get("/api/opc/kernel/decisions/:id", (c) => {
+      requireUser(c);
+      const packet = this.decisions.get(c.req.param("id"));
+      if (!packet) throw new ApiError(404, "decision_not_found", "未找到该审批单");
+      return c.json({ packet });
+    });
+
     app.put("/api/opc/kernel/decisions/policy", async (c) => {
       requireUser(c);
       const body = await c.req.json();
@@ -182,9 +191,24 @@ export class OpcKernel {
       const packet = await this.decisions.resolve(c.req.param("id"), {
         optionId: String(body.optionId ?? ""),
         note: typeof body.note === "string" ? body.note : "",
+        expectedUpdatedAt: typeof body.expectedUpdatedAt === "string" ? body.expectedUpdatedAt : undefined,
         actor: user.name,
       });
       return c.json({ packet });
+    });
+
+    app.post("/api/opc/kernel/decisions/batch-resolve", async (c) => {
+      const user = requireUser(c);
+      const body = await c.req.json();
+      const result = await this.decisions.batchResolve({
+        ids: Array.isArray(body.ids) ? body.ids.map(String) : [],
+        expectedUpdatedAtById: body.expectedUpdatedAtById,
+        action: String(body.action ?? "") as DecisionBatchAction,
+        note: typeof body.note === "string" ? body.note : "",
+        actor: user.name,
+        allowRedline: body.allowRedline === true,
+      });
+      return c.json(result);
     });
 
     app.get("/api/opc/kernel/events", (c) => {

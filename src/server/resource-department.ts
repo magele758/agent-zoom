@@ -1,5 +1,8 @@
-import { spawn } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -286,6 +289,178 @@ export function readHubResources(path: string, nowMs = Date.now()): ResourceDepa
   } finally { db.close(); }
 }
 
+export interface LiveCliAuthProbeResult {
+  loggedIn: boolean;
+  command: string;
+}
+
+export type LiveCliAuthProbeFn = (toolId: string) => LiveCliAuthProbeResult | null;
+export type AsyncLiveCliAuthProbeFn = (
+  toolId: string,
+) => Promise<LiveCliAuthProbeResult | null> | LiveCliAuthProbeResult | null;
+
+const CLI_AUTH_CACHE_TTL_MS = 5 * 60_000;
+const CLI_AUTH_PROBE_TIMEOUT_MS = 15_000;
+const cliAuthCache = new Map<string, { checkedAt: number; result: LiveCliAuthProbeResult | null }>();
+const cliAuthInFlight = new Map<string, Promise<LiveCliAuthProbeResult | null>>();
+
+function resolveExecutable(name: string): string | null {
+  const candidates = [
+    join(homedir(), ".local", "bin", name),
+    join("/opt/homebrew/bin", name),
+    join("/usr/local/bin", name),
+    name,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === name) return name;
+    try {
+      if (existsSync(candidate)) {
+        accessSync(candidate, constants.X_OK);
+        return candidate;
+      }
+    } catch {
+      // try next
+    }
+  }
+  return name;
+}
+
+export function clearLiveCliAuthCache(): void {
+  cliAuthCache.clear();
+  cliAuthInFlight.clear();
+}
+
+function parseCursorAgentStatusOutput(output: string): boolean {
+  return /\blogged\s+in\s+as\b/i.test(output) && !/\bnot\s+logged\s+in\b/i.test(output);
+}
+
+/**
+ * Asynchronously verifies local CLI authentication (e.g. `cursor-agent status` can take ~7s online)
+ * with a 15s timeout, concurrent in-flight deduplication, and 5-minute TTL cache.
+ */
+export async function refreshLiveCliAuth(
+  toolId: string,
+  nowMs = Date.now(),
+): Promise<LiveCliAuthProbeResult | null> {
+  const normalized = toolId.trim().toLowerCase();
+  if (normalized !== "cursor" && normalized !== "cursor-agent") {
+    return null;
+  }
+
+  const cached = cliAuthCache.get("cursor");
+  if (cached && nowMs - cached.checkedAt < CLI_AUTH_CACHE_TTL_MS) {
+    return cached.result;
+  }
+
+  const inflight = cliAuthInFlight.get("cursor");
+  if (inflight) return inflight;
+
+  const task = (async (): Promise<LiveCliAuthProbeResult | null> => {
+    const bin = resolveExecutable("cursor-agent");
+    if (!bin) return null;
+    try {
+      const { stdout, stderr } = await execFileAsync(bin, ["status"], {
+        encoding: "utf8",
+        timeout: CLI_AUTH_PROBE_TIMEOUT_MS,
+      });
+      const loggedIn = parseCursorAgentStatusOutput(`${stdout ?? ""}\n${stderr ?? ""}`);
+      const res: LiveCliAuthProbeResult = { loggedIn, command: "cursor-agent status" };
+      cliAuthCache.set("cursor", { checkedAt: Date.now(), result: res });
+      return res;
+    } catch (err) {
+      const e = err as { code?: string; stdout?: string; stderr?: string };
+      if (e.code === "ENOENT") {
+        cliAuthCache.set("cursor", { checkedAt: Date.now(), result: null });
+        return null;
+      }
+      const combined = `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
+      if (parseCursorAgentStatusOutput(combined)) {
+        const res: LiveCliAuthProbeResult = { loggedIn: true, command: "cursor-agent status" };
+        cliAuthCache.set("cursor", { checkedAt: Date.now(), result: res });
+        return res;
+      }
+      // On timeout or transient network failure, preserve prior known-good result if any, else mark unverified
+      const prev = cliAuthCache.get("cursor")?.result ?? null;
+      const res = prev?.loggedIn ? prev : { loggedIn: false, command: "cursor-agent status" };
+      cliAuthCache.set("cursor", { checkedAt: Date.now(), result: res });
+      return res;
+    } finally {
+      cliAuthInFlight.delete("cursor");
+    }
+  })();
+
+  cliAuthInFlight.set("cursor", task);
+  return task;
+}
+
+/**
+ * Non-blocking synchronous cache read: returns cached CLI auth result immediately and kicks off
+ * an async background refresh whenever the cache is cold or expired.
+ */
+export function probeLiveCliAuth(toolId: string, nowMs = Date.now()): LiveCliAuthProbeResult | null {
+  const normalized = toolId.trim().toLowerCase();
+  if (normalized !== "cursor" && normalized !== "cursor-agent") {
+    return null;
+  }
+
+  const cached = cliAuthCache.get("cursor");
+  if (!cached || nowMs - cached.checkedAt >= CLI_AUTH_CACHE_TTL_MS) {
+    void refreshLiveCliAuth("cursor", nowMs);
+  }
+  return cached?.result ?? null;
+}
+
+export function applyLiveCliAuthOverrides(
+  hub: ResourceDepartmentIndex["hub"],
+  options: { probeFn?: LiveCliAuthProbeFn; nowMs?: number } = {},
+): ResourceDepartmentIndex["hub"] {
+  const probe = options.probeFn ?? ((toolId: string) => probeLiveCliAuth(toolId, options.nowMs ?? Date.now()));
+  let changed = false;
+  const tools = hub.tools.map((tool) => {
+    if (tool.diagnostic !== "auth_expired") return tool;
+    const live = probe(tool.tool);
+    if (!live || !live.loggedIn) return tool;
+    changed = true;
+    const next = { ...tool };
+    delete next.diagnostic;
+    return next;
+  });
+  return changed ? { ...hub, tools } : hub;
+}
+
+export function readHubResourcesWithLiveAuth(
+  path: string,
+  nowMs = Date.now(),
+  options: { probeFn?: LiveCliAuthProbeFn } = {},
+): ResourceDepartmentIndex["hub"] {
+  return applyLiveCliAuthOverrides(readHubResources(path, nowMs), {
+    probeFn: options.probeFn,
+    nowMs,
+  });
+}
+
+export async function readHubResourcesWithLiveAuthAsync(
+  path: string,
+  nowMs = Date.now(),
+  options: { probeFn?: AsyncLiveCliAuthProbeFn } = {},
+): Promise<ResourceDepartmentIndex["hub"]> {
+  const hub = readHubResources(path, nowMs);
+  const probe = options.probeFn ?? ((toolId: string) => refreshLiveCliAuth(toolId, nowMs));
+  let changed = false;
+  const tools = await Promise.all(
+    hub.tools.map(async (tool) => {
+      if (tool.diagnostic !== "auth_expired") return tool;
+      const live = await probe(tool.tool);
+      if (!live || !live.loggedIn) return tool;
+      changed = true;
+      const next = { ...tool };
+      delete next.diagnostic;
+      return next;
+    }),
+  );
+  return changed ? { ...hub, tools } : hub;
+}
+
 const columns = `id, revision, name, window, unit, capacity, reported_remaining AS reportedRemaining,
   resets_at AS resetsAt, renews_on AS renewsOn, observed_at AS observedAt, fee, currency, billing_cycle AS billingCycle`;
 
@@ -362,19 +537,20 @@ export function registerResourceDepartmentRoutes(app: Hono, db: DatabaseSync, us
   }
   let pending: Promise<CollectionReceipt> | undefined;
   async function collect(): Promise<CollectionReceipt> {
-    const previous = readHubResources(path).generatedAt;
+    const previous = readHubResourcesWithLiveAuth(path).generatedAt;
     await runHubQuota(collector, directory);
-    const hub = readHubResources(path);
+    const hub = await readHubResourcesWithLiveAuthAsync(path);
     const snapshotUpdated = hub.generatedAt !== null && (previous === null || hub.generatedAt > previous);
     const now = Date.now();
     const recentReadings = hub.tools.flatMap(tool => [...tool.windows, ...tool.balances])
       .filter(reading => currentReading(reading, now, true).state === "observed").length;
     return { hub, snapshotUpdated, recentReadings };
   }
-  app.get(base, c => {
+  app.get(base, async c => {
     user(c);
     c.header("Cache-Control", "no-store");
-    return c.json({ plans: store.list(), hub: readHubResources(path), canCollect: canCollect() } satisfies ResourceDepartmentIndex);
+    const hub = await readHubResourcesWithLiveAuthAsync(path);
+    return c.json({ plans: store.list(), hub, canCollect: canCollect() } satisfies ResourceDepartmentIndex);
   });
   app.post(`${base}/collect`, async c => {
     user(c);

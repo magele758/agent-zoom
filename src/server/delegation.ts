@@ -51,7 +51,7 @@ type Source = {
   folder?: string;
   stage?: ProductStageId;
   opportunityId?: string;
-  mode: "answer" | "recommend" | "work";
+  mode: "answer" | "recommend" | "assess" | "work";
 };
 type Row = {
   id: string;
@@ -64,12 +64,14 @@ type Row = {
   result: string;
   evidence: string;
   settled: number;
+  handled_at?: string | null;
   created_at: string;
 };
 const failure = (reason: string) => new ApiError(409, "delegation_conflict", reason);
 const briefText = (text: string, limit: number) => (text.length <= limit ? text : text.slice(0, limit - 1) + "…");
 function mode(message: ZoomMessage): Source["mode"] {
   if (!message.pending) return "work";
+  if (recoveryIdentity(message)) return "assess";
   if (
     requiresHumanApproval(message) ||
     message.readOnly ||
@@ -88,6 +90,31 @@ function mode(message: ZoomMessage): Source["mode"] {
   )
     return "answer";
   return message.pending ? "recommend" : "work";
+}
+// A fresh poll may report the same lost receipt again under a different timeline event ID.
+// A new attempt, revision, or a transition from reconciliation to retry is a different issue.
+function recoveryIdentity(message: ZoomMessage | undefined) {
+  if (message?.origin !== "workflow" || message.kind !== "recovery" || message.requiresApproval || message.choices?.length) return;
+  const action = message.recoveryAction ?? message.action?.kind;
+  if (!message.attemptId || !(action === "recover" || action === "retry")) return;
+  return JSON.stringify([message.taskId, message.revision, message.attemptId, action]);
+}
+
+function delegatedSources(rows: Row[], messages: ZoomMessage[]) {
+  const byId = new Map(messages.map(message => [message.id, message]));
+  const bySource = new Map(rows.map(row => [row.source_id, row]));
+  const recoveryRows = new Map<string, Row>();
+  for (const row of rows) {
+    const key = recoveryIdentity(byId.get(row.source_id));
+    if (key && !recoveryRows.has(key)) recoveryRows.set(key, row);
+  }
+  for (const message of messages) {
+    if (!message.pending || bySource.has(message.id)) continue;
+    const key = recoveryIdentity(message);
+    const prior = key && recoveryRows.get(key);
+    if (prior) bySource.set(message.id, prior);
+  }
+  return bySource;
 }
 function workflowMaterials(store: Store, m: ZoomMessage): string[] {
   if (m.origin !== "workflow") return [];
@@ -217,13 +244,15 @@ export class DelegationService {
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,source_id TEXT NOT NULL,source TEXT NOT NULL,method TEXT NOT NULL,
       work_id TEXT NOT NULL UNIQUE REFERENCES stage_work(task_id),status TEXT NOT NULL, result TEXT NOT NULL DEFAULT '',
       evidence TEXT NOT NULL DEFAULT '[]',settled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL, UNIQUE(user_id,source_id));
+      CREATE TABLE IF NOT EXISTS opc_delegation_handled_failures(
+        delegation_id TEXT PRIMARY KEY REFERENCES opc_delegations(id), handled_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS opc_delegate_preferences(user_id TEXT PRIMARY KEY, preference TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS opc_delegate_baseline(user_id TEXT NOT NULL,source_id TEXT NOT NULL,PRIMARY KEY(user_id,source_id));`);
   }
   private rows(user: User, active = false): Row[] {
     return this.store.db
       .prepare(
-        "SELECT * FROM opc_delegations WHERE user_id=?" +
+        "SELECT d.*, h.handled_at FROM opc_delegations d LEFT JOIN opc_delegation_handled_failures h ON h.delegation_id=d.id WHERE d.user_id=?" +
           (active ? " AND settled=0" : "") +
           " ORDER BY created_at DESC,id",
       )
@@ -357,6 +386,8 @@ export class DelegationService {
       const rule =
         source.mode === "recommend"
           ? "仅提交供负责人审批的建议、理由和证据。审批、选择、恢复和经营决策须由负责人在原事项确认。"
+          : source.mode === "assess"
+            ? "只读核对本次工作流异常、执行现场与回执，提交研判和证据。需要负责人作决定时另提具体问题。不得代为恢复、重试或批准执行。"
           : source.mode === "answer"
             ? "提交可以原样回复原问题的答复正文，另附核对证据。"
             : "按说明处理原事项，提交结果及证据。涉及审批或外部发布时，提交负责人确认。";
@@ -418,7 +449,8 @@ export class DelegationService {
       const m = messages.find((m) => m.id === input.messageId);
       if (!m) throw new ApiError(404, "delegation_source", "原消息已不可见。");
       if (this.child(m.taskId)) throw failure("请在当前委派里补充材料或核对回执。");
-      source = messageSource(this.store, m);
+      const prior = recoveryIdentity(m) && delegatedSources(this.rows(user), messages).get(m.id);
+      source = prior ? JSON.parse(prior.source) as Source : messageSource(this.store, m);
     } else {
       const op = input.operation;
       const opportunity =
@@ -479,30 +511,43 @@ export class DelegationService {
       if (source.opportunityId) {
         const state = oppStates.get(source.opportunityId);
         if (!state || state === "queued") return row;
-      } else if (byId.get(row.source_id)?.pending !== false) return row;
+      } else {
+        const original = byId.get(row.source_id);
+        if (source.mode === "recommend" && recoveryIdentity(original)) {
+          return { ...row, status: "completed" as const, source: JSON.stringify({ ...source, mode: "assess" }) };
+        }
+        if (original?.pending !== false) return row;
+      }
       return { ...row, status: "completed" as const };
     });
   }
   decorate(messages: ZoomMessage[], user = this.store.localUser()): ZoomMessage[] {
     const rows = this.projectResolved(this.rows(user), messages);
     const workMessages = this.workMessageIds(rows.map((r) => r.work_id));
-    const bySource = new Map(rows.map((row) => [row.source_id, row]));
+    const bySource = delegatedSources(rows, messages);
     const byWork = new Map(rows.map((row) => [row.work_id, row]));
     const childrenWithQuestion = new Set(
       messages.filter((m) => m.pending && byWork.has(m.taskId)).map((m) => m.taskId),
     );
     const needsPerson = (row: Row) =>
       (row.status === "approval" || row.status === "reconcile") && !childrenWithQuestion.has(row.work_id);
+    const pendingSourceIds = new Set<string>();
     const projected = messages.map((m) => {
       const row = bySource.get(m.id);
-      if (row) return { ...m, pending: m.pending && needsPerson(row), delegation: view(row, workMessages.get(row.work_id)) };
+      if (row) {
+        // A failed assessment of an older event has its own actionable failure notice.
+        const ownsNotice = row.source_id === m.id || row.status !== "reconcile";
+        if (m.pending && ownsNotice) pendingSourceIds.add(row.source_id);
+        return { ...m, pending: m.pending && ownsNotice && needsPerson(row), delegation: view(row, workMessages.get(row.work_id)) };
+      }
       const parent = byWork.get(m.taskId);
       return parent ? { ...m, delegation: view(parent, workMessages.get(parent.work_id)) } : m;
     });
-    const pendingSourceIds = new Set(messages.filter((m) => m.pending).map((m) => m.id));
     for (const row of rows) {
-      if (!needsPerson(row) || pendingSourceIds.has(row.source_id)) continue;
+      if (!row.handled_at && (!needsPerson(row) || pendingSourceIds.has(row.source_id))) continue;
       const d = view(row, workMessages.get(row.work_id));
+      const failureNotice = row.handled_at || (row.settled && row.status === "reconcile" &&
+        d.method.via === "agent-home" && this.home.cached(row.work_id)?.status === "failed");
       projected.push({
         id: "delegation:" + row.id,
         taskId: row.work_id,
@@ -513,13 +558,26 @@ export class DelegationService {
         folder: "公司/委派",
         body: d.result,
         at: row.created_at,
-        pending: true,
+        pending: !row.handled_at,
+        ...(failureNotice ? { failureNotice: { handledAt: row.handled_at ?? null } } : {}),
         evidence: d.evidence,
         delegation: d,
       });
     }
     return projected;
   }
+  handleFailureNotice(user: User, id: string) {
+    return this.atomic(() => {
+      const selected = this.decorate(this.rawMessages(user), user).find(m => m.id === "delegation:" + id);
+      if (!selected?.failureNotice) throw failure("这项记录不属于可关闭的 Agent Home 失败通知。");
+      if (selected.failureNotice.handledAt) return { handledAt: selected.failureNotice.handledAt };
+      const handledAt = new Date().toISOString();
+      this.store.db.prepare("INSERT INTO opc_delegation_handled_failures(delegation_id,handled_at) VALUES(?,?)")
+        .run(id, handledAt);
+      return { handledAt };
+    });
+  }
+
   private async update(user: User, row: Row, messages: ZoomMessage[], explicit = false) {
     if (row.settled || this.busy.has(row.id)) return;
     this.busy.add(row.id);
@@ -646,12 +704,12 @@ export class DelegationService {
     for (let i = 0; i < all.length; i++)
       if (resolved[i] !== all[i]) {
         this.store.db
-          .prepare("UPDATE opc_delegations SET status='completed' WHERE id=? AND status='approval' AND settled=1")
-          .run(all[i].id);
+          .prepare("UPDATE opc_delegations SET status='completed',source=? WHERE id=? AND status='approval' AND settled=1")
+          .run(resolved[i].source, all[i].id);
       }
     if (preference?.method.automatic) {
       const { automatic: _, ...method } = preference.method;
-      const existing = new Set(this.rows(user).map((r) => r.source_id));
+      const existing = delegatedSources(resolved, messages);
       const baseline = new Set(
         this.store.db
           .prepare("SELECT source_id FROM opc_delegate_baseline WHERE user_id=?")
@@ -690,6 +748,11 @@ export function addDelegationRoutes(
   app.get(base, (c) => {
     c.header("Cache-Control", "no-store");
     return c.json(service.list(user(c)));
+  });
+  app.post(`${base}/:id/failure-notice/handle`, async c => {
+    const principal = user(c);
+    parse(z.strictObject({}), await c.req.json());
+    return c.json(service.handleFailureNotice(principal, c.req.param("id")));
   });
   app.put(base + "/preference", async (c) => c.json(service.setPreference(user(c), await c.req.json())));
   app.post(base, async (c) => c.json(await service.submit(user(c), await c.req.json())));

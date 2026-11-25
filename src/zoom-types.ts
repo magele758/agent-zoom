@@ -24,12 +24,14 @@ export type ZoomMessage = {
   pending: boolean;
   requiresApproval?: boolean;
   delegation?: Delegation;
+  failureNotice?: { handledAt: string | null };
   roomBinding?: string;
   capabilityRequest?: {id:string; revision?:number};
   businessTrial?: {lineId:string; trialId:string};
   readOnly?: boolean;
   revision?: number;
   attemptId?: string;
+  recoveryAction?: "recover" | "retry";
   action?: ZoomAction;
   choices?: string[];
   choice?: string;

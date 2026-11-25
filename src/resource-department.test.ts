@@ -8,7 +8,17 @@ import test from "node:test";
 import { Hono } from "hono";
 import { ApiError } from "./server/logic.ts";
 import { currentReading } from "./resource-department-types.ts";
-import { readHubResources, registerResourceDepartmentRoutes, ResourcePlanStore } from "./server/resource-department.ts";
+import { ResourcesDepartment } from "./domains/resources/index.ts";
+import { OpcKernel } from "./kernel/index.ts";
+import { DarkFactoryStore } from "./server/dark-factory.ts";
+import { ProvidersStore } from "./server/providers.ts";
+import { TaskPlanningStore } from "./server/task-planning.ts";
+import {
+  applyLiveCliAuthOverrides,
+  readHubResources,
+  registerResourceDepartmentRoutes,
+  ResourcePlanStore,
+} from "./server/resource-department.ts";
 
 test("套餐的零余额、未知值、不同单位和费用在重开后可核对；重复请求与冲突受控", t => {
   const dir = mkdtempSync(join(tmpdir(), "opc-resource-"));
@@ -250,4 +260,108 @@ test("实时采集暂不可用时自动回退 quota_snapshots 未过期窗口，
   assert.equal(agy.windows[0].reportedRemaining, 87.99);
   assert.equal(agy.usage?.sessions7d, 1);
   assert.equal(agy.usage?.calls7d, 120);
+
+  // Live cursor-agent CLI probe clears false-positive IDE web-cookie auth_expired diagnostic
+  const verifiedHub = applyLiveCliAuthOverrides(hub, {
+    probeFn: (toolId) => (toolId === "cursor" ? { loggedIn: true, command: "cursor-agent status" } : null),
+  });
+  const verifiedCursor = verifiedHub.tools.find(item => item.tool === "cursor")!;
+  assert.equal(verifiedCursor.diagnostic, undefined);
+
+  // When live CLI probe reports NOT logged in, auth_expired stays active
+  const unauthedHub = applyLiveCliAuthOverrides(hub, {
+    probeFn: (toolId) => (toolId === "cursor" ? { loggedIn: false, command: "cursor-agent status" } : null),
+  });
+  assert.equal(unauthedHub.tools.find(item => item.tool === "cursor")?.diagnostic, "auth_expired");
+});
+
+test("ResourcesDepartment excludes cooled-down grok-cli (falls back to agy) and enforces verified-only auto-dispatch", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "opc-res-cooldown-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+
+  const kernel = new OpcKernel(db);
+  const providers = new ProvidersStore(db);
+  providers.update({ system: { maxConcurrentAgents: 2, agentLogDir: join(dir, "logs") } });
+  const darkFactory = new DarkFactoryStore(db, providers, {
+    worktreeBase: join(dir, "worktrees"),
+    defaultRepoRoot: dir,
+  });
+  t.after(async () => {
+    await darkFactory.dispose();
+  });
+
+  const planning = new TaskPlanningStore(db, providers);
+  const resources = new ResourcesDepartment({
+    kernel,
+    darkFactory,
+    readHubFn: () => ({ generatedAt: new Date().toISOString(), tools: [], fees: [], feesAvailable: false }),
+  });
+
+  const grok = darkFactory.createAgent({
+    name: "grok-cli",
+    cliCommand: `node -e "console.error('timed out'); process.exit(1);"`,
+    capabilities: ["coding", "fullstack", "bugfix", "test"],
+  });
+  const agy = darkFactory.createAgent({
+    name: "agy",
+    cliCommand: `node -e "console.log('agy ok')"`,
+    capabilities: ["coding"],
+  });
+
+  // Before failures: grok-cli wins due to stronger capability match
+  const before = resources.selectOptimalAgent({
+    project: "pagelens-interpret",
+    title: "修复 fullstack bug 并补充 test",
+  });
+  assert.equal(before.chosenAgent?.id, grok.id);
+
+  // Trigger 2 consecutive failures on grok-cli
+  const r1 = darkFactory.dispatch({ taskId: "GROK-FAIL-1", taskTitle: "F1", agentId: grok.id });
+  await darkFactory.waitForRun(r1.id, 5_000);
+  const r2 = darkFactory.dispatch({ taskId: "GROK-FAIL-2", taskTitle: "F2", agentId: grok.id });
+  await darkFactory.waitForRun(r2.id, 5_000);
+
+  // Now grok-cli is cooled down -> selectOptimalAgent MUST exclude grok-cli and auto-fallback to agy!
+  const after = resources.selectOptimalAgent({
+    project: "pagelens-interpret",
+    title: "修复 fullstack bug 并补充 test",
+  });
+  assert.equal(after.chosenAgent?.id, agy.id);
+  const grokScore = after.candidateScores.find((c) => c.agentId === grok.id);
+  assert.equal(grokScore?.eligible, false);
+  assert.equal(grokScore?.cooledDown, true);
+
+  // After manual cooldown reset, grok-cli becomes eligible again
+  darkFactory.resetAgentCooldown(grok.id);
+  const recovered = resources.selectOptimalAgent({
+    project: "pagelens-interpret",
+    title: "修复 fullstack bug 并补充 test",
+  });
+  assert.equal(recovered.chosenAgent?.id, grok.id);
+
+  // queryPlanningReadyTasks MUST return ONLY verified leaf tasks (not unreviewed/needs_scope/parent epics)
+  const unreviewedTask = planning.createTask({ project: "pagelens-interpret", title: "未审查任务" });
+  const verifiedTask = planning.createTask({
+    project: "pagelens-interpret",
+    title: "已验真任务",
+    metadata: { triage: { status: "verified" } },
+  });
+  const ready = resources.queryPlanningReadyTasks();
+  assert.deepEqual(ready.map((r) => r.id), [verifiedTask.id]);
+  assert.equal(ready.some((r) => r.id === unreviewedTask.id), false);
+
+  for (let i = 0; i < 100; i++) {
+    planning.createTask({ project: "pagelens-interpret", title: `未审查噪音 ${i}`, priority: 5 });
+  }
+  const laterVerified = planning.createTask({
+    project: "pagelens-interpret",
+    title: "排序靠后的已验真任务",
+    priority: 5,
+    metadata: { triage: { status: "verified" } },
+  });
+  const scanned = resources.queryPlanningReadyTasks();
+  assert.equal(scanned.some((r) => r.id === laterVerified.id), true);
 });

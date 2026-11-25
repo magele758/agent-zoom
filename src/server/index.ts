@@ -15,7 +15,21 @@ const store = openStore(dataPath, { demo: demoEnabled });
 // Workflow DAG remains off by default unless WORKFLOW_CONFIG is explicitly supplied (and not disabled)
 const workflow = process.env.OPC_DISABLE_WORKFLOW === "1" ? undefined : configureWorkflow(store.db, dataPath, port);
 const activityIndexEnabled = process.env.OPC_ACTIVITY_INDEX === "1";
-const { app, injectWebSocket, nudge, opportunities, homeRooms, activityIndex, delegations, darkFactory, taskPlanning, company } = createApp(store, { workflow, activityIndexEnabled });
+const {
+  app,
+  injectWebSocket,
+  nudge,
+  opportunities,
+  homeRooms,
+  activityIndex,
+  delegations,
+  darkFactory,
+  taskPlanning,
+  company,
+  taskTriage,
+  botArbitrator,
+  plannotatorBridge,
+} = createApp(store, { workflow, activityIndexEnabled });
 
 store.hooks = {
   onInbox: poke,
@@ -81,6 +95,71 @@ const harvestExpiringQuota = () => {
   }
 };
 setInterval(harvestExpiringQuota, 15 * 60 * 1000).unref();
+
+// Layer 0 + 1 + 2 · Task Triage & Rolling Engine (every 30 minutes when enabled)
+let triageCycleRunning = false;
+const runScheduledTriageCycle = () => {
+  if (triageCycleRunning) return;
+  try {
+    if (!taskTriage.getConfig().autoSweepEnabled) return;
+    triageCycleRunning = true;
+    void taskTriage
+      .runRollingCycle()
+      .catch((error) => console.error("任务审查漏斗轮动", error))
+      .finally(() => {
+        triageCycleRunning = false;
+      });
+  } catch (error) {
+    triageCycleRunning = false;
+    console.error("任务审查漏斗轮动", error);
+  }
+};
+setInterval(runScheduledTriageCycle, 30 * 60 * 1000).unref();
+
+// Bot Auto-Arbitrator (every 10 minutes when mode != 'off')
+let arbitratorRunning = false;
+const runScheduledBotArbitrator = () => {
+  if (arbitratorRunning) return;
+  try {
+    if (botArbitrator.getPolicy().arbitrationMode === "off") return;
+    arbitratorRunning = true;
+    void botArbitrator
+      .arbitratePending({ trigger: "scheduled" })
+      .catch((error) => console.error("Bot 自动拍板巡检", error))
+      .finally(() => {
+        arbitratorRunning = false;
+      });
+  } catch (error) {
+    arbitratorRunning = false;
+    console.error("Bot 自动拍板巡检", error);
+  }
+};
+setInterval(runScheduledBotArbitrator, 10 * 60 * 1000).unref();
+
+// Plannotator Inbox Sync & Stale Auto-Reconciler (every 2 minutes when enabled)
+let plannotatorSyncRunning = false;
+const runScheduledPlannotatorSync = () => {
+  if (plannotatorSyncRunning) return;
+  try {
+    const cfg = plannotatorBridge.getConfig();
+    if (!cfg.enabled) return;
+    plannotatorSyncRunning = true;
+    void (async () => {
+      await plannotatorBridge.syncReplies();
+      if (plannotatorBridge.getConfig().autoReconcileStale) {
+        await plannotatorBridge.reconcileStaleItems({ dryRun: false });
+      }
+    })()
+      .catch((error) => console.error("Plannotator 同步与过期收敛", error))
+      .finally(() => {
+        plannotatorSyncRunning = false;
+      });
+  } catch (error) {
+    plannotatorSyncRunning = false;
+    console.error("Plannotator 同步与过期收敛", error);
+  }
+};
+setInterval(runScheduledPlannotatorSync, 2 * 60 * 1000).unref();
 
 if (activityIndexEnabled) {
   const refresh = () => void activityIndex.sync().catch(() => console.error("仓库索引暂未刷新"));

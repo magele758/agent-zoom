@@ -35,6 +35,9 @@ const agent = (workspace: string | null, repository: string | null = null): Inde
   label: "fixture",
   sources: [],
   updatedAt: null,
+  title: null,
+  what: null,
+  taskWhat: null,
 });
 
 test("索引按最长仓库根目录归属会话，保留已确认来源并区分相似目录名", () => {

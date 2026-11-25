@@ -4,6 +4,22 @@ import type { ZoomAction, ZoomMessage } from "../zoom-types.ts";
 
 const decisions: Record<string, string> = { decision_approve: "已批准", decision_changes: "要求修改", decision_reject: "已拒绝" };
 const cardLabels = { plan: "确认计划", final: "最终验收", gate: "节点确认" };
+const staleClosePattern = /已过期|自动收敛|已被.*覆盖|superseded/i;
+
+function formatDecisionLabel(cardKind: "plan" | "final" | "gate", eventKind: string, actor?: string, note?: string): string {
+  const isBot = Boolean(actor && actor.startsWith("bot:"));
+  const isStale = staleClosePattern.test(note ?? "");
+  if (isBot && isStale) {
+    return `${cardLabels[cardKind]} · Bot 已代拍板 · 已过期自动收敛`;
+  }
+  if (isBot) {
+    return `${cardLabels[cardKind]} · Bot 已代拍板 · ${decisions[eventKind]}`;
+  }
+  if (isStale && eventKind === "decision_reject") {
+    return `${cardLabels[cardKind]} · 已过期自动收敛`;
+  }
+  return `${cardLabels[cardKind]} · ${decisions[eventKind]}`;
+}
 
 export function workflowMessages(run: WorkflowRun, execution?: { sameHost: boolean; sameBackend: boolean; blockedReason?: string }): ZoomMessage[] {
   const messages: ZoomMessage[] = [];
@@ -29,13 +45,14 @@ export function workflowMessages(run: WorkflowRun, execution?: { sameHost: boole
     if (event.kind === "card_opened" && card) {
       id = `workflow:card:${card.id}`;
       kind = "decision";
-      body = card.kind === "gate" && node ? node.instruction : `${cardLabels[card.kind]} · r${card.revision}`;
+      const base = card.kind === "gate" && node ? node.instruction : `${cardLabels[card.kind]} · r${card.revision}`;
+      body = card.status === "superseded" ? `${base} · 已覆盖` : base;
       if (card.status === "open" && card.revision === revision.number) {
         action = { kind: "decision", cardId: card.id, revision: card.revision };
       }
     } else if (decisions[event.kind] && card) {
       kind = card.kind === "final" && event.kind === "decision_approve" ? "completed" : "reply";
-      body = [cardLabels[card.kind] + " · " + decisions[event.kind], event.note].filter(Boolean).join(" — ");
+      body = [formatDecisionLabel(card.kind, event.kind, event.actor, event.note), event.note].filter(Boolean).join(" — ");
       replyTo = `workflow:card:${card.id}`;
     } else if (event.kind === "submitted") {
       kind = "task";
@@ -60,6 +77,7 @@ export function workflowMessages(run: WorkflowRun, execution?: { sameHost: boole
     messages.push({ id, kind, body, origin: "workflow", taskId: run.id, taskTitle: run.request.goal, source: run.request.source,
       folder: run.request.folder || basename(run.workspace) || "未归类", at: event.at, actor: event.actor,
       revision: event.revision, attemptId: event.attemptId, stage: run.request.stage,
+      ...(kind === "recovery" && { recoveryAction: event.kind === "unknown" ? "recover" as const : "retry" as const }),
       pending: Boolean(action), action: execution ? action : undefined, replyTo, context: run.request.context,
       ...(!execution && { readOnly: true }) });
   });

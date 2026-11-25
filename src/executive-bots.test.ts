@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { Hono } from "hono";
 import type { ExecutiveMailboxResponse, ExecutiveStatus } from "./executive-bots-types.ts";
+import type { ZoomMessage } from "./zoom-types.ts";
 import {
   EXECUTIVE_DEPARTMENTS,
   mergeSuperBotDescription,
@@ -47,7 +48,7 @@ function createMockAgentHome() {
     botIds: string[];
     hostBotId: string;
     replyMode: string;
-    messages: Array<{ id: string; text: string; mentions: string[]; createdAt: string; sender: { type: "user" | "bot"; id: string; name: string } }>;
+    messages: Array<{ id: string; text: string; mentions: string[]; replyTo?: unknown; createdAt: string; sender: { type: "user" | "bot"; id: string; name: string } }>;
   };
   type Task = { id: string; requesterBotId: string; targetBotId: string; input: string; status: string; result?: string; updatedAt: string };
   type CronJob = { id: string; name: string; botId: string; roomId: string; scheduleValue: string; enabled: boolean; nextRunAt: string | null };
@@ -68,6 +69,8 @@ function createMockAgentHome() {
   const groups = new Map<string, Group>();
   const rooms = new Map<string, Room>();
   const tasks: Task[] = [];
+  const deliveries = new Map<string, unknown>();
+  const detailReads = new Map<string, number>();
   const crons = new Map<string, CronJob>();
   const sharedContext = new Map<string, Record<string, string>>();
   let seq = 0;
@@ -191,7 +194,10 @@ function createMockAgentHome() {
     if (roomMsgMatch && method === "GET") {
       const room = rooms.get(decodeURIComponent(roomMsgMatch[1]));
       if (!room) return sendJson(res, 404, { error: "not found" });
-      return sendJson(res, 200, { messages: room.messages, hasMore: false, nextCursor: null });
+      const before = Number(url.searchParams.get("beforeSeq") ?? room.messages.length + 1);
+      const end = before - 1;
+      const start = Math.max(0, end - Number(url.searchParams.get("limit") ?? 50));
+      return sendJson(res, 200, { messages: room.messages.slice(start, end), hasMore: start > 0, nextCursor: start > 0 ? start + 1 : null });
     }
     if (roomMsgMatch && method === "POST") {
       const room = rooms.get(decodeURIComponent(roomMsgMatch[1]));
@@ -199,6 +205,7 @@ function createMockAgentHome() {
       const msg = {
         id: `msg-${++seq}`,
         text: String(body.text ?? ""),
+        replyTo: body.replyTo,
         mentions: Array.isArray(body.mentions) ? body.mentions.map(String) : [],
         createdAt: new Date().toISOString(),
         sender: { type: "user" as const, id: "user-1", name: "Founder" },
@@ -227,6 +234,12 @@ function createMockAgentHome() {
     }
     if (method === "GET" && path === "/api/bot-work/tasks") {
       return sendJson(res, 200, { tasks: [...tasks].reverse() });
+    }
+    if (method === "GET" && path.startsWith("/api/bot-work/tasks/")) {
+      const id = decodeURIComponent(path.slice("/api/bot-work/tasks/".length));
+      detailReads.set(id, (detailReads.get(id) ?? 0) + 1);
+      if (!deliveries.has(id)) return sendJson(res, 503, {error:"unavailable"});
+      return sendJson(res, 200, {task: {...tasks.find(task => task.id === id), delivery: deliveries.get(id)}});
     }
     if (method === "POST" && path === "/api/bot-work/tasks") {
       const task: Task = {
@@ -268,7 +281,7 @@ function createMockAgentHome() {
     return sendJson(res, 404, { error: `unhandled ${method} ${path}` });
   });
 
-  return { server, bots, groups, rooms, tasks, crons, sharedContext };
+  return { server, bots, groups, rooms, tasks, crons, sharedContext, deliveries, detailReads };
 }
 
 test("mergeSuperBotDescription preserves original prompt and updates OPC contract idempotently", () => {
@@ -294,13 +307,34 @@ test("ExecutiveBotService bootstraps 5 dept bots + Super Bot hierarchy idempoten
     CREATE TABLE opc_home_chat_links(scope_key TEXT NOT NULL, connection TEXT NOT NULL, remote_room TEXT NOT NULL,
       room_title TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(scope_key, connection));
     CREATE TABLE opc_delegate_preferences(user_id TEXT PRIMARY KEY, preference TEXT NOT NULL, since TEXT NOT NULL);
+    CREATE TABLE zoom_tasks(id TEXT,external_id TEXT,source TEXT,folder TEXT);
+    CREATE TABLE zoom_messages(id TEXT,task_id TEXT,event_key TEXT,kind TEXT);
+    CREATE TABLE opc_patrol_runs(id TEXT,created_at TEXT,alerts_json TEXT,notified_zoom INTEGER);
+    CREATE TABLE opc_planning_tasks(id TEXT,title TEXT,project TEXT,status TEXT,latest_run_id TEXT,updated_at TEXT);
+    CREATE TABLE opc_decision_packets(id TEXT,status TEXT,options_json TEXT,background_summary TEXT,domain TEXT,kind TEXT,dedupe_key TEXT);
+    CREATE TABLE stage_home_bindings(work_id TEXT,bot_id TEXT,connection TEXT,brief TEXT,receipt TEXT);
+    CREATE TABLE stage_work(task_id TEXT,brief TEXT);
+    CREATE TABLE opc_delegations(id TEXT,user_id TEXT,source_id TEXT,source TEXT,evidence TEXT,created_at TEXT,work_id TEXT);
+    INSERT INTO zoom_tasks VALUES('patrol-task','patrol-2026-11-24','OPC OS · 后台巡检卫士','公司/巡检告警');
+    INSERT INTO zoom_messages VALUES('patrol-alert','patrol-task','patrol-report-2026-11-24-ptr_test','question');
+    INSERT INTO opc_planning_tasks VALUES('plan','原始任务','project','failed',NULL,'2026-11-23T00:00:00.000Z');
   `);
 
   const app = new Hono();
   const fakeUser = { type: "user" as const, id: "user-1", name: "Founder" };
-  registerExecutiveBotRoutes(app, db, () => fakeUser, {
-    client: new StageHomeClient({ PPENG_BASE_URL: origin }),
+  const localPatrol: ZoomMessage = { id:"patrol-alert",taskId:"patrol-task",taskTitle:"巡检告警",kind:"question",origin:"external",
+    source:"OPC OS · 后台巡检卫士",folder:"公司/巡检告警",at:"2026-11-24T02:00:00.000Z",pending:true,body:"原始通知" };
+  db.prepare("INSERT INTO opc_patrol_runs VALUES('ptr_test',?,?,1)").run(localPatrol.at, JSON.stringify([
+    {taskId:"plan",title:"原始任务",project:"project",status:"failed",updatedAt:"2026-11-23T00:00:00.000Z"},
+  ]));
+  db.prepare("INSERT INTO opc_decision_packets VALUES('dec-linked','pending',?,'巡检背景','product','patrol_alert','product:patrol:2026-11-24')").run(JSON.stringify([
+    {id:"requeue",label:"重试",handlerKey:"product.patrol_requeue",payload:{taskIds:["plan"],patrolRunId:"ptr_test"}},
+  ]));
+  const client = new StageHomeClient({ PPENG_BASE_URL: origin });
+  const service = registerExecutiveBotRoutes(app, db, () => fakeUser, {
+    client,
     opcOrigin: "http://127.0.0.1:52328",
+    traceMessages: () => [localPatrol],
     pulseProvider: async () => ({
       companyPulse: {
         pendingApprovals: 1,
@@ -410,21 +444,56 @@ test("ExecutiveBotService bootstraps 5 dept bots + Super Bot hierarchy idempoten
     // 7. Mailbox aggregates inbound Super Bot briefs + department reports, tracks unread/read, and sends founder replies
     room.messages.push({
       id: "msg-bot-brief-1",
-      text: "## 今日 OPC 总裁简报\n1. 五部状态绿灯\n2. 需创始人拍板：是否批准 PageLens 定价调整？",
+      text: "## 今日 OPC 总裁简报\n1. 五部状态绿灯\n2. 需创始人拍板：是否批准 PageLens 定价调整？" + "🌱".repeat(120),
       mentions: [],
       createdAt: new Date(Date.now() + 1000).toISOString(),
       sender: { type: "bot", id: "super-bot", name: "Super Bot" },
     });
+    room.messages.push({ ...room.messages.at(-1)!, id: "no-approval", text: "需创始人拍板的审批项：无。" });
+    const prior = mock.tasks[0];
+    mock.tasks.push(
+      {...prior, id:"with-delivery", status:"completed", result:"请批准采购方案。"},
+      {...prior, id:"interrupted", status:"cancelled", result:"请批准采购方案。"},
+      {...prior, id:"only-a-plan", status:"completed", result:"我先核对是否批准追加预算。"},
+      {...prior, id:"linked-terminal", status:"completed", result:"任务巡检完成。"},
+      {...prior, id:"linked-working", status:"running"},
+    );
+    for (const id of ["linked-terminal", "linked-working"]) {
+      db.prepare("INSERT INTO stage_home_bindings VALUES(?,?,?,?,?)").run(`work-${id}`, prior.targetBotId, client.identity, prior.input, JSON.stringify({remoteId:id}));
+      db.prepare("INSERT INTO stage_work VALUES(?,?)").run(`work-${id}`, JSON.stringify({title:"核查工单",goal:"排查失败原因",deliverable:"附证据"}));
+      db.prepare("INSERT INTO opc_delegations VALUES(?,?,?,?,?,?,?)").run(`deleg-${id}`,fakeUser.id,localPatrol.id,
+        JSON.stringify({id:localPatrol.id,kind:"message",title:localPatrol.taskTitle,taskId:localPatrol.taskId}),"[]",localPatrol.at,`work-${id}`);
+    }
+    mock.deliveries.set("with-delivery", {taskId:"with-delivery", report:"执行结论：核对完毕。请批准采购方案。",
+      artifacts:[{id:"file-1",fileName:"report.pdf"}]});
+    mock.deliveries.set("linked-terminal", {taskId:"linked-terminal",report:"任务巡检完成。",artifacts:[{id:"file-2",fileName:"inspection.pdf"}]});
     const mailRes = await app.request("/api/opc/executive/mailbox");
     assert.equal(mailRes.status, 200);
     const mail = (await mailRes.json()) as ExecutiveMailboxResponse;
     assert.equal(mail.agentHomeReachable, true);
+    assert.equal(mail.sourceTraces?.[localPatrol.id]?.origin?.messageId, localPatrol.id);
     const inbound = mail.items.find(i => i.id === "room:msg-bot-brief-1");
     assert.ok(inbound);
     assert.equal(inbound.direction, "inbound");
     assert.equal(inbound.read, false);
-    assert.equal(inbound.needsDecision, true);
+    assert.equal(inbound.needsDecision, true, "explicit Bot requests still surface for clarification");
+    assert.equal(inbound.trace?.decision, undefined, "the Bot's words cannot grant an executable approval");
     assert.equal(inbound.subject, "今日 OPC 总裁简报");
+    const receipt = mail.items.find(i => i.id === "task:with-delivery");
+    assert.match(receipt?.trace?.result ?? "", /核对完毕/);
+    assert.deepEqual(receipt?.trace?.evidence,["report.pdf · file-1"]);
+    assert.equal(receipt?.needsDecision,true);
+    assert.equal(receipt?.trace?.decision,undefined);
+    assert.equal(mail.items.find(i => i.id === "room:no-approval")?.needsDecision,false);
+    assert.equal(mail.items.find(i => i.id === "task:interrupted")?.needsDecision,false);
+    assert.equal(mail.items.find(i => i.id === "task:only-a-plan")?.needsDecision,false);
+    assert.equal(mail.items.find(i => i.id === "task:interrupted")?.trace?.deliveryUnavailable,true);
+    const linked = mail.items.find(i => i.id === "task:linked-terminal");
+    assert.equal(linked?.trace?.decisionId, "dec-linked");
+    assert.equal(linked?.trace?.decision?.actionable, true);
+    assert.equal(linked?.historical, undefined);
+    assert.deepEqual(linked?.trace?.evidence, ["inspection.pdf · file-2"]);
+    assert.deepEqual(db.prepare("SELECT mail_id FROM opc_executive_mail_history").all().map(row => row.mail_id), ["task:linked-terminal"]);
 
     // Mark read -> persisted
     const readRes = await app.request(`/api/opc/executive/mailbox/${encodeURIComponent(inbound.id)}/read`, {
@@ -433,10 +502,44 @@ test("ExecutiveBotService bootstraps 5 dept bots + Super Bot hierarchy idempoten
       body: JSON.stringify({ read: true }),
     });
     assert.equal(readRes.status, 200);
+    assert.equal(service.cachedMailbox(fakeUser)?.items.find(i => i.id === inbound.id)?.read, true);
     const mailAfterRead = (await (await app.request("/api/opc/executive/mailbox")).json()) as ExecutiveMailboxResponse;
     assert.equal(mailAfterRead.items.find(i => i.id === inbound.id)?.read, true);
+    assert.equal(mock.detailReads.get("with-delivery"),1, "the mailbox reuses a verified terminal delivery for this version");
+
+    mock.deliveries.delete("linked-terminal");
+    const failedDetailRoutes = registerExecutiveBotRoutes(new Hono(), db, () => fakeUser, {
+      client,
+      traceMessages: () => [localPatrol],
+    });
+    const failedDetail = await failedDetailRoutes.mailbox(fakeUser);
+    const retained = failedDetail.items.find(i => i.id === "task:linked-terminal");
+    assert.notEqual(retained?.trace?.deliveryUnavailable, true);
+    assert.deepEqual(retained?.trace?.evidence, ["inspection.pdf · file-2"]);
+    assert.deepEqual(
+      (db.prepare("SELECT mail_id FROM opc_executive_mail_history").all() as Array<{ mail_id: string }>).map(r => r.mail_id),
+      ["task:linked-terminal"],
+    );
+    mock.deliveries.set("linked-terminal", {taskId:"linked-terminal",report:"任务巡检完成。",artifacts:[{id:"file-2",fileName:"inspection.pdf"}]});
+
+    // The live API's recent window no longer includes the old linked receipts.
+    // The completed one persists, while an older approval and a still-running task do not reappear.
+    service.setMailRead(fakeUser, "task:linked-terminal", {read:true});
+    for (const id of ["linked-terminal", "linked-working"]) mock.tasks.splice(mock.tasks.findIndex(t => t.id === id),1);
+    db.exec("UPDATE opc_decision_packets SET status='approved'; UPDATE opc_planning_tasks SET status='todo'");
+    const rolled = await service.mailbox(fakeUser);
+    const historical = rolled.items.find(i => i.id === "task:linked-terminal");
+    assert.equal(historical?.historical, true);
+    assert.equal(historical?.read, true);
+    assert.equal(historical?.needsDecision, false);
+    assert.equal(historical?.trace?.decision?.status, "approved");
+    assert.equal(historical?.trace?.decision?.actionable, false);
+    assert.equal(historical?.trace?.affectedTasks[0].status, "todo");
+    assert.deepEqual(historical?.trace?.evidence, ["inspection.pdf · file-2"]);
+    assert.equal(rolled.items.some(i => i.id === "task:linked-working"), false);
 
     // Founder approves directly from mailbox -> posts @super-bot reply
+    for (let i = 0; i < 201; i++) room.messages.push({ ...room.messages.at(-1)!, id: "later-" + i, text: "其他来信" });
     const replyRes = await app.request("/api/opc/executive/mailbox/reply", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -449,6 +552,8 @@ test("ExecutiveBotService bootstraps 5 dept bots + Super Bot hierarchy idempoten
     assert.equal(replyRes.status, 200);
     assert.match(room.messages.at(-1)!.text, /【创始人批示：批准执行】/);
     assert.deepEqual(room.messages.at(-1)!.mentions, ["super-bot"]);
+    const originalExcerpt = [...inbound.body.replace(/\s+/g, " ").trim()].slice(0, 120).join("");
+    assert.deepEqual(room.messages.at(-1)!.replyTo, { messageId: inbound.messageId, botId: inbound.senderId, excerpt: originalExcerpt });
 
     // 8. Cross-department Coding-Agent call request routes from requesting department bot -> RD bot
     const commercialDept = after.departments.find(d => d.id === "commercial")!;
@@ -482,6 +587,26 @@ test("ExecutiveBotService bootstraps 5 dept bots + Super Bot hierarchy idempoten
     const synced = statusAfterReq.codingRequests.find(r => r.id === createdReq.id)!;
     assert.equal(synced.status, "completed");
     assert.match(synced.report, /Coding-Agent 资源组/);
+
+    // The sidebar refresh shares an in-flight mailbox read; the local patrol
+    // source remains visible even when the remote Bot service is unavailable.
+    const activeRead = service.mailbox(fakeUser);
+    assert.equal(service.mailbox(fakeUser), activeRead);
+    await activeRead;
+    mock.bots.delete("super-bot");
+    const disconnected = await service.mailbox(fakeUser);
+    assert.equal(disconnected.agentHomeReachable, false);
+    assert.equal(disconnected.sourceTraces?.[localPatrol.id]?.origin?.messageId, localPatrol.id);
+    assert.equal(disconnected.items.length, 1);
+    assert.equal(service.cachedMailbox(fakeUser)?.items[0].historical, true);
+    const restarted = registerExecutiveBotRoutes(new Hono(), db, () => fakeUser, {client, traceMessages: () => [localPatrol]});
+    const afterRestart = await restarted.mailbox(fakeUser);
+    assert.equal(afterRestart.items.length, 1);
+    assert.equal(afterRestart.items[0].id,"task:linked-terminal");
+    assert.deepEqual(afterRestart.items[0].trace?.evidence,["inspection.pdf · file-2"]);
+    assert.equal((await restarted.mailbox({...fakeUser,id:"other-user"})).items.length,0);
+    const changedConnection = registerExecutiveBotRoutes(new Hono(),db,()=>fakeUser,{client:new StageHomeClient({PPENG_BASE_URL:origin,PPENG_TOKEN:"different-test-identity"})});
+    assert.equal((await changedConnection.mailbox(fakeUser)).items.length,0);
   } finally {
     db.close();
     await new Promise<void>(resolve => mock.server.close(() => resolve()));

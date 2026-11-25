@@ -12,7 +12,7 @@ import type {
   OpcKernel,
 } from "../../kernel/index.ts";
 import type { ResourceDepartmentIndex } from "../../resource-department-types.ts";
-import { readHubResources } from "../../server/resource-department.ts";
+import { readHubResourcesWithLiveAuthAsync } from "../../server/resource-department.ts";
 
 export interface CompanionServicesPort {
   checkServices(): Promise<{
@@ -106,7 +106,7 @@ export interface OpsDepartmentOptions {
   autoHealEnabled?: boolean;
   enableTimer?: boolean;
   intervalMs?: number;
-  readHubFn?: (nowMs: number) => ResourceDepartmentIndex["hub"];
+  readHubFn?: (nowMs: number) => Promise<ResourceDepartmentIndex["hub"]> | ResourceDepartmentIndex["hub"];
   fetchImpl?: typeof fetch;
   nowFn?: () => number;
 }
@@ -139,7 +139,7 @@ export class OpsDepartment implements DepartmentModule {
   private autoHealEnabled: boolean;
   private readonly enableTimer: boolean;
   private readonly intervalMs: number;
-  private readonly readHubFn: (nowMs: number) => ResourceDepartmentIndex["hub"];
+  private readonly readHubFn: (nowMs: number) => Promise<ResourceDepartmentIndex["hub"]> | ResourceDepartmentIndex["hub"];
   private readonly fetchImpl: typeof fetch;
   private readonly nowFn: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -170,7 +170,7 @@ export class OpsDepartment implements DepartmentModule {
     this.enableTimer = opts.enableTimer ?? false;
     this.intervalMs = Math.max(5_000, opts.intervalMs ?? 60_000);
     this.nowFn = opts.nowFn ?? (() => Date.now());
-    this.readHubFn = opts.readHubFn ?? ((nowMs) => readHubResources(this.hubQuotaPath, nowMs));
+    this.readHubFn = opts.readHubFn ?? ((nowMs) => readHubResourcesWithLiveAuthAsync(this.hubQuotaPath, nowMs));
     this.fetchImpl = opts.fetchImpl ?? fetch;
 
     this.db.exec(`
@@ -686,9 +686,29 @@ export class OpsDepartment implements DepartmentModule {
       }
     }
 
-    // 4. AI CLI Auth Expiry Check
-    const hub = this.readHubFn(nowMs);
+    // 4. AI CLI Auth Expiry Check (with automatic stale-alert cleanup once live CLI auth recovers)
+    const hub = await this.readHubFn(nowMs);
     const expiredTools = hub.tools.filter((t) => t.diagnostic === "auth_expired");
+    const expiredToolIds = new Set(expiredTools.map((t) => t.tool));
+    for (const tool of hub.tools) {
+      if (expiredToolIds.has(tool.tool)) continue;
+      const staleKey = `ops:auth_expired:${tool.tool}`;
+      const staleRow = this.db
+        .prepare("SELECT id FROM opc_decision_packets WHERE dedupe_key = ? AND status = 'pending' LIMIT 1")
+        .get(staleKey) as { id?: string } | undefined;
+      if (staleRow?.id) {
+        try {
+          await this.kernel.decisions.resolve(String(staleRow.id), {
+            optionId: "ack_relogin",
+            note: `实时 CLI 登录核验已恢复正常（${tool.tool}），自动消除旧告警`,
+            actor: "ops-watchdog",
+          });
+        } catch {
+          // ignore if concurrently resolved
+        }
+      }
+    }
+
     this.recordHealthCheck({
       targetId: "cli:auth",
       targetKind: "cli_auth",
@@ -702,14 +722,18 @@ export class OpsDepartment implements DepartmentModule {
     });
 
     for (const tool of expiredTools) {
+      const loginHint =
+        tool.tool === "cursor"
+          ? "请在终端运行 `cursor-agent status` 核验或执行 `cursor-agent login` 完成登录。"
+          : `请在本机终端重新登录 ${tool.name} CLI 后确认恢复。`;
       const dec = await this.kernel.decisions.propose({
         dedupeKey: `ops:auth_expired:${tool.tool}`,
         domain: "ops",
         kind: "cli_auth_expired",
         riskLevel: "medium",
         title: `AI CLI 登录态已失效：${tool.name} (${tool.tool})`,
-        backgroundSummary: `资源探针检测到「${tool.name}」返回 401/403 未授权状态，配额路由器已自动将其临时隔离，避免暗工厂任务失败。`,
-        whyRecommended: "请在本机终端完成该 CLI 重新登录，确认后恢复调度权重。",
+        backgroundSummary: `资源探针与本机 CLI 核验均检测到「${tool.name}」未处于已登录状态，配额路由器已自动将其临时隔离，避免暗工厂任务失败。\n\n${loginHint}`,
+        whyRecommended: "完成本机 CLI 登录验证后可立即恢复调度权重；若暂不使用该工具，可选择暂缓处理。",
         diffOrEvidence: `tool=${tool.tool} · plan=${tool.plan ?? "unknown"} · diagnostic=auth_expired`,
         rollbackPlan: "未重新登录前，调度器会自动路由至其余健康 CLI。",
         tags: ["ops", "cli_auth", `tool:${tool.tool}`],

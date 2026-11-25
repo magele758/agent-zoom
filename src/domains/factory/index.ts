@@ -511,11 +511,11 @@ export class FactoryDepartment implements DepartmentModule {
     ].join("\n");
 
     const backgroundSummary = [
-      formatCanonicalLine(resolution, release.project),
       run
-        ? `关联任务 [${run.taskId}]：${run.taskTitle}（Run \`${run.id}\`，Agent：${run.agentName}，耗费 $${run.costUsd.toFixed(4)} / ${run.tokenUsed} tokens）`
-        : `关联任务：${release.taskId ?? "手动创建发布单"}`,
-      pipelineSummary,
+        ? `**本次要合入什么**：${run.taskTitle}（任务 \`${run.taskId}\` · 执行器 \`${run.agentName}\` · 变更 ${run.changedFiles.length} 个文件 · 成本 $${run.costUsd.toFixed(4)}）`
+        : `**本次要合入什么**：分支 \`${release.sourceBranch}\` -> \`${gitEvidence.resolvedTargetBranch}\``,
+      `**归属目标**：${formatCanonicalLine(resolution, release.project)}`,
+      `**合并与门禁流水线**：\n${pipelineSummary}`,
     ].join("\n\n");
 
     const diffOrEvidence = [verificationBlock, changedFilesBlock, gitEvidence.summary]

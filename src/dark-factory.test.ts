@@ -19,6 +19,7 @@ import {
 } from "./server/dark-factory.ts";
 import { ApiError } from "./server/logic.ts";
 import { ProvidersStore } from "./server/providers.ts";
+import { TaskPlanningStore } from "./server/task-planning.ts";
 
 function createTestEnv(prefix = "opc-df-") {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -206,12 +207,16 @@ test("2. Concurrency queue enforces maxConcurrentAgents=1 with FIFO serial execu
       project: "alpha",
       agentId: agent.id,
     });
-    const run2 = env.store.dispatch({
+    const secondTask = {
       taskId: "Q-2",
       taskTitle: "Queued Task 2",
       project: "alpha",
       agentId: agent.id,
-    });
+    };
+    const approvalKey = "07459fe1-9347-4101-968d-a2bcf7cb7f57";
+    const run2 = env.store.dispatch(secondTask, approvalKey);
+    assert.equal(env.store.dispatch(secondTask, approvalKey).id, run2.id);
+    assert.throws(() => env.store.dispatch({ ...secondTask, taskId: "other-task" }, approvalKey), { code: "dispatch_conflict" });
 
     assert.equal(run1.status, "running");
     assert.equal(run2.status, "queued");
@@ -640,6 +645,168 @@ test("8. Hono HTTP routes end-to-end including SSE log stream and bootstrap audi
     // Delete agent via HTTP
     const delRes = await app.request(`/api/opc/factory/agents/${agent.id}`, { method: "DELETE" });
     assert.equal(delRes.status, 200);
+  } finally {
+    await env.cleanup();
+  }
+});
+
+test("9. Safety guards: in-flight taskId deduplication and parent Epic-with-subtasks direct dispatch block", async () => {
+  const env = createTestEnv("opc-df-dedupe-");
+  try {
+    const planning = new TaskPlanningStore(env.db, env.providers);
+    const slowScript = `setTimeout(() => console.log('finished'), 5000);`;
+    const agentA = env.store.createAgent({
+      name: "worker-a",
+      cliCommand: `node -e ${JSON.stringify(slowScript)}`,
+    });
+    const agentB = env.store.createAgent({
+      name: "worker-b",
+      cliCommand: `node -e ${JSON.stringify(slowScript)}`,
+    });
+
+    // 1. In-flight deduplication: dispatching same taskId repeatedly on same agent reuses active run
+    const run1 = env.store.dispatch({
+      taskId: "DEDUP-1",
+      taskTitle: "Single in-flight task",
+      agentId: agentA.id,
+    });
+    const runDup = env.store.dispatch({
+      taskId: "DEDUP-1",
+      taskTitle: "Single in-flight task",
+      agentId: agentA.id,
+    });
+    assert.equal(runDup.id, run1.id);
+    const activeForTask = env.store
+      .listRuns({ limit: 50 })
+      .filter((r) => r.taskId === "DEDUP-1" && (r.status === "queued" || r.status === "running"));
+    assert.equal(activeForTask.length, 1);
+
+    // 2. Conflicting agent on same active taskId throws 409 task_already_active
+    assert.throws(
+      () =>
+        env.store.dispatch({
+          taskId: "DEDUP-1",
+          taskTitle: "Single in-flight task",
+          agentId: agentB.id,
+        }),
+      (err: unknown) => err instanceof ApiError && err.status === 409 && err.code === "task_already_active",
+    );
+
+    // 3. Explicit forceNew bypasses in-flight deduplication
+    const forced = env.store.dispatch({
+      taskId: "DEDUP-1",
+      taskTitle: "Forced new run",
+      agentId: agentB.id,
+      forceNew: true,
+    });
+    assert.notEqual(forced.id, run1.id);
+
+    // 4. Parent Epic with subtasks MUST be blocked in dispatch()
+    const { epic, subtasks } = planning.createEpicWithSubtasks({
+      project: "opc-os",
+      title: "Parent Epic",
+      subtasks: [{ title: "Leaf Subtask 1" }, { title: "Leaf Subtask 2" }],
+    });
+
+    assert.throws(
+      () =>
+        env.store.dispatch({
+          taskId: epic.id,
+          taskTitle: epic.title,
+          agentId: agentA.id,
+        }),
+      (err: unknown) => err instanceof ApiError && err.status === 400 && err.code === "epic_has_subtasks",
+    );
+
+    // Leaf subtask dispatches cleanly
+    const fastAgent = env.store.createAgent({
+      name: "fast-leaf",
+      cliCommand: `node -e "console.log('leaf ok')"`,
+    });
+    const leafRun = env.store.dispatch({
+      taskId: subtasks[0].id,
+      taskTitle: subtasks[0].title,
+      agentId: fastAgent.id,
+    });
+    const doneLeaf = await env.store.waitForRun(leafRun.id, 5_000);
+    assert.equal(doneLeaf.status, "completed");
+  } finally {
+    await env.cleanup();
+  }
+});
+
+test("10. Per-agent consecutive failure circuit breaker (cooldown, SQLite persistence, emergency bypass, and manual reset)", async () => {
+  const env = createTestEnv("opc-df-cooldown-");
+  try {
+    const flakyAgent = env.store.createAgent({
+      name: "grok-flaky",
+      cliCommand: `node -e "console.error('timeout simulated'); process.exit(1);"`,
+      maxDurationSecs: 5,
+    });
+
+    // Failure #1 -> not cooled down yet
+    const fail1 = env.store.dispatch({
+      taskId: "FAIL-1",
+      taskTitle: "Failure 1",
+      agentId: flakyAgent.id,
+    });
+    const res1 = await env.store.waitForRun(fail1.id, 5_000);
+    assert.equal(res1.status, "failed");
+    assert.equal(env.store.isAgentCooledDown(flakyAgent.id), false);
+    assert.equal(env.store.getAgentCooldown(flakyAgent.id).consecutiveFailures, 1);
+
+    // Failure #2 -> trips circuit breaker cooldown
+    const fail2 = env.store.dispatch({
+      taskId: "FAIL-2",
+      taskTitle: "Failure 2",
+      agentId: flakyAgent.id,
+    });
+    const res2 = await env.store.waitForRun(fail2.id, 5_000);
+    assert.equal(res2.status, "failed");
+    assert.equal(env.store.isAgentCooledDown(flakyAgent.id), true);
+
+    const overview = env.store.getOverview();
+    assert.equal(overview.agentCooldowns[flakyAgent.id]?.cooledDown, true);
+    assert.equal(overview.agentCooldowns[flakyAgent.id]?.consecutiveFailures, 2);
+
+    // Fresh store instance on same SQLite DB immediately honors cooldown
+    const restartedStore = new DarkFactoryStore(env.db, env.providers, {
+      worktreeBase: env.worktreeBase,
+      defaultRepoRoot: env.root,
+    });
+    assert.equal(restartedStore.isAgentCooledDown(flakyAgent.id), true);
+
+    // Dispatch #3 blocked with 409 agent_cooled_down
+    assert.throws(
+      () =>
+        env.store.dispatch({
+          taskId: "FAIL-3",
+          taskTitle: "Blocked by cooldown",
+          agentId: flakyAgent.id,
+        }),
+      (err: unknown) => err instanceof ApiError && err.status === 409 && err.code === "agent_cooled_down",
+    );
+
+    // Emergency dispatch bypasses cooldown
+    const emergencyRun = env.store.dispatch({
+      taskId: "EMERG-1",
+      taskTitle: "Emergency bypass",
+      agentId: flakyAgent.id,
+      isEmergency: true,
+    });
+    await env.store.waitForRun(emergencyRun.id, 5_000);
+
+    // Manual reset via HTTP clears cooldown and recovers agent status to idle
+    const app = new Hono();
+    registerDarkFactoryRoutes(app, env.db, env.providers, () => ({ id: "u1", name: "Founder" }), {
+      store: env.store,
+    });
+    const resetRes = await app.request(`/api/opc/factory/agents/${flakyAgent.id}/reset-cooldown`, {
+      method: "POST",
+    });
+    assert.equal(resetRes.status, 200);
+    assert.equal(env.store.isAgentCooledDown(flakyAgent.id), false);
+    assert.equal(env.store.getAgent(flakyAgent.id).status, "idle");
   } finally {
     await env.cleanup();
   }

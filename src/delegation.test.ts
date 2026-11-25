@@ -5,6 +5,7 @@ import { channelMessages } from "./server/zoom-channel.ts";
 import { DelegationService } from "./server/delegation.ts";
 import { StageWorkStore } from "./server/stage-work.ts";
 import { ZoomStore } from "./server/zoom.ts";
+import { messageViews } from "../web/src/zoom-view.ts";
 import { openStore } from "./server/logic.ts";
 import type { ZoomMessage } from "./zoom-types.ts";
 import type { StageHomeService } from "./server/stage-home.ts";
@@ -201,6 +202,49 @@ test("superseded workflow versions preserve the original recommendation and neve
   assert.equal(s.decorate(f.raw()).find((m) => m.id === "card:two")!.pending, true);
 });
 
+test("a delivered recovery assessment stays accessible without creating a founder decision or duplicating work on the next probe", async t => {
+  const f = setup(t), service = f.service();
+  const info: ZoomMessage = {
+    id: "workflow:run:8", origin: "workflow", kind: "recovery", taskId: "run",
+    taskTitle: "接入项目", folder: "产品/项目", source: "Antigravity", body: "未找到启动回执，等待对账",
+    revision: 1, attemptId: "attempt-a", recoveryAction: "recover",
+    action: { kind: "recover", attemptId: "attempt-a", revision: 1 }, pending: true, at: new Date().toISOString(),
+  };
+  f.extra.push(info);
+  const d = await service.submit(f.user, { messageId: info.id, method });
+  assert.equal(service.decorate(f.raw()).find(m => m.id === info.id)?.pending, false);
+  assert.match(f.work.get(d.workId).deliverable, /不得代为恢复/);
+  finish(f.work, d.workId, "回执仍失联，建议核对宿主环境。");
+  await service.tick();
+  assert.equal(service.list(f.user).items[0].status, "completed");
+  assert.equal(service.list(f.user).items[0].requiresApproval, false);
+
+  // Existing databases called every recovery assessment a recommendation awaiting approval.
+  f.store.db.prepare("UPDATE opc_delegations SET status='approval', source=json_set(source,'$.mode','recommend') WHERE id=?").run(d.id);
+  let projected = service.decorate(f.raw());
+  assert.equal(projected.find(m => m.id === info.id)?.pending, false);
+  assert.equal(projected.find(m => m.id === info.id)?.delegation?.status, "completed");
+  assert.deepEqual(projected.find(m => m.id === info.id)?.action, info.action);
+  assert.deepEqual(projected.find(m => m.id === info.id)?.delegation?.evidence, ["evidence/original"]);
+  await service.tick();
+  f.extra[0] = { ...info, action: undefined, pending: false };
+  const again = { ...info, id: "workflow:run:9" };
+  f.extra.push(again);
+  assert.equal((await service.submit(f.user, { messageId: again.id, method })).workId, d.workId);
+  assert.equal(service.list(f.user).items.length, 1);
+
+  const ask: ZoomMessage = { ...info, id: "workflow:card:gate", kind: "decision", recoveryAction: undefined,
+    action: { kind: "decision", revision: 1, cardId: "gate" }, body: "是否批准上线？" };
+  f.extra.push(ask);
+  projected = service.decorate(f.raw());
+  const views = messageViews(projected);
+  assert.deepEqual(views.pending.map(m => m.id), [ask.id]);
+  assert.ok(views.all.some(m => m.id === again.id && m.delegation?.workId === d.workId));
+  f.extra.push({ ...again, id: "workflow:run:10", attemptId: "attempt-b", action: { kind: "recover", attemptId: "attempt-b", revision: 1 } });
+  f.extra.push({ ...again, id: "workflow:run:11", recoveryAction: "retry", action: { kind: "retry", attemptId: "attempt-a", revision: 1 } });
+  assert.deepEqual(service.decorate(f.raw()).filter(m => m.pending).map(m => m.id), [ask.id, "workflow:run:10", "workflow:run:11"]);
+});
+
 test("page research closes with evidence; a protected operation or unknown Home receipt returns to personal inbox, only once", async (t) => {
   let sends = 0,
     reads = 0,
@@ -303,4 +347,38 @@ test("delegation exposes workMessageId and enforces agent-home instruction budge
     s.submit(f.user, { operation: { ...op, key: "channel-task:r1:t2" }, method: tooLong }),
     /1500/,
   );
+});
+
+test("only the owner's synthetic terminal Agent Home failure notice can be handled; history and real decisions survive", async t => {
+  const receipt: StageHomeReceipt = { status: "failed", botId: "super-bot", botName: "总控",
+    remoteId: "failed-task", detail: "Agent Home 执行失败。 上游返回 401", evidence: [], checkedAt: new Date().toISOString() };
+  const f = setup(t, { cached: () => receipt, send: async () => receipt, reconcile: async () => receipt });
+  const service = f.service();
+  const bot = { via: "agent-home", target: "super-bot", instructions: "" };
+  const op = { key: "op:failed", title: "核对异常", href: "#overview", detail: "测试" };
+  const delegated = await service.submit(f.user, { operation: op, method: bot });
+  const message = () => f.service().decorate(f.raw()).find(m => m.id === "delegation:" + delegated.id)!;
+  assert.deepEqual(message().failureNotice, { handledAt: null });
+  assert.throws(() => service.handleFailureNotice({ ...f.user, id: "another-user" }, delegated.id));
+  const handled = service.handleFailureNotice(f.user, delegated.id);
+  assert.deepEqual(service.handleFailureNotice(f.user, delegated.id), handled);
+  await f.service().tick();
+  assert.deepEqual(message().failureNotice, handled);
+  assert.equal(message().pending, false);
+  assert.equal(message().body, receipt.detail);
+  assert.equal(service.list(f.user).items.find(item => item.id === delegated.id)?.status, "reconcile");
+
+  const pending = f.question("是否批准部署？");
+  const guard = await service.submit(f.user, { messageId: pending.id, method: bot });
+  const original = service.decorate(f.raw()).find(m => m.id === pending.id);
+  assert.equal(original?.pending, true);
+  assert.equal(original?.failureNotice, undefined);
+  assert.throws(() => service.handleFailureNotice(f.user, guard.id), { code: "delegation_conflict" });
+
+  receipt.status = "waiting_approval";
+  const waiting = await service.submit(f.user, { operation: { ...op, key: "op:approval" }, method: bot });
+  const approval = service.decorate(f.raw()).find(m => m.id === "delegation:" + waiting.id);
+  assert.ok(approval?.pending);
+  assert.equal(approval.failureNotice, undefined);
+  assert.throws(() => service.handleFailureNotice(f.user, waiting.id));
 });
