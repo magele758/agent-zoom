@@ -5,6 +5,7 @@ data/
 *.log
 .DS_Store
 docs/product/onboarding-video/
+docs/product/tutorial-video/
 .hyperframes/
 .thumbnails/
 .waveform-cache/

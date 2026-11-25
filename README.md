@@ -2,7 +2,7 @@
 
 OPC OS 是一人公司（OPC）的 7 层操作系统与经营中控。首页「全局看板」汇集实时工作现场、多条公司业务线、四个公司部门、跨 Agent 待决事项与「产品 × 十三阶段」矩阵；「组织数字孪生」将决策脑枢、多 Agent 产研工坊、商业四部、十三阶价值流与六大伴生微服务映射为可交互全息沙盘（支持昆仑夜航 / 宣纸堪舆双风格、双闭环价值流与 35 入口全功能星图）。供给侧支持从每日复盘、GitHub Issue 或客服工单自动选题并经 Zoom 审批交 Herdr 隔离实现与独立评审；商业侧由「商业与治理部」打通 1 号变现试点、MoR 收银与 Ed25519 离线 License、GTM 门面与 UTM 获客、Ops 工单分诊及 DuckDB 漏斗毛利复盘。
 
-[首次启动与一键全栈](docs/product/start.md) · [三层数字员工与 Coding-Agent 治理架构](docs/product/executive-bot-org.md) · [7 层架构蓝图](docs/product/opc-7-layer-blueprint.md) · [产品功能分册](docs/OPC_OS_PRODUCT_INTENT.md) · [可点击的业务与商业流程图](docs/product/flows.html#lines) · [界面设计稿（全能力原型）](docs/product/opc-workbench.html)
+[从零上手教程（3 分 29 秒）](https://github.com/magele758/agent-zoom/releases/download/opc-os-tutorial/opc-os-tutorial.mp4) · [首次启动与一键全栈](docs/product/start.md) · [三层数字员工与 Coding-Agent 治理架构](docs/product/executive-bot-org.md) · [7 层架构蓝图](docs/product/opc-7-layer-blueprint.md) · [产品功能分册](docs/OPC_OS_PRODUCT_INTENT.md) · [可点击的业务与商业流程图](docs/product/flows.html#lines) · [界面设计稿（全能力原型）](docs/product/opc-workbench.html)
 
 立项先查自己的开源库。使用方登记已验证的接口和固定版本；功能不足时，把影响和验收条件送到 Zoom，批准后由原仓维护项目承接。[仓库协作与实际示例](docs/product/reuse.md)
 
