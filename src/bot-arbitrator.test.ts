@@ -952,3 +952,368 @@ test("BotArbitratorService: release prompt caps cleanly <= 3400 chars even with 
 
   db.close();
 });
+
+const SCHEDULED_HOLD_REASON = "同一裁决已升级且没有新证据，定时巡检不再重复派发";
+const SUBSTANTIVE_PATROL_REASON = "6 项失败，缺少逐项运行日志";
+
+function proposePatrolPacket(kernel: OpcKernel, dedupeKey: string) {
+  return kernel.decisions.propose({
+    dedupeKey,
+    domain: "product",
+    kind: "patrol_alert",
+    riskLevel: "medium",
+    title: "任务巡检告警：0 项滞留 · 6 项失败",
+    backgroundSummary: "六项任务标记失败，审查仍缺逐项运行日志",
+    options: [
+      { id: "requeue", label: "整包重排队", outcome: "approved", handlerKey: "product.patrol_requeue" },
+      { id: "snooze", label: "统一延后 7 天", outcome: "snoozed", handlerKey: "product.patrol_snooze" },
+      { id: "archive", label: "整包归档", outcome: "rejected", handlerKey: "product.patrol_archive" },
+    ],
+  });
+}
+
+test("BotArbitratorService: scheduled patrol escalate is held until evidence changes, manual review still runs", async () => {
+  const db = new DatabaseSync(":memory:");
+  const kernel = new OpcKernel(db);
+  let botCallCount = 0;
+  const service = new BotArbitratorService(db, {
+    decisions: kernel.decisions,
+    events: kernel.events,
+    botReviewer: async (req) => {
+      botCallCount++;
+      assert.ok(req.prompt.startsWith("[仲裁]"));
+      assert.ok(req.prompt.length <= 3400);
+      assert.match(req.prompt, /可选动作:/);
+      return {
+        verdict: "escalate",
+        reason: SUBSTANTIVE_PATROL_REASON,
+        nextStep: "先核对两项 P0 的失败日志",
+        botTaskId: "btask_patrol_review",
+      };
+    },
+  });
+  service.updatePolicy({ arbitrationMode: "full_delegated" });
+  const packet = await proposePatrolPacket(kernel, "arb:patrol:hold");
+
+  const first = await service.arbitrateDecision(packet.id);
+  assert.equal(first.deterministicGate, "bot_escalated");
+  assert.equal(first.escalated, true);
+  assert.equal(first.executed, false);
+  assert.equal(first.botTaskId, "btask_patrol_review");
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+  assert.equal(botCallCount, 1);
+
+  const held = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(held.skipped, true);
+  assert.equal(held.deterministicGate, "scheduled_hold");
+  assert.equal(held.escalated, false);
+  assert.equal(held.executed, false);
+  assert.equal(held.logId, null);
+  assert.equal(held.actor, "policy-guard");
+  assert.equal(held.reason, SCHEDULED_HOLD_REASON);
+  assert.equal(held.nextStep, first.nextStep);
+  assert.equal(botCallCount, 1);
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+
+  const manual = await service.arbitrateDecision(packet.id, { trigger: "manual" });
+  assert.equal(manual.deterministicGate, "bot_escalated");
+  assert.equal(botCallCount, 2);
+
+  const heldAgain = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(heldAgain.deterministicGate, "scheduled_hold");
+  assert.equal(botCallCount, 2);
+
+  db.prepare("UPDATE opc_decision_packets SET updated_at = ? WHERE id = ?").run(
+    "2099-01-01T00:00:00.000Z",
+    packet.id,
+  );
+  const refreshed = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(refreshed.deterministicGate, "bot_escalated");
+  assert.equal(botCallCount, 3);
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+
+  db.close();
+});
+
+test("BotArbitratorService: retryable patrol escalations are reviewed again on the next scheduled tick", async () => {
+  const db = new DatabaseSync(":memory:");
+  const kernel = new OpcKernel(db);
+  const reasons = [
+    { reason: "Bot 返回结构不合法，保守转人工拍板", botTaskId: undefined },
+    { reason: "Bot 未完成评审，评审超时", botTaskId: "btask_timeout" },
+    { reason: "Bot 未返回合规 JSON", botTaskId: "btask_bad_json" },
+    { reason: SUBSTANTIVE_PATROL_REASON, botTaskId: "btask_substantive" },
+  ];
+  let botCallCount = 0;
+  const service = new BotArbitratorService(db, {
+    decisions: kernel.decisions,
+    events: kernel.events,
+    botReviewer: async () => {
+      const step = reasons[botCallCount];
+      botCallCount++;
+      return {
+        verdict: "escalate",
+        reason: step.reason,
+        nextStep: "下轮再看",
+        botTaskId: step.botTaskId,
+      };
+    },
+  });
+  service.updatePolicy({ arbitrationMode: "full_delegated" });
+  const packet = await proposePatrolPacket(kernel, "arb:patrol:retry");
+
+  const results = [];
+  for (let i = 0; i < 4; i++) {
+    results.push(await service.arbitrateDecision(packet.id, { trigger: "scheduled" }));
+  }
+  assert.equal(botCallCount, 4);
+  assert.deepEqual(
+    results.map((r) => r.deterministicGate),
+    ["bot_escalated", "bot_escalated", "bot_escalated", "bot_escalated"],
+  );
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+
+  const held = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(held.deterministicGate, "scheduled_hold");
+  assert.equal(held.skipped, true);
+  assert.equal(botCallCount, 4);
+
+  db.close();
+});
+
+test("BotArbitratorService: substantive patrol escalate hands off to R&D once and then holds", async () => {
+  const db = new DatabaseSync(":memory:");
+  const kernel = new OpcKernel(db);
+  setupReleaseTables(db);
+  const sends: Array<{ botId: string; input: string; key: string; requester?: string }> = [];
+  const stageHomeClient = {
+    send: async (botId: string, input: string, key: string, requester?: string) => {
+      sends.push({ botId, input, key, requester });
+      return {
+        id: "btask_rd_1",
+        targetBotId: botId,
+        input,
+        status: "queued",
+        attempt: 0,
+        updatedAt: "2026-11-25T12:00:00.000Z",
+      };
+    },
+  } as unknown as StageHomeClient;
+
+  let botCallCount = 0;
+  const service = new BotArbitratorService(db, {
+    decisions: kernel.decisions,
+    events: kernel.events,
+    stageHomeClient,
+    botReviewer: async (req) => {
+      botCallCount++;
+      assert.ok(req.prompt.startsWith("[仲裁]"));
+      return {
+        verdict: "escalate",
+        reason: SUBSTANTIVE_PATROL_REASON,
+        nextStep: "先核对两项 P0 的失败日志",
+        botTaskId: "btask_patrol_review",
+      };
+    },
+  });
+  service.updatePolicy({ arbitrationMode: "full_delegated" });
+  const packet = await proposePatrolPacket(kernel, "arb:patrol:handoff");
+
+  const dry = await service.arbitrateDecision(packet.id, { dryRun: true });
+  assert.equal(dry.deterministicGate, "bot_escalated");
+  assert.equal(dry.logId, null);
+  assert.equal(sends.length, 0);
+
+  const handed = await service.arbitrateDecision(packet.id);
+  assert.equal(handed.deterministicGate, "patrol_handed_to_rd");
+  assert.equal(handed.executed, false);
+  assert.equal(handed.escalated, true);
+  assert.equal(handed.actor, "bot:super-bot");
+  assert.equal(handed.botId, "bot_rd_vp");
+  assert.equal(handed.botTaskId, "btask_rd_1");
+  assert.equal(handed.nextStep, "已交给研发，逐项取失败日志前不要整包重排队");
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].botId, "bot_rd_vp");
+  assert.equal(sends[0].requester, "super-bot");
+  assert.equal(sends[0].key, `opc-patrol-handoff-${packet.id}`);
+  assert.ok(sends[0].input.startsWith("[仲裁]"));
+  assert.match(sends[0].input, /逐项/);
+  assert.match(sends[0].input, /不要整包/);
+  assert.ok(sends[0].input.length <= 3400);
+  assert.equal(sends[0].input.includes("tsk_ce5e36301a09"), false);
+  assert.equal(sends[0].input.includes("tsk_331b53fa3325"), false);
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+  assert.equal(botCallCount, 2);
+
+  const logs = service.listLogs();
+  assert.equal(logs[0]?.deterministicGate, "patrol_handed_to_rd");
+  assert.equal(logs[1]?.deterministicGate, "bot_escalated");
+
+  const held = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(held.deterministicGate, "scheduled_hold");
+  assert.equal(held.skipped, true);
+  assert.equal(sends.length, 1);
+  assert.equal(botCallCount, 2);
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+
+  db.close();
+});
+
+test("BotArbitratorService: a failed R&D handoff retries on the next scheduled tick and then holds", async () => {
+  const db = new DatabaseSync(":memory:");
+  const kernel = new OpcKernel(db);
+  setupReleaseTables(db);
+  let failSend = true;
+  const sends: Array<{ botId: string; input: string; key: string; requester?: string }> = [];
+  const stageHomeClient = {
+    send: async (botId: string, input: string, key: string, requester?: string) => {
+      sends.push({ botId, input, key, requester });
+      if (failSend) throw new Error("stage home down");
+      return {
+        id: "btask_rd_retry",
+        targetBotId: botId,
+        input,
+        status: "queued",
+        attempt: 0,
+        updatedAt: "2026-11-25T12:00:00.000Z",
+      };
+    },
+  } as unknown as StageHomeClient;
+  let botCallCount = 0;
+  const service = new BotArbitratorService(db, {
+    decisions: kernel.decisions,
+    events: kernel.events,
+    stageHomeClient,
+    botReviewer: async () => {
+      botCallCount++;
+      return {
+        verdict: "escalate",
+        reason: SUBSTANTIVE_PATROL_REASON,
+        nextStep: "先核对两项 P0 的失败日志",
+        botTaskId: "btask_patrol_review",
+      };
+    },
+  });
+  service.updatePolicy({ arbitrationMode: "full_delegated" });
+  const packet = await proposePatrolPacket(kernel, "arb:patrol:handoff-retry");
+
+  const first = await service.arbitrateDecision(packet.id);
+  assert.equal(first.deterministicGate, "bot_escalated");
+  assert.equal(sends.length, 1);
+  assert.equal(botCallCount, 1);
+  assert.equal(service.listLogs().some((log) => log.deterministicGate === "patrol_handed_to_rd"), false);
+
+  const dryHold = await service.arbitrateDecision(packet.id, { trigger: "scheduled", dryRun: true });
+  assert.equal(dryHold.deterministicGate, "scheduled_hold");
+  assert.equal(sends.length, 1);
+
+  const retriedHold = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(retriedHold.deterministicGate, "scheduled_hold");
+  assert.equal(sends.length, 2);
+  assert.equal(botCallCount, 1);
+  assert.equal(service.listLogs().some((log) => log.deterministicGate === "patrol_handed_to_rd"), false);
+
+  failSend = false;
+  const handed = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(handed.deterministicGate, "patrol_handed_to_rd");
+  assert.equal(sends.length, 3);
+  assert.equal(sends[2].requester, "super-bot");
+  assert.equal(sends[2].key, `opc-patrol-handoff-${packet.id}`);
+  assert.ok(sends[2].input.startsWith("[仲裁]"));
+  assert.equal(botCallCount, 1);
+
+  const held = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(held.deterministicGate, "scheduled_hold");
+  assert.equal(sends.length, 3);
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+
+  db.close();
+});
+
+test("BotArbitratorService: scheduled redline escalation is not replayed", async () => {
+  const db = new DatabaseSync(":memory:");
+  const kernel = new OpcKernel(db);
+  let botCallCount = 0;
+  const service = new BotArbitratorService(db, {
+    decisions: kernel.decisions,
+    events: kernel.events,
+    botReviewer: async () => {
+      botCallCount++;
+      return { verdict: "approve", reason: "不应被调用", nextStep: "" };
+    },
+  });
+  service.updatePolicy({ arbitrationMode: "full_delegated" });
+  const packet = await kernel.decisions.propose({
+    dedupeKey: "arb:pricing:hold",
+    domain: "commercial",
+    kind: "pricing_change",
+    riskLevel: "critical",
+    title: "调整 Pro 套餐价格",
+    backgroundSummary: "调价需人工确认",
+    options: [{ id: "ok", label: "批准", outcome: "approved", handlerKey: "test.pricing" }],
+  });
+
+  const first = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(first.deterministicGate, "non_delegable_redline");
+  assert.equal(first.escalated, true);
+  const held = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(held.skipped, true);
+  assert.equal(held.deterministicGate, "scheduled_hold");
+  assert.equal(service.listLogs().length, 1);
+  assert.equal(kernel.decisions.get(packet.id)?.status, "pending");
+  assert.equal(botCallCount, 0);
+
+  const again = await service.arbitrateDecision(packet.id);
+  assert.equal(again.deterministicGate, "non_delegable_redline");
+  assert.equal(service.listLogs().length, 2);
+  assert.equal(botCallCount, 0);
+
+  db.close();
+});
+
+test("BotArbitratorService: a stale patrol snapshot is superseded before a scheduled hold", async () => {
+  const db = new DatabaseSync(":memory:");
+  const kernel = new OpcKernel(db);
+  let block = false;
+  kernel.decisions.registerActionGuard("product", "patrol_alert", () => (block ? "任务已变化" : undefined));
+  let botCallCount = 0;
+  const service = new BotArbitratorService(db, {
+    decisions: kernel.decisions,
+    events: kernel.events,
+    botReviewer: async () => {
+      botCallCount++;
+      return {
+        verdict: "escalate",
+        reason: SUBSTANTIVE_PATROL_REASON,
+        nextStep: "先核对两项 P0 的失败日志",
+        botTaskId: "btask_patrol_review",
+      };
+    },
+  });
+  service.updatePolicy({ arbitrationMode: "full_delegated" });
+  const packet = await proposePatrolPacket(kernel, "arb:patrol:stale");
+
+  const first = await service.arbitrateDecision(packet.id);
+  assert.equal(first.deterministicGate, "bot_escalated");
+  const held = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(held.deterministicGate, "scheduled_hold");
+  assert.equal(botCallCount, 1);
+
+  block = true;
+  const superseded = await service.arbitrateDecision(packet.id, { trigger: "scheduled" });
+  assert.equal(superseded.deterministicGate, "stale_patrol_snapshot");
+  assert.equal(superseded.executed, true);
+  assert.equal(superseded.verdict, "supersede");
+  assert.equal(kernel.decisions.get(packet.id)?.status, "superseded");
+  assert.equal(botCallCount, 1);
+
+  const stale = await proposePatrolPacket(kernel, "arb:patrol:stale-dry");
+  const dry = await service.arbitrateDecision(stale.id, { dryRun: true });
+  assert.equal(dry.deterministicGate, "stale_patrol_snapshot");
+  assert.equal(dry.executed, false);
+  assert.equal(dry.logId, null);
+  assert.equal(kernel.decisions.get(stale.id)?.status, "pending");
+  assert.equal(botCallCount, 1);
+
+  db.close();
+});

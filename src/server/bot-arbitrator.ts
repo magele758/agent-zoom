@@ -344,6 +344,57 @@ async function readGitReleaseDiffSummary(
 
 const AGENT_HOME_PROMPT_CAP = 3400;
 
+const STABLE_DECISION_HOLD_GATES = new Set([
+  "non_delegable_redline",
+  "redline_requires_human",
+  "cost_cap_exceeded",
+  "action_blocked",
+  "patrol_handed_to_rd",
+]);
+
+const STABLE_WORKFLOW_HOLD_GATES = new Set([
+  "workflow_backend_mismatch",
+  "final_acceptance_requires_human",
+]);
+
+const RETRYABLE_ESCALATION_MARKERS = [
+  "未完成评审",
+  "超时",
+  "未返回合规 JSON",
+  "暂不可达",
+  "评审异常",
+  "返回结构不合法",
+];
+
+function arbitrationTagPrefix(title: string, id: string): string {
+  return `[仲裁] ${title.slice(0, 120)} ${id}\n`;
+}
+
+function tagArbitrationPrompt(title: string, id: string, body: string): string {
+  return `${arbitrationTagPrefix(title, id)}${body}`.slice(0, AGENT_HOME_PROMPT_CAP);
+}
+
+function isRetryableEscalationReason(reason: string): boolean {
+  return RETRYABLE_ESCALATION_MARKERS.some((marker) => reason.includes(marker));
+}
+
+function isSubstantiveEscalation(log: BotArbitrationLogRecord): boolean {
+  return (
+    log.escalated &&
+    !log.executed &&
+    log.deterministicGate === "bot_escalated" &&
+    Boolean(log.botTaskId) &&
+    !isRetryableEscalationReason(log.reason)
+  );
+}
+
+type ArbitrationLogMeta = {
+  sourceDomain?: CompanyDepartmentId;
+  mainlineId?: string | null;
+  productId?: string | null;
+  assetId?: string | null;
+};
+
 function extractSectionFromEvidence(evidence: string, heading: string, maxLen: number): string {
   if (!evidence) return "";
   const idx = evidence.indexOf(heading);
@@ -903,17 +954,7 @@ export class BotArbitratorService {
     );
   }
 
-  private resolveBotTarget(
-    preferredForItem: "super" | "rd",
-    policy: BotArbitratorPolicy,
-  ): { botRole: "super" | "rd"; botId: string; actor: string } {
-    const desiredRole: "super" | "rd" =
-      policy.preferredBotRole === "super"
-        ? "super"
-        : policy.preferredBotRole === "rd"
-          ? "rd"
-          : preferredForItem;
-
+  private readExecutiveBots(): { superBotId: string; rdBotId: string | null } {
     let superBotId = "super-bot";
     let rdBotId: string | null = null;
     if (this.hasTable("opc_executive_state")) {
@@ -927,11 +968,242 @@ export class BotArbitratorService {
       if (cfg?.superBotId) superBotId = cfg.superBotId;
       if (cfg?.departmentBotIds?.rd) rdBotId = cfg.departmentBotIds.rd;
     }
+    return { superBotId, rdBotId };
+  }
 
+  private resolveBotTarget(
+    preferredForItem: "super" | "rd",
+    policy: BotArbitratorPolicy,
+  ): { botRole: "super" | "rd"; botId: string; actor: string } {
+    const desiredRole: "super" | "rd" =
+      policy.preferredBotRole === "super"
+        ? "super"
+        : policy.preferredBotRole === "rd"
+          ? "rd"
+          : preferredForItem;
+    const { superBotId, rdBotId } = this.readExecutiveBots();
     if (desiredRole === "rd" && rdBotId) {
       return { botRole: "rd", botId: rdBotId, actor: "bot:rd-vp" };
     }
     return { botRole: "super", botId: superBotId, actor: "bot:super-bot" };
+  }
+
+  private latestLogForTarget(
+    kind: "decision" | "workflow",
+    id: string,
+  ): BotArbitrationLogRecord | null {
+    if (!this.hasTable("opc_bot_arbitration_log")) return null;
+    const row = this.db
+      .prepare(
+        `SELECT * FROM opc_bot_arbitration_log
+         WHERE target_kind = ? AND target_id = ? AND dry_run = 0
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(kind, id) as Record<string, unknown> | undefined;
+    return row ? this.mapLog(row) : null;
+  }
+
+  private hasPatrolHandoff(decisionId: string): boolean {
+    if (!this.hasTable("opc_bot_arbitration_log")) return false;
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 AS found FROM opc_bot_arbitration_log
+           WHERE target_kind = 'decision' AND target_id = ? AND dry_run = 0
+             AND deterministic_gate = 'patrol_handed_to_rd'
+           LIMIT 1`,
+        )
+        .get(decisionId),
+    );
+  }
+
+  private scheduledHoldSkip(
+    fields: {
+      targetKind: "decision" | "workflow";
+      targetId: string;
+      targetSubId: string | null;
+      targetTitle: string;
+      itemKind: string;
+      mode: BotArbitrationMode;
+      dryRun: boolean;
+    },
+    prior: BotArbitrationLogRecord,
+  ): ArbitrationItemResult {
+    return {
+      logId: null,
+      ...fields,
+      actor: "policy-guard",
+      botId: prior.botId,
+      botTaskId: prior.botTaskId,
+      verdict: prior.verdict,
+      optionId: prior.optionId,
+      executed: false,
+      escalated: false,
+      skipped: true,
+      reason: "同一裁决已升级且没有新证据，定时巡检不再重复派发",
+      nextStep: prior.nextStep,
+      deterministicGate: "scheduled_hold",
+      handlerResult: null,
+    };
+  }
+
+  private resolveStalePatrol(
+    packet: DecisionPacket,
+    effectiveMode: BotArbitrationMode,
+    dryRun: boolean,
+    canExecute: boolean,
+    meta: ArbitrationLogMeta,
+  ): ArbitrationItemResult | null {
+    if (packet.kind !== "patrol_alert" || !packet.actionBlockReason) return null;
+    const reason = `巡检快照已过期（${packet.actionBlockReason}），自动收敛旧告警`;
+    if (canExecute) {
+      const superseded = this.decisions.supersede(packet.id, {
+        note: formatBotNote("🤖 Bot 代理拍板（已过期自动收敛）", reason),
+        actor: "bot:arbitrator",
+        expectedUpdatedAt: packet.updatedAt,
+        autoApproved: true,
+      });
+      return this.recordLog(
+        {
+          targetKind: "decision",
+          targetId: packet.id,
+          targetSubId: null,
+          targetTitle: packet.title,
+          itemKind: packet.kind,
+          mode: effectiveMode,
+          dryRun,
+          actor: "bot:arbitrator",
+          botId: null,
+          botTaskId: null,
+          verdict: "supersede",
+          optionId: null,
+          executed: true,
+          escalated: false,
+          reason,
+          nextStep: "下次巡检将基于最新任务状态生成增量告警",
+          deterministicGate: "stale_patrol_snapshot",
+          handlerResult: superseded.handlerResult,
+        },
+        meta,
+      );
+    }
+    return this.recordLog(
+      {
+        targetKind: "decision",
+        targetId: packet.id,
+        targetSubId: null,
+        targetTitle: packet.title,
+        itemKind: packet.kind,
+        mode: effectiveMode,
+        dryRun,
+        actor: "policy-guard",
+        botId: null,
+        botTaskId: null,
+        verdict: "supersede",
+        optionId: null,
+        executed: false,
+        escalated: false,
+        reason,
+        nextStep: "切换至 delegated_safe 后可自动收敛此过期巡检告警",
+        deterministicGate: "stale_patrol_snapshot",
+        handlerResult: null,
+      },
+      meta,
+    );
+  }
+
+  private buildPatrolHandoffPrompt(packet: DecisionPacket, priorReason: string): string {
+    const body = [
+      "你是 OPC OS 研发部。这是一次真实排查任务，不要只返回 JSON 裁决。",
+      "请逐项收集失败日志和证据，不要整包重排队、不要整包归档、不要统一延后。",
+      "没有失败样本的项，尤其是 P0，先取日志再决定。",
+      "",
+      `审批单: ${packet.id}`,
+      `标题: ${packet.title.slice(0, 180)}`,
+      `上次审查: ${priorReason.slice(0, 700)}`,
+      `背景:\n${packet.backgroundSummary.slice(0, 1800)}`,
+    ].join("\n");
+    return tagArbitrationPrompt(packet.title, packet.id, body);
+  }
+
+  private async dispatchPatrolHandoff(
+    packet: DecisionPacket,
+    priorReason: string,
+    mode: BotArbitrationMode,
+    meta: ArbitrationLogMeta,
+  ): Promise<ArbitrationItemResult | null> {
+    const { superBotId, rdBotId } = this.readExecutiveBots();
+    if (!rdBotId || rdBotId === superBotId) return null;
+    const client =
+      this.botReviewer && !this.stageHomeClient
+        ? null
+        : (this.stageHomeClient ??= new StageHomeClient());
+    if (!client) return null;
+    let task: HomeTask;
+    try {
+      task = await client.send(
+        rdBotId,
+        this.buildPatrolHandoffPrompt(packet, priorReason),
+        `opc-patrol-handoff-${packet.id}`,
+        superBotId,
+      );
+    } catch {
+      return null;
+    }
+    return this.recordLog(
+      {
+        targetKind: "decision",
+        targetId: packet.id,
+        targetSubId: null,
+        targetTitle: packet.title,
+        itemKind: packet.kind,
+        mode,
+        dryRun: false,
+        actor: "bot:super-bot",
+        botId: rdBotId,
+        botTaskId: task.id,
+        verdict: "escalate",
+        optionId: null,
+        executed: false,
+        escalated: true,
+        reason: `已交给研发继续排查。上次审查：${priorReason}`.slice(0, 2000),
+        nextStep: "已交给研发，逐项取失败日志前不要整包重排队",
+        deterministicGate: "patrol_handed_to_rd",
+        handlerResult: null,
+      },
+      meta,
+    );
+  }
+
+  private async maybeScheduledDecisionHold(
+    packet: DecisionPacket,
+    options: ArbitrateOptions,
+    mode: BotArbitrationMode,
+    dryRun: boolean,
+    meta: ArbitrationLogMeta,
+  ): Promise<ArbitrationItemResult | null> {
+    if (options.trigger !== "scheduled") return null;
+    const latest = this.latestLogForTarget("decision", packet.id);
+    if (!latest || packet.updatedAt > latest.createdAt) return null;
+    const stable = STABLE_DECISION_HOLD_GATES.has(latest.deterministicGate);
+    const substantive = isSubstantiveEscalation(latest);
+    if (!stable && !substantive) return null;
+    if (packet.kind === "patrol_alert" && substantive && !dryRun && !this.hasPatrolHandoff(packet.id)) {
+      const handed = await this.dispatchPatrolHandoff(packet, latest.reason, mode, meta);
+      if (handed) return handed;
+    }
+    return this.scheduledHoldSkip(
+      {
+        targetKind: "decision",
+        targetId: packet.id,
+        targetSubId: null,
+        targetTitle: packet.title,
+        itemKind: packet.kind,
+        mode,
+        dryRun,
+      },
+      latest,
+    );
   }
 
   private async invokeBotReviewer(req: BotReviewRequest): Promise<BotReviewVerdict> {
@@ -973,7 +1245,9 @@ export class BotArbitratorService {
     const boundedPrompt = req.prompt.slice(0, 3400);
 
     try {
-      let task: HomeTask = await client.send(req.botId, boundedPrompt, idempotencyKey);
+      const { superBotId } = this.readExecutiveBots();
+      const requester = req.botId !== superBotId ? superBotId : undefined;
+      let task: HomeTask = await client.send(req.botId, boundedPrompt, idempotencyKey, requester);
       const deadline = Date.now() + this.botTimeoutMs;
       while (
         ["queued", "pending", "running", "in_progress"].includes(task.status) &&
@@ -1438,8 +1712,13 @@ export class BotArbitratorService {
         `背景摘要: ${packet.backgroundSummary.replace(/\s+/g, " ").slice(0, 260)}`,
       ].filter(Boolean);
 
-      const maxBody = Math.max(400, AGENT_HOME_PROMPT_CAP - tail.length - 1);
-      return `${bodyLines.join("\n").slice(0, maxBody)}\n${tail}`;
+      const prefixLen = arbitrationTagPrefix(packet.title, packet.id).length;
+      const maxBody = Math.max(0, AGENT_HOME_PROMPT_CAP - prefixLen - tail.length - 1);
+      return tagArbitrationPrompt(
+        packet.title,
+        packet.id,
+        `${bodyLines.join("\n").slice(0, maxBody)}\n${tail}`,
+      );
     }
 
     const lines = [
@@ -1458,7 +1737,12 @@ export class BotArbitratorService {
       ...optionsLines,
     ].filter(Boolean);
 
-    return lines.join("\n").slice(0, AGENT_HOME_PROMPT_CAP);
+    const prefixLen = arbitrationTagPrefix(packet.title, packet.id).length;
+    return tagArbitrationPrompt(
+      packet.title,
+      packet.id,
+      lines.join("\n").slice(0, Math.max(0, AGENT_HOME_PROMPT_CAP - prefixLen)),
+    );
   }
 
   private buildWorkflowPrompt(wf: OpenWorkflowRecord): string {
@@ -1467,7 +1751,9 @@ export class BotArbitratorService {
       (n) =>
         `- ${n.id} [${n.kind}] ${n.title}${n.dependsOn.length ? ` (deps: ${n.dependsOn.join(",")})` : ""}: ${n.instruction.slice(0, 220)}`,
     );
-    return [
+    const title = wf.run.request.goal;
+    const prefixLen = arbitrationTagPrefix(title, wf.run.id).length;
+    const body = [
       "你是 OPC OS 产研与工程部代理拍板审查 Bot。请审查以下工作流审批卡片质量与风险，严格只返回单个 JSON 对象：",
       '格式：{"verdict":"approve"|"changes"|"reject"|"escalate","reason":"简明中文裁决理由","nextStep":"简明后续安排"}',
       "规则：计划清晰、边界明确、具备独立 review 验收且无明显破坏风险返回 approve；计划需补充细节或拆分返回 changes；明显过时/无价值返回 reject；高危或需创始人战略定夺返回 escalate。",
@@ -1485,7 +1771,8 @@ export class BotArbitratorService {
     ]
       .filter(Boolean)
       .join("\n")
-      .slice(0, AGENT_HOME_PROMPT_CAP);
+      .slice(0, Math.max(0, AGENT_HOME_PROMPT_CAP - prefixLen));
+    return tagArbitrationPrompt(title, wf.run.id, body);
   }
 
   async arbitrateDecision(
@@ -1587,6 +1874,12 @@ export class BotArbitratorService {
     };
 
     try {
+      const stalePatrol = this.resolveStalePatrol(packet, effectiveMode, dryRun, canExecute, meta);
+      if (stalePatrol) return stalePatrol;
+
+      const held = await this.maybeScheduledDecisionHold(packet, options, effectiveMode, dryRun, meta);
+      if (held) return held;
+
       // 1. Hard non-delegable invariants (NEVER auto-resolved in ANY mode)
       if (HARD_NON_DELEGABLE_KINDS.has(packet.kind)) {
         return this.recordLog(
@@ -1641,66 +1934,8 @@ export class BotArbitratorService {
         );
       }
 
-      // 3. Action block guard (e.g., stale patrol_alert snapshot)
+      // 3. Action block guard. Stale patrol snapshots are converged above.
       if (packet.actionBlockReason) {
-        if (packet.kind === "patrol_alert") {
-          const reason = `巡检快照已过期（${packet.actionBlockReason}），自动收敛旧告警`;
-          if (canExecute) {
-            const superseded = this.decisions.supersede(packet.id, {
-              note: formatBotNote("🤖 Bot 代理拍板（已过期自动收敛）", reason),
-              actor: "bot:arbitrator",
-              expectedUpdatedAt: packet.updatedAt,
-              autoApproved: true,
-            });
-            return this.recordLog(
-              {
-                targetKind: "decision",
-                targetId: packet.id,
-                targetSubId: null,
-                targetTitle: packet.title,
-                itemKind: packet.kind,
-                mode: effectiveMode,
-                dryRun,
-                actor: "bot:arbitrator",
-                botId: null,
-                botTaskId: null,
-                verdict: "supersede",
-                optionId: null,
-                executed: true,
-                escalated: false,
-                reason,
-                nextStep: "下次巡检将基于最新任务状态生成增量告警",
-                deterministicGate: "stale_patrol_snapshot",
-                handlerResult: superseded.handlerResult,
-              },
-              meta,
-            );
-          }
-          return this.recordLog(
-            {
-              targetKind: "decision",
-              targetId: packet.id,
-              targetSubId: null,
-              targetTitle: packet.title,
-              itemKind: packet.kind,
-              mode: effectiveMode,
-              dryRun,
-              actor: "policy-guard",
-              botId: null,
-              botTaskId: null,
-              verdict: "supersede",
-              optionId: null,
-              executed: false,
-              escalated: false,
-              reason,
-              nextStep: "切换至 delegated_safe 后可自动收敛此过期巡检告警",
-              deterministicGate: "stale_patrol_snapshot",
-              handlerResult: null,
-            },
-            meta,
-          );
-        }
-
         return this.recordLog(
           {
             targetKind: "decision",
@@ -1882,7 +2117,7 @@ export class BotArbitratorService {
       });
 
       if (review.verdict === "escalate") {
-        return this.recordLog(
+        const logged = this.recordLog(
           {
             targetKind: "decision",
             targetId: packet.id,
@@ -1905,6 +2140,17 @@ export class BotArbitratorService {
           },
           meta,
         );
+        if (
+          packet.kind === "patrol_alert" &&
+          !dryRun &&
+          review.botTaskId &&
+          !isRetryableEscalationReason(review.reason) &&
+          !this.hasPatrolHandoff(packet.id)
+        ) {
+          const handed = await this.dispatchPatrolHandoff(packet, review.reason, effectiveMode, meta);
+          if (handed) return handed;
+        }
+        return logged;
       }
 
       if (review.verdict === "supersede") {
@@ -2785,6 +3031,29 @@ export class BotArbitratorService {
           },
           meta,
         );
+      }
+
+      if (options.trigger === "scheduled") {
+        const latest = this.latestLogForTarget("workflow", wf.run.id);
+        if (
+          latest &&
+          !(wf.lastActivityAt > latest.createdAt) &&
+          (STABLE_WORKFLOW_HOLD_GATES.has(latest.deterministicGate) ||
+            isSubstantiveEscalation(latest))
+        ) {
+          return this.scheduledHoldSkip(
+            {
+              targetKind: "workflow",
+              targetId: wf.run.id,
+              targetSubId: wf.card.id,
+              targetTitle,
+              itemKind,
+              mode: effectiveMode,
+              dryRun,
+            },
+            latest,
+          );
+        }
       }
 
       // 2. Fresh workflow card checks
