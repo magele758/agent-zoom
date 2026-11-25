@@ -15,8 +15,8 @@ export async function completeCli(task: AdapterTask, runtime: "codex" | "claude"
   const prompt = `${options.replyOnly ? "这是聊天模式，只回答消息，可以读取相关文件；禁止修改文件、运行开发任务或调用 chatroom 工具。需要改代码请提醒用户使用发起任务。" : ""}你是 agent-chatroom 的真实 ${runtime} coding agent。只在工作目录 ${root} 内执行本任务，不要创建其他任务或子 agent。不要自己调用 chatroom 的 claim/deliver，适配器负责交付。\n标题：${task.title}\n要求：${task.body}\n验收：${task.acceptance ?? ""}\n请实际执行必要的文件操作或命令，以事实、结果文件和测试结果报告。未完成请明确说明，禁止编造成功。`;
   writeFileSync(join(runDir, "prompt.txt"), prompt, { mode: 0o600 });
   const args = runtime === "codex"
-    ? ["exec", "--sandbox", options.replyOnly ? "read-only" : "workspace-write", "--json", "--output-last-message", answer, "-"]
-    : ["--print", "--output-format", "json", "--permission-mode", options.replyOnly ? "plan" : "acceptEdits", prompt];
+    ? ["exec", ...(options.replyOnly ? ["--sandbox", "read-only"] : ["--dangerously-bypass-approvals-and-sandbox"]), "--json", "--output-last-message", answer, "-"]
+    : ["--print", "--output-format", "json", ...(options.replyOnly ? ["--permission-mode", "plan"] : ["--dangerously-skip-permissions"]), prompt];
   const log = join(runDir, "events.log");
   let output = "";
   let errors = "";

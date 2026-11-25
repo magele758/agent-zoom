@@ -76,13 +76,28 @@ test("each CLI uses a fresh worktree process; a real configured check and its ou
     assert.equal(h.report().summary, "fixture");
     assert.equal(h.args().includes("--continue"), false);
     assert.equal(h.report().artifacts.length, cli === "agy" ? 4 : 3);
-    if (cli === "agy") assert.ok(h.args().includes("gemini-fixture-medium"));
+    if (cli === "agy") {
+      assert.ok(h.args().includes("gemini-fixture-medium"));
+      assert.ok(!h.args().includes("--sandbox"));
+      assert.ok(h.args().includes("--dangerously-skip-permissions"));
+    }
+    if (cli === "grok") {
+      assert.ok(h.args().includes("--always-approve"));
+      assert.ok(!h.args().includes("--sandbox"));
+      assert.ok(!h.args().includes("--tools"));
+    }
+    if (cli === "cursor-agent") {
+      assert.equal(h.args()[h.args().indexOf("--sandbox") + 1], "disabled");
+      assert.ok(h.args().includes("--force"));
+    }
   }
 });
 test("only a supported read-only mode can review, and model or test failure cannot produce a pass", (t) => {
   const reviewer = fixture(t, "cursor-agent", "review", { verdict: "failed" });
   assert.ok(reviewer.args().includes("ask"));
+  assert.equal(reviewer.args()[reviewer.args().indexOf("--sandbox") + 1], "disabled");
   assert.ok(!reviewer.args().includes("--auto-review"));
+  assert.ok(!reviewer.args().includes("--force"));
   assert.equal(reviewer.report().outcome, "failed");
   for (const cli of ["agy", "grok"]) assert.notEqual(fixture(t, cli, "review").processResult.status, 0);
   const badTest = fixture(t, "agy", "implement", { testCode: 7 });
