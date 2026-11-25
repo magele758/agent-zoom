@@ -1,7 +1,15 @@
 import { DelegateWork } from "./Delegation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ActivityIndex, IndexedAgent, IndexedRepo, IndexSource } from "../../src/activity-index-types";
+import {
+  WORK_ORIGIN_LABELS,
+  WORKSPACE_CATEGORIES,
+  WORKSPACE_CATEGORY_LABELS,
+  type WorkOriginTrack,
+  type WorkspaceCategory,
+} from "../../src/workspace-classification-types";
 import { request } from "./api";
+import { ClassificationBadge, HerdrBadge, OriginTrackBadge } from "./ClassificationBadge";
 import { RepositoryIndexContent } from "./RepositoryIndexContent";
 import "./activity-index.css";
 
@@ -19,6 +27,14 @@ const stamp = new Intl.DateTimeFormat("zh-CN", {
 });
 const pageSize = 40;
 const failure = (error: unknown) => (error instanceof Error ? error.message : "无法读取索引");
+const emptyPurpose = "（没有标题）";
+function sessionPurpose(agent: IndexedAgent) {
+  const head = agent.title || agent.what || emptyPurpose;
+  // 新版 Agent Hub 把项目描述放在 task_what；仍在跑的旧接口放在 what，且与标题不同。
+  const card = agent.taskWhat || (agent.title && agent.what && agent.what !== agent.title ? agent.what : null);
+  const task = card && card !== head ? card : null;
+  return { head, task, empty: head === emptyPurpose };
+}
 const basename = (s: string) => s.split(/[\\/]/).filter(Boolean).at(-1) || s;
 const repoKey = (s: string) => (s.startsWith("/") ? s : s.toLowerCase());
 const displayRepo = (s: string) => (s.startsWith("/") ? basename(s) : s);
@@ -142,15 +158,38 @@ function LoadingOrError({ index }: { index: IndexState }) {
 
 export function ActivitySummary({ index }: { index: IndexState }) {
   const { data } = index;
-  const working = data?.agents.filter((a) => a.state === "working") ?? [];
-  const waiting = data?.agents.filter((a) => a.state === "waiting") ?? [];
+  const primaryAgents = useMemo(() => {
+    const all = data?.agents ?? [];
+    const liveAddrs = new Set(all.map((a) => a.herdr?.address).filter((v): v is string => Boolean(v)));
+    return all.filter((a) => {
+      if (a.herdr?.isBackground) return false;
+      if (a.herdr?.parent && liveAddrs.has(a.herdr.parent)) return false;
+      return true;
+    });
+  }, [data]);
+  const subCountByParent = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const a of data?.agents ?? []) {
+      const p = a.herdr?.parent;
+      if (p) map.set(p, (map.get(p) ?? 0) + 1);
+    }
+    return map;
+  }, [data]);
+  const working = primaryAgents.filter((a) => a.state === "working");
+  const waiting = primaryAgents.filter((a) => a.state === "waiting");
+  const opcCount = primaryAgents.filter((a) => a.originTrack === "opc_dispatched").length;
+  const founderCount = primaryAgents.filter((a) => a.originTrack !== "opc_dispatched").length;
   const active = [...working, ...waiting];
-  const preview = (active.length ? active : data?.agents ?? []).slice(0, 3);
+  const preview = (active.length ? active : primaryAgents).slice(0, 5);
   return (
     <section className="overview-index" aria-label="正在工作的 agent 与仓库索引">
       <header>
-        <h2>工作现场</h2>
-        <a href={activityLink("agents")}>打开完整索引 ↗</a>
+        <h2>工作现场（双轨融合）</h2>
+        <div style={{ display: "flex", gap: "14px", alignItems: "center", flexWrap: "wrap", marginLeft: "auto" }}>
+          <a href="#cli-ledger">CLI 指令与进度台账 ↗</a>
+          <a href="#planning">人机看板 ↗</a>
+          <a href={activityLink("agents")}>打开完整索引 ↗</a>
+        </div>
       </header>
       <LoadingOrError index={index} />
       {data && (
@@ -162,8 +201,11 @@ export function ActivitySummary({ index }: { index: IndexState }) {
             <a href={activityLink("agents", { state: "waiting" })}>
               <strong>{waiting.length}</strong>等待中
             </a>
-            <a href={activityLink("agents")}>
-              <strong>{data.agents.length}</strong>会话及进程
+            <a href={activityLink("agents", { origin: "opc_dispatched" })}>
+              <strong>{opcCount}</strong>OPC 派发
+            </a>
+            <a href={activityLink("agents", { origin: "founder_managed" })}>
+              <strong>{founderCount}</strong>自主跟进
             </a>
             <a href={activityLink("repos")}>
               <strong>{data.repositories.length}</strong>个仓库
@@ -171,24 +213,27 @@ export function ActivitySummary({ index }: { index: IndexState }) {
           </div>
           {preview.length > 0 && (
             <ul aria-label={active.length ? "正在执行或等待的会话" : "已发现的会话与进程"}>
-              {preview.map((agent) => (
-                <li key={agent.id}>
-                  <a href={activityLink("agents", { agent: agent.id })}>
-                    <AgentState state={agent.state} />
-                    <span>
-                      <b>{agent.provider}</b> · {agent.label}
-                    </span>
-                    <small>
-                      {agent.repository
-                        ? displayRepo(agent.repository)
-                        : agent.workspace
-                          ? basename(agent.workspace)
-                          : agent.sources.join(" / ")}{" "}
-                      ↗
-                    </small>
-                  </a>
-                </li>
-              ))}
+              {preview.map((agent) => {
+                const subCount = agent.herdr?.address ? subCountByParent.get(agent.herdr.address) ?? 0 : 0;
+                const purpose = sessionPurpose(agent);
+                return (
+                  <li key={agent.id}>
+                    <a href={activityLink("agents", { agent: agent.id })}>
+                      <AgentState state={agent.state} />
+                      <span>
+                        <b>{agent.classification?.canonicalProject || agent.herdr?.spaceName || agent.provider}</b>
+                        {" · "}
+                        {purpose.empty ? agent.label : purpose.head}
+                        {subCount > 0 ? ` (+${subCount}子)` : ""}
+                      </span>
+                      <small>
+                        {agent.originTrack === "opc_dispatched" ? "⚙ OPC 派发" : "👤 自主跟进"}
+                        {agent.classification ? ` · ${agent.classification.categoryLabel}` : ""} ↗
+                      </small>
+                    </a>
+                  </li>
+                );
+              })}
             </ul>
           )}
           <SourceNotes sources={data.sources} />
@@ -219,11 +264,21 @@ function AgentRow({
   agent,
   repo,
   selected,
+  subAgents,
+  promoting,
+  onPromote,
+  onClassified,
 }: {
   agent: IndexedAgent;
   repo: IndexedRepo | undefined;
   selected: boolean;
+  subAgents?: IndexedAgent[];
+  promoting?: boolean;
+  onPromote?: (agent: IndexedAgent) => void;
+  onClassified?: () => void;
 }) {
+  const purpose = sessionPurpose(agent);
+  const children = subAgents ?? [];
   return (
     <li className="idx-agentrow" data-selected={selected || undefined}>
       <AgentState state={agent.state} />
@@ -234,12 +289,48 @@ function AgentRow({
         <span>
           {agent.provider} · {agent.sources.join(" / ")}
         </span>
+        <div className="dt-row-badges">
+          <OriginTrackBadge track={agent.originTrack} />
+          <ClassificationBadge classification={agent.classification} editable onChanged={onClassified} />
+          <HerdrBadge
+            address={agent.herdr?.address}
+            spaceName={agent.herdr?.spaceName}
+            subCount={children.length}
+          />
+          {agent.linkedTaskId ? (
+            <a
+              className="dt-pill dt-linked-task"
+              href={`#planning?task=${encodeURIComponent(agent.linkedTaskId)}`}
+              title={agent.linkedTaskTitle || agent.linkedTaskId}
+            >
+              ✓ 已入看板 ↗
+            </a>
+          ) : (
+            onPromote &&
+            (agent.herdr?.address || agent.linkedSessionId) && (
+              <button
+                type="button"
+                className="dt-mini-btn"
+                disabled={promoting}
+                onClick={() => onPromote(agent)}
+              >
+                {promoting ? "纳入中…" : "📌 纳入看板追踪"}
+              </button>
+            )
+          )}
+        </div>
+        <p className="idx-purpose" data-empty={purpose.empty || undefined}>
+          {purpose.head}
+        </p>
+        {purpose.task && <small>任务卡：{purpose.task}</small>}
       </div>
       <div className="idx-col">
         {repo ? (
           <a href={activityLink("repos", { repo: repo.fullName })}>{displayRepo(repo.fullName)} ↗</a>
         ) : agent.repository ? (
           <span>{displayRepo(agent.repository)}</span>
+        ) : agent.classification?.canonicalProject ? (
+          <span>{agent.classification.canonicalProject}</span>
         ) : (
           <span>仓库未识别</span>
         )}
@@ -253,6 +344,22 @@ function AgentRow({
       <small>
         <Updated date={agent.updatedAt} />
       </small>
+      {children.length > 0 && (
+        <div className="dt-subagents" aria-label="折叠的子任务终端">
+          {children.map((child) => {
+            const cp = sessionPurpose(child);
+            return (
+              <div key={child.id} className="dt-subagent-item">
+                <span>↳</span>
+                <AgentState state={child.state} />
+                <strong>{child.label}</strong>
+                <span>{cp.empty ? child.herdr?.name || child.herdr?.address : cp.head}</span>
+                {child.workspace && <code style={{ fontSize: 11 }}>{basename(child.workspace)}</code>}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {selected && (
         <DelegateWork
           key={agent.id}
@@ -261,7 +368,15 @@ function AgentRow({
             key: "agent:" + agent.id,
             title: "核对进展 · " + (agent.label || agent.provider),
             href: activityLink("agents", { agent: agent.id }),
-            detail: [agent.id, agent.provider, agent.workspace, agent.repository, ...agent.sources]
+            detail: [
+              purpose.empty ? null : purpose.head,
+              purpose.task ? "任务卡：" + purpose.task : null,
+              agent.id,
+              agent.provider,
+              agent.workspace,
+              agent.repository,
+              ...agent.sources,
+            ]
               .filter(Boolean)
               .join("\n"),
           }}
@@ -270,13 +385,24 @@ function AgentRow({
     </li>
   );
 }
-function RepoRow({ repo, agents }: { repo: IndexedRepo; agents: number }) {
+function RepoRow({
+  repo,
+  agents,
+  onClassified,
+}: {
+  repo: IndexedRepo;
+  agents: number;
+  onClassified?: () => void;
+}) {
   return (
     <li className="idx-reporow">
       <div className="idx-col">
         <a className="idx-repo-name" href={activityLink("repos", { repo: repo.fullName })}>
           {displayRepo(repo.fullName)} ↗
         </a>
+        <div className="dt-row-badges">
+          <ClassificationBadge classification={repo.classification} editable onChanged={onClassified} />
+        </div>
         <span>
           {[repo.language, visibilityNames[repo.visibility], ...repo.relations.filter((r) => r !== "已纳管")]
             .filter(Boolean)
@@ -307,10 +433,57 @@ export function ActivityPage({
     id = params.get("agent") ?? "";
   const stateParam = params.get("state");
   const state = stateParam && Object.hasOwn(stateNames, stateParam) ? stateParam : "";
+  const originParam = params.get("origin");
+  const initialOrigin: WorkOriginTrack | "" =
+    originParam === "opc_dispatched" || originParam === "founder_managed" ? originParam : "";
   const [agentQuery, setAgentQuery] = useState(""),
     [repoQuery, setRepoQuery] = useState("");
   const [relation, setRelation] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<WorkspaceCategory | "">("");
+  const [originFilter, setOriginFilter] = useState<WorkOriginTrack | "">(initialOrigin);
+  const [promotingId, setPromotingId] = useState<string | null>(null);
+  const [promoteBanner, setPromoteBanner] = useState("");
   const [page, setPage] = useState(0);
+  useEffect(() => {
+    setOriginFilter(initialOrigin);
+  }, [initialOrigin]);
+
+  const handlePromoteAgent = useCallback(
+    async (agent: IndexedAgent) => {
+      setPromotingId(agent.id);
+      setPromoteBanner("");
+      try {
+        const res = await request<{ taskId: string; title: string; alreadyLinked?: boolean }>(
+          "/api/opc/planning/promote-herdr",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              herdrAddress: agent.herdr?.address ?? "",
+              sessionId: agent.linkedSessionId ?? "",
+              project: agent.classification?.canonicalProject || agent.herdr?.spaceName || "个人工作区",
+              provider: agent.provider,
+              title: agent.title || agent.label,
+              herdrSpace: agent.herdr?.spaceName ?? null,
+              workspace: agent.workspace,
+              liveStatus: agent.state === "working" ? "running" : agent.state === "waiting" ? "waiting_user" : "idle",
+              latestProgress: agent.what || agent.title || null,
+              originTrack: agent.originTrack ?? "founder_managed",
+            }),
+          },
+        );
+        setPromoteBanner(
+          res.alreadyLinked
+            ? `已同步到现有看板任务「${res.title}」`
+            : `已纳入人机看板持续追踪：「${res.title}」`,
+        );
+        void index.load(true);
+      } finally {
+        setPromotingId(null);
+      }
+    },
+    [index],
+  );
+
   const query = view === "repos" ? repoQuery : agentQuery;
   const term = query.trim().toLowerCase();
   const repositoryByName = useMemo(
@@ -318,18 +491,33 @@ export function ActivityPage({
     [index.data],
   );
   const matchingRepo = repositoryByName.get(repoKey(repo));
-  const rows = useMemo(() => {
-    const rows = (index.data?.agents ?? []).filter(
-      (a) =>
-        (!id || a.id === id) &&
-        (!repo || repoKey(a.repository ?? "") === repoKey(repo)) &&
-        (!state || a.state === state),
-    );
-    return rows
+  const { primaryRows, backgroundRows, subAgentsByParent } = useMemo(() => {
+    const allFiltered = (index.data?.agents ?? [])
+      .filter(
+        (a) =>
+          (!id || a.id === id) &&
+          (!repo || repoKey(a.repository ?? "") === repoKey(repo)) &&
+          (!state || a.state === state) &&
+          (!categoryFilter || (a.classification?.category ?? "personal") === categoryFilter) &&
+          (!originFilter || (a.originTrack ?? "founder_managed") === originFilter),
+      )
       .filter((a) =>
-        [a.label, a.provider, a.repository, a.workspace, ...a.sources, stateNames[a.state]].some((v) =>
-          v?.toLowerCase().includes(term),
-        ),
+        [
+          a.label,
+          a.provider,
+          a.repository,
+          a.workspace,
+          a.title,
+          a.what,
+          a.taskWhat,
+          a.herdr?.spaceName,
+          a.herdr?.address,
+          a.classification?.canonicalProject,
+          a.classification?.group,
+          a.classification?.categoryLabel,
+          ...a.sources,
+          stateNames[a.state],
+        ].some((v) => v?.toLowerCase().includes(term)),
       )
       .sort(
         (a, b) =>
@@ -337,22 +525,49 @@ export function ActivityPage({
           (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") ||
           a.id.localeCompare(b.id),
       );
-  }, [index.data, id, repo, state, term]);
+
+    // Fold sub-agents under live parent terminals when not viewing a single specific agent ID
+    const liveParentAddrs = new Set(
+      allFiltered.map((a) => a.herdr?.address).filter((v): v is string => Boolean(v)),
+    );
+    const subs = new Map<string, IndexedAgent[]>();
+    const primary: IndexedAgent[] = [];
+    const background: IndexedAgent[] = [];
+
+    for (const a of allFiltered) {
+      if (!id && a.herdr?.parent && liveParentAddrs.has(a.herdr.parent)) {
+        const list = subs.get(a.herdr.parent) ?? [];
+        list.push(a);
+        subs.set(a.herdr.parent, list);
+        continue;
+      }
+      if (!id && a.herdr?.isBackground) {
+        background.push(a);
+        continue;
+      }
+      primary.push(a);
+    }
+    return { primaryRows: primary, backgroundRows: background, subAgentsByParent: subs };
+  }, [index.data, id, repo, state, categoryFilter, originFilter, term]);
+  const rows = primaryRows;
   const repos = useMemo(
     () =>
       (index.data?.repositories ?? []).filter(
         (r) =>
           (!relation || r.relations.includes(relation)) &&
+          (!categoryFilter || (r.classification?.category ?? "personal") === categoryFilter) &&
           [
             r.fullName,
             r.description,
             r.language,
+            r.classification?.group,
+            r.classification?.categoryLabel,
             ...r.paths,
             ...r.relations,
             ...r.managed.map((p) => p.product + "/" + p.project),
           ].some((v) => v?.toLowerCase().includes(term)),
       ),
-    [index.data, relation, term],
+    [index.data, relation, categoryFilter, term],
   );
   const agentsByRepo = useMemo(() => {
     const counts = new Map<string, number>();
@@ -379,6 +594,9 @@ export function ActivityPage({
       <header className="idx-heading">
         {nav}
         <h1>会话与仓库索引</h1>
+        <a href="#cli-ledger" style={{ fontSize: 13, marginLeft: "auto" }}>
+          打开 CLI 指令与进度可视化台账 ↗
+        </a>
         <button type="button" disabled={index.refreshing} onClick={() => void index.load(true)}>
           {index.refreshing ? "正在刷新…" : "刷新来源"}
         </button>
@@ -465,6 +683,20 @@ export function ActivityPage({
                     placeholder={view === "repos" ? "仓库名称、路径、领域或项目" : "agent、工作目录、仓库或来源"}
                   />
                 </label>
+                <label>
+                  归属分类
+                  <select
+                    value={categoryFilter}
+                    onChange={(event) => setCategoryFilter(event.target.value as WorkspaceCategory | "")}
+                  >
+                    <option value="">全部分类</option>
+                    {WORKSPACE_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {WORKSPACE_CATEGORY_LABELS[cat]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 {view === "repos" ? (
                   <label>
                     仓库归属
@@ -476,30 +708,51 @@ export function ActivityPage({
                     </select>
                   </label>
                 ) : (
-                  <label>
-                    工作状态
-                    <select
-                      value={state}
-                      onChange={(event) => {
-                        const p: Record<string, string> = {};
-                        if (repo) p.repo = repo;
-                        if (id) p.agent = id;
-                        if (event.target.value) p.state = event.target.value;
-                        location.hash = activityLink("agents", p);
-                      }}
-                    >
-                      <option value="">全部状态</option>
-                      {Object.entries(stateNames).map(([v, text]) => (
-                        <option key={v} value={v}>
-                          {text}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <>
+                    <label>
+                      来源轨道
+                      <select
+                        value={originFilter}
+                        onChange={(event) => setOriginFilter(event.target.value as WorkOriginTrack | "")}
+                      >
+                        <option value="">全部来源</option>
+                        <option value="opc_dispatched">⚙ {WORK_ORIGIN_LABELS.opc_dispatched}</option>
+                        <option value="founder_managed">👤 {WORK_ORIGIN_LABELS.founder_managed}</option>
+                      </select>
+                    </label>
+                    <label>
+                      工作状态
+                      <select
+                        value={state}
+                        onChange={(event) => {
+                          const p: Record<string, string> = {};
+                          if (repo) p.repo = repo;
+                          if (id) p.agent = id;
+                          if (originFilter) p.origin = originFilter;
+                          if (event.target.value) p.state = event.target.value;
+                          location.hash = activityLink("agents", p);
+                        }}
+                      >
+                        <option value="">全部状态</option>
+                        {Object.entries(stateNames).map(([v, text]) => (
+                          <option key={v} value={v}>
+                            {text}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
                 )}
               </div>
+              {promoteBanner && (
+                <p role="status" className="idx-muted" style={{ margin: "6px 0" }}>
+                  {promoteBanner}{" "}
+                  <a href="#planning">打开人机看板 ↗</a>
+                </p>
+              )}
               <p className="idx-count">
-                {total} {view === "repos" ? "个仓库" : "个会话及进程"}
+                {total} {view === "repos" ? "个仓库" : "个主会话及进程"}
+                {view === "agents" && backgroundRows.length > 0 && ` · 另有 ${backgroundRows.length} 个后台静默终端已折叠`}
                 {pages > 1 && " · 当前 " + (start + 1) + "–" + Math.min(start + pageSize, total)}
               </p>
               {total === 0 ? (
@@ -507,20 +760,51 @@ export function ActivityPage({
               ) : view === "repos" ? (
                 <ul className="idx-results" aria-label="仓库列表">
                   {repos.slice(start, start + pageSize).map((r) => (
-                    <RepoRow key={r.fullName} repo={r} agents={agentsByRepo.get(repoKey(r.fullName)) ?? 0} />
-                  ))}
-                </ul>
-              ) : (
-                <ul className="idx-results" aria-label="会话列表">
-                  {rows.slice(start, start + pageSize).map((a) => (
-                    <AgentRow
-                      key={a.id}
-                      agent={a}
-                      selected={a.id === id}
-                      repo={a.repository ? repositoryByName.get(repoKey(a.repository)) : undefined}
+                    <RepoRow
+                      key={r.fullName}
+                      repo={r}
+                      agents={agentsByRepo.get(repoKey(r.fullName)) ?? 0}
+                      onClassified={() => void index.load(true)}
                     />
                   ))}
                 </ul>
+              ) : (
+                <>
+                  <ul className="idx-results" aria-label="会话列表">
+                    {rows.slice(start, start + pageSize).map((a) => (
+                      <AgentRow
+                        key={a.id}
+                        agent={a}
+                        selected={a.id === id}
+                        repo={a.repository ? repositoryByName.get(repoKey(a.repository)) : undefined}
+                        subAgents={a.herdr?.address ? subAgentsByParent.get(a.herdr.address) : undefined}
+                        promoting={promotingId === a.id}
+                        onPromote={(target) => void handlePromoteAgent(target)}
+                        onClassified={() => void index.load(true)}
+                      />
+                    ))}
+                  </ul>
+                  {backgroundRows.length > 0 && (
+                    <details className="dt-background-drawer">
+                      <summary>
+                        后台静默 / 未挂载 Space 的终端（{backgroundRows.length} 个，已折叠以免干扰主工作现场）
+                      </summary>
+                      <ul className="idx-results" style={{ marginTop: 10 }}>
+                        {backgroundRows.map((a) => (
+                          <AgentRow
+                            key={a.id}
+                            agent={a}
+                            selected={a.id === id}
+                            repo={a.repository ? repositoryByName.get(repoKey(a.repository)) : undefined}
+                            promoting={promotingId === a.id}
+                            onPromote={(target) => void handlePromoteAgent(target)}
+                            onClassified={() => void index.load(true)}
+                          />
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </>
               )}
               {pages > 1 && (
                 <nav className="idx-pager" aria-label="索引分页">

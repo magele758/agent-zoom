@@ -1371,7 +1371,7 @@ export function MetabolismHub({ nav, initialTab }: { nav?: ReactNode; initialTab
             </div>
 
             {heatmap && heatmap.projects.length > 0 ? (
-              <div className="mh-table-wrap">
+              <div className="mh-table-wrap opc-table-scroll" role="region" aria-label="项目月度净收支" tabIndex={0}>
                 <table className="mh-heatmap-table">
                   <thead>
                     <tr>
@@ -1586,7 +1586,7 @@ export function MetabolismHub({ nav, initialTab }: { nav?: ReactNode; initialTab
                 {payments.length === 0 ? (
                   <p className="mh-muted">暂无订单流水。</p>
                 ) : (
-                  <div className="mh-table-wrap">
+                  <div className="mh-table-wrap opc-table-scroll" role="region" aria-label="收款流水" tabIndex={0}>
                     <table className="mh-simple-table">
                       <thead>
                         <tr>

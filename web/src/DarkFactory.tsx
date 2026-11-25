@@ -163,6 +163,7 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
   const [dispatchVerifyCommand, setDispatchVerifyCommand] = useState("");
   const [dispatchAgentId, setDispatchAgentId] = useState("");
   const [dispatchAutoPr, setDispatchAutoPr] = useState(false);
+  const [dispatchExecutionHost, setDispatchExecutionHost] = useState<"subprocess" | "herdr">("subprocess");
   const [releases, setReleases] = useState<Array<{
     id: string;
     runId: string | null;
@@ -476,6 +477,7 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
           verifyCommand: dispatchVerifyCommand.trim() || undefined,
           agentId: dispatchAgentId,
           autoCreatePr: dispatchAutoPr,
+          executionHost: dispatchExecutionHost,
         }),
       });
       setDispatchTaskId(defaultTaskId());
@@ -1007,6 +1009,18 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
                       ))}
                     </select>
                   </label>
+
+                  <label>
+                    执行宿主
+                    <select
+                      aria-label="执行宿主"
+                      value={dispatchExecutionHost}
+                      onChange={(e) => setDispatchExecutionHost(e.target.value as "subprocess" | "herdr")}
+                    >
+                      <option value="subprocess">后台子进程（默认静默）</option>
+                      <option value="herdr">Herdr 项目空间（可随时切屏接管）</option>
+                    </select>
+                  </label>
                 </div>
 
                 <div className="df-form-row">
@@ -1103,7 +1117,7 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
             {filteredRuns.length === 0 ? (
               <div className="df-empty-box">当前筛选条件下暂无执行记录。</div>
             ) : (
-              <div className="df-table-wrap">
+              <div className="df-table-wrap opc-table-scroll" role="region" aria-label="暗工厂执行记录" tabIndex={0}>
                 <table className="df-table">
                   <thead>
                     <tr>
@@ -1130,6 +1144,16 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
                           <div className="df-run-branch" title={run.branchName ?? run.worktreePath ?? ""}>
                             {run.branchName || "非 Git 沙盒"}
                           </div>
+                          {(run.executionHost === "herdr" || run.herdrTerminal) && (
+                            <span
+                              className="df-tag"
+                              style={{ marginTop: 4, display: "inline-block" }}
+                              title={`Herdr Space: ${run.herdrSpace ?? "默认"} · 终端: ${run.herdrTerminal ?? "等待分配"}`}
+                            >
+                              Herdr · {run.herdrTerminal || "挂载中"}
+                              {run.herdrSpace ? ` (${run.herdrSpace})` : ""}
+                            </span>
+                          )}
                         </td>
                         <td>
                           <div className="df-status-stack">
@@ -1422,7 +1446,7 @@ export function DarkFactory({ nav, initialRunId }: { nav?: ReactNode; initialRun
             {releases.length === 0 ? (
               <div className="df-empty-box">暂无发布记录。在上方完工任务点击「🚀 申请合入真上线」即可发起。</div>
             ) : (
-              <div className="df-table-wrap">
+              <div className="df-table-wrap opc-table-scroll" role="region" aria-label="项目发布记录" tabIndex={0}>
                 <table className="df-table">
                   <thead>
                     <tr>

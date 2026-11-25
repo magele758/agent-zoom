@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { productStages, type ProductStageId } from "../../src/product-stages";
 import type { ZoomMessage } from "../../src/zoom-types";
 import type { BusinessPortfolio } from "../../src/business-types";
@@ -15,8 +15,9 @@ import "./digital-twin.css";
 
 type Circuit = "all" | "decision" | "rd" | "commercial" | "runtime";
 type Lens = "spatial" | "loops" | "atlas";
-type CanvasTheme = "night" | "paper";
+type Phosphor = "green" | "amber";
 type AtlasFilter = "all" | Exclude<Circuit, "all"> | "stages";
+type NodeStatus = "ok" | "active" | "alert" | "idle";
 
 type TwinNode = {
   id: string;
@@ -33,7 +34,7 @@ type TwinNode = {
   y: number;
   w: number;
   h: number;
-  status: "ok" | "active" | "alert" | "idle";
+  status: NodeStatus;
   chips?: Array<{ label: string; href: string }>;
 };
 
@@ -77,43 +78,115 @@ const EDGES: TwinEdge[] = [
   { from: "worklog", to: "substrate", circuit: "runtime" },
 ];
 
-const CIRCUIT_META: Record<
-  Exclude<Circuit, "all">,
-  { night: string; paper: string; softNight: string; softPaper: string; name: string; short: string }
+const CIRCUIT_META: Record<Exclude<Circuit, "all">, { color: string; name: string; short: string }> = {
+  decision: { color: "#ffb547", name: "创始人决策与委派回路", short: "决策脑枢" },
+  rd: { color: "#4af59d", name: "多 Agent 产研与交付回路", short: "产研工坊" },
+  commercial: { color: "#f47ad6", name: "商业变现与公司治理回路", short: "商业四部" },
+  runtime: { color: "#52d6f4", name: "现场会话与底座遥测回路", short: "底座遥测" },
+};
+
+const ALERT_COLOR = "#ff5c52";
+const LIVE_COLOR = "#4af59d";
+
+const STATUS_META: Record<NodeStatus, { tag: string; label: string }> = {
+  alert: { tag: "ALERT", label: "待裁决 / 告警" },
+  active: { tag: "ACTIVE", label: "实时活跃" },
+  ok: { tag: "STEADY", label: "稳态在线" },
+  idle: { tag: "IDLE", label: "静默待命" },
+};
+
+const SIGNAL_TAG: Record<ZoomMessage["kind"], string> = {
+  task: "TASK",
+  progress: "PROG",
+  question: "ASK?",
+  decision: "DCSN",
+  completed: "DONE",
+  reply: "RPLY",
+  recovery: "RCVR",
+};
+
+const LENSES: Array<{ id: Lens; label: string; code: string; caption: string }> = [
+  { id: "spatial", label: "全息空间沙盘", code: "TOPOLOGY", caption: "悬停节点追踪上下游链路 · 单击直达现场" },
+  { id: "loops", label: "双闭环价值流", code: "PIPELINES", caption: "产研交付链 × 商业变现链双轨透视" },
+  { id: "atlas", label: "全功能星图", code: "ATLAS", caption: "全应用舱室与十三阶工作台快速检索" },
+];
+
+const PHOSPHORS: Array<{ id: Phosphor; code: string; label: string }> = [
+  { id: "green", code: "P1", label: "绿磷" },
+  { id: "amber", code: "P3", label: "琥珀" },
+];
+
+const SCREEN: Record<
+  Phosphor,
+  {
+    bg: string;
+    dot: string;
+    cross: string;
+    zoneFill: string;
+    zoneStroke: string;
+    bracket: string;
+    zoneCode: string;
+    zoneLabel: string;
+    spine: string;
+    nodeBg: string;
+    nodeBgSelected: string;
+    title: string;
+    sub: string;
+    code: string;
+    ink: string;
+    quiet: string;
+    steady: string;
+    idle: string;
+  }
 > = {
-  decision: {
-    night: "#f29263",
-    paper: "#a33a20",
-    softNight: "rgba(242, 146, 99, 0.14)",
-    softPaper: "rgba(163, 58, 32, 0.10)",
-    name: "创始人决策与委派回路",
-    short: "决策脑枢",
+  green: {
+    bg: "#030705",
+    dot: "rgba(74, 245, 157, 0.12)",
+    cross: "rgba(74, 245, 157, 0.3)",
+    zoneFill: "rgba(74, 245, 157, 0.018)",
+    zoneStroke: "rgba(74, 245, 157, 0.2)",
+    bracket: "rgba(74, 245, 157, 0.75)",
+    zoneCode: "#4af59d",
+    zoneLabel: "#8fbfa1",
+    spine: "rgba(74, 245, 157, 0.16)",
+    nodeBg: "#05100a",
+    nodeBgSelected: "#0a1c12",
+    title: "#e4fcee",
+    sub: "#7aa98c",
+    code: "#4c7a5e",
+    ink: "#02110a",
+    quiet: "#56836a",
+    steady: "#92c2a4",
+    idle: "#2f4a39",
   },
-  rd: {
-    night: "#5ad9a4",
-    paper: "#216147",
-    softNight: "rgba(90, 217, 164, 0.14)",
-    softPaper: "rgba(33, 97, 71, 0.10)",
-    name: "多 Agent 产研与交付回路",
-    short: "产研工坊",
-  },
-  commercial: {
-    night: "#e8ca88",
-    paper: "#8c5b1c",
-    softNight: "rgba(232, 202, 136, 0.15)",
-    softPaper: "rgba(140, 91, 28, 0.11)",
-    name: "商业变现与公司治理回路",
-    short: "商业四部",
-  },
-  runtime: {
-    night: "#7ab8ef",
-    paper: "#29547a",
-    softNight: "rgba(122, 184, 239, 0.14)",
-    softPaper: "rgba(41, 84, 122, 0.10)",
-    name: "现场会话与底座遥测回路",
-    short: "底座遥测",
+  amber: {
+    bg: "#070502",
+    dot: "rgba(255, 181, 71, 0.11)",
+    cross: "rgba(255, 181, 71, 0.28)",
+    zoneFill: "rgba(255, 181, 71, 0.018)",
+    zoneStroke: "rgba(255, 181, 71, 0.2)",
+    bracket: "rgba(255, 181, 71, 0.75)",
+    zoneCode: "#ffb547",
+    zoneLabel: "#c9a676",
+    spine: "rgba(255, 181, 71, 0.16)",
+    nodeBg: "#0e0904",
+    nodeBgSelected: "#1c1308",
+    title: "#fff0d6",
+    sub: "#b08f62",
+    code: "#7d6440",
+    ink: "#140c00",
+    quiet: "#8a6f48",
+    steady: "#c9a676",
+    idle: "#54422a",
   },
 };
+
+const ZONES = [
+  { x: 24, y: 14, w: 1152, h: 124, code: "01", label: "创始人决策脑枢 · FOUNDER_CORTEX" },
+  { x: 24, y: 164, w: 558, h: 366, code: "02", label: "产研资产与多 Agent 工坊 · RND_FOUNDRY" },
+  { x: 618, y: 164, w: 558, h: 366, code: "03", label: "商业变现与四部治理 · COMMERCIAL_HUB" },
+  { x: 24, y: 554, w: 1152, h: 104, code: "04", label: "现场会话与微服务底座 · SUBSTRATE" },
+];
 
 const STAGE_SHORT_LABEL: Partial<Record<ProductStageId, string>> = {
   acquisition: "营销获客",
@@ -161,31 +234,67 @@ function DtIcon({
   name,
   className = "dt-ico",
 }: {
-  name: "spatial" | "loops" | "atlas" | "moon" | "scroll" | "sync" | "search" | "folder" | "layers" | "chat" | "pulse" | "spark";
+  name: "sync" | "folder" | "layers" | "chat" | "pulse";
   className?: string;
 }) {
   const paths: Record<typeof name, string> = {
-    spatial: "M12 2.8 20.2 7.5v9L12 21.2 3.8 16.5v-9Z M12 2.8v9.2 M20.2 7.5 12 12 3.8 7.5",
-    loops: "M4 8.5h11.5a3.5 3.5 0 0 1 0 7H13 M12.5 5.8 15.5 8.5l-3 2.7 M20 15.5H8.5a3.5 3.5 0 0 1 0-7H11 M11.5 18.2 8.5 15.5l3-2.7",
-    atlas: "M4 4h6.5v6.5H4Z M13.5 4H20v6.5h-6.5Z M4 13.5h6.5V20H4Z M13.5 13.5H20V20h-6.5Z",
-    moon: "M18.4 14.8A7.2 7.2 0 0 1 9.2 5.6a7.4 7.4 0 1 0 9.2 9.2Z",
-    scroll: "M6 4.5h10.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6.5a2 2 0 0 1-2-2v-11A1.5 1.5 0 0 1 6 4.5Z M8.5 9h7 M8.5 12.5h7 M8.5 16h4.5",
     sync: "M19.5 12a7.5 7.5 0 0 1-12.8 5.3L4.5 15 M4.5 19v-4h4 M4.5 12a7.5 7.5 0 0 1 12.8-5.3L19.5 9 M19.5 5v4h-4",
-    search: "M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z M15.8 15.8 20 20",
     folder: "M3.5 6.5A1.5 1.5 0 0 1 5 5h4.4l2 2H19a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5Z",
     layers: "M12 3.5 20.5 8 12 12.5 3.5 8Z M3.5 12l8.5 4.5L20.5 12 M3.5 16l8.5 4.5L20.5 16",
     chat: "M4.5 5.5h15a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5H9l-4.5 3v-3H4.5A1.5 1.5 0 0 1 3 15.5V7a1.5 1.5 0 0 1 1.5-1.5Z",
     pulse: "M2.5 12h4.2l2.4-5.5 3.6 11 2.6-5.5h6.2",
-    spark: "M12 3v3.5 M12 17.5V21 M3 12h3.5 M17.5 12H21 M6.3 6.3l2.4 2.4 M15.3 15.3l2.4 2.4 M17.7 6.3l-2.4 2.4 M8.7 15.3l-2.4 2.4",
   };
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className={className} fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className} fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" strokeLinejoin="miter">
       <path d={paths[name]} />
     </svg>
   );
 }
 
-function roundedPolyline(points: Array<[number, number]>, radius = 8): string {
+const pad2 = (value: number) => String(value).padStart(2, "0");
+
+function clockStamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+  if (date.toDateString() === new Date().toDateString()) return time;
+  return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time.slice(0, 5)}`;
+}
+
+function readableRoute(href: string): string {
+  try {
+    return decodeURIComponent(href.replace(/\+/g, " "));
+  } catch {
+    return href;
+  }
+}
+
+// SVG text has no layout box, so zone title plates are sized from mono advance widths (CJK = 1em, Latin = 0.6em).
+function monoTextWidth(text: string, size: number): number {
+  let width = 0;
+  for (const ch of text) width += /[\u2e80-\u9fff\uff00-\uffef]/.test(ch) ? size : size * 0.6;
+  return width;
+}
+
+function DtClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return (
+    <span className="dt-sb-cell dt-sb-clock">
+      <em>LOCAL</em>
+      <b>
+        <time dateTime={now.toISOString()}>
+          {pad2(now.getHours())}:{pad2(now.getMinutes())}:{pad2(now.getSeconds())}
+        </time>
+      </b>
+    </span>
+  );
+}
+
+function roundedPolyline(points: Array<[number, number]>, radius = 4): string {
   if (points.length < 2) return "";
   let d = `M ${points[0][0]} ${points[0][1]}`;
   for (let i = 1; i < points.length - 1; i++) {
@@ -281,27 +390,31 @@ function conduitRoute(a: TwinNode, b: TwinNode): {
   };
 }
 
-function ZoneBrackets({
+function Brackets({
   x,
   y,
   w,
   h,
   stroke,
+  size = 9,
+  opacity = 1,
 }: {
   x: number;
   y: number;
   w: number;
   h: number;
   stroke: string;
+  size?: number;
+  opacity?: number;
 }) {
-  const s = 9;
+  const s = size;
   const d = [
     `M ${x} ${y + s} V ${y} H ${x + s}`,
     `M ${x + w - s} ${y} H ${x + w} V ${y + s}`,
     `M ${x} ${y + h - s} V ${y + h} H ${x + s}`,
     `M ${x + w - s} ${y + h} H ${x + w} V ${y + h - s}`,
   ].join(" ");
-  return <path d={d} fill="none" stroke={stroke} strokeWidth="1.5" />;
+  return <path d={d} fill="none" stroke={stroke} strokeOpacity={opacity} strokeWidth="1.5" />;
 }
 
 export function DigitalTwin({
@@ -324,13 +437,15 @@ export function DigitalTwin({
   activityIndex: ReturnType<typeof useActivityIndex>;
 }) {
   const [lens, setLens] = useState<Lens>("spatial");
-  const [theme, setTheme] = useState<CanvasTheme>("night");
+  const [phosphor, setPhosphor] = useState<Phosphor>("green");
   const [circuit, setCircuit] = useState<Circuit>("all");
   const [focusedId, setFocusedId] = useState<string>("pending");
   const [query, setQuery] = useState("");
   const [atlasFilter, setAtlasFilter] = useState<AtlasFilter>("all");
   const [remote, setRemote] = useState<RemoteSnapshot>(EMPTY_REMOTE);
   const [refreshing, setRefreshing] = useState(false);
+  const [reducedMotion] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const loadRemote = useCallback(async () => {
     setRefreshing(true);
@@ -399,6 +514,34 @@ export function DigitalTwin({
     }, 10000);
     return () => window.clearInterval(timer);
   }, [loadRemote]);
+
+  const refresh = useCallback(() => {
+    void loadRemote();
+    void activityIndex.load(true);
+  }, [loadRemote, activityIndex]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable]")) return;
+      if (event.key === "1" || event.key === "2" || event.key === "3") {
+        setLens(LENSES[Number(event.key) - 1].id);
+      } else if (event.key === "r" || event.key === "R") {
+        if (!refreshing) refresh();
+      } else if (event.key === "/") {
+        event.preventDefault();
+        setLens("atlas");
+        window.requestAnimationFrame(() => searchRef.current?.focus());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [refresh, refreshing]);
+
+  const signalLog = useMemo(
+    () => [...messages].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 6),
+    [messages]
+  );
 
   const stageStats = useMemo(() => {
     const map = new Map<ProductStageId, { tasks: Set<string>; pending: number }>();
@@ -936,7 +1079,7 @@ export function DigitalTwin({
     return [
       ...nodes.map(n => ({
         key: n.id,
-        category: n.circuit as AtlasFilter,
+        category: n.circuit,
         code: n.code,
         group: n.zone,
         title: n.title,
@@ -960,41 +1103,29 @@ export function DigitalTwin({
     });
   }, [nodes, stageStats, query, atlasFilter]);
 
-  const isNight = theme === "night";
-  const palette = {
-    canvasBg: isNight ? "#0f1817" : "#f4f0e5",
-    minorGrid: isNight ? "rgba(202, 220, 212, 0.032)" : "rgba(44, 48, 42, 0.04)",
-    majorGrid: isNight ? "rgba(218, 200, 166, 0.07)" : "rgba(88, 82, 68, 0.085)",
-    reticle: isNight ? "rgba(232, 198, 144, 0.22)" : "rgba(116, 106, 86, 0.28)",
-    zoneBg: isNight ? "rgba(255, 255, 255, 0.02)" : "rgba(255, 253, 248, 0.72)",
-    zoneStroke: isNight ? "rgba(218, 198, 162, 0.14)" : "rgba(148, 140, 122, 0.34)",
-    zoneBracket: isNight ? "rgba(232, 196, 140, 0.42)" : "rgba(138, 92, 54, 0.46)",
-    zonePillBg: isNight ? "#152220" : "#eae4d5",
-    zonePillStroke: isNight ? "rgba(232, 196, 140, 0.24)" : "rgba(145, 136, 116, 0.45)",
-    zoneCode: isNight ? "#e7c388" : "#8f3b21",
-    zoneLabel: isNight ? "rgba(236, 228, 210, 0.78)" : "#4c4940",
-    cardFill: isNight ? "url(#dt-card-night)" : "url(#dt-card-paper)",
-    cardSelected: isNight ? "url(#dt-card-night-active)" : "url(#dt-card-paper-active)",
-    cardStroke: isNight ? "rgba(166, 194, 184, 0.24)" : "#c8c1b0",
-    cardTopHighlight: isNight ? "rgba(255, 255, 255, 0.07)" : "rgba(255, 255, 255, 0.9)",
-    title: isNight ? "#f8f4eb" : "#1f2421",
-    sub: isNight ? "#98aca4" : "#626056",
-    code: isNight ? "rgba(214, 224, 218, 0.42)" : "rgba(72, 74, 66, 0.48)",
-    quietBg: isNight ? "rgba(10, 16, 15, 0.56)" : "rgba(229, 224, 211, 0.72)",
-    quietText: isNight ? "#7d9089" : "#737065",
-  };
+  const screen = SCREEN[phosphor];
 
-  const statusColor = (status: TwinNode["status"]) => {
-    if (status === "alert") return isNight ? "#ff7b5a" : "#b3391e";
-    if (status === "active") return isNight ? "#5ce0a2" : "#226b49";
-    if (status === "ok") return isNight ? "#dfc089" : "#7c6844";
-    return isNight ? "#6d7e79" : "#969184";
+  const statusColor = (status: NodeStatus) => {
+    switch (status) {
+      case "alert":
+        return ALERT_COLOR;
+      case "active":
+        return LIVE_COLOR;
+      case "ok":
+        return screen.steady;
+      case "idle":
+        return screen.idle;
+      default: {
+        const unreachable: never = status;
+        return unreachable;
+      }
+    }
   };
 
   const stageGroups = [
-    { roman: "PHASE I", title: "产品定义", range: "01–04", slice: productStages.slice(0, 4) },
-    { roman: "PHASE II", title: "交付与运行", range: "05–09", slice: productStages.slice(4, 9) },
-    { roman: "PHASE III", title: "市场与财务", range: "10–13", slice: productStages.slice(9, 13) },
+    { roman: "PHASE_I", title: "产品定义", range: "01–04", slice: productStages.slice(0, 4) },
+    { roman: "PHASE_II", title: "交付与运行", range: "05–09", slice: productStages.slice(4, 9) },
+    { roman: "PHASE_III", title: "市场与财务", range: "10–13", slice: productStages.slice(9, 13) },
   ];
 
   const uniqueRooms = useMemo(
@@ -1021,88 +1152,105 @@ export function DigitalTwin({
   );
 
   const systemAlert = pending.length > 0 || (servicesReady && healthyServices < totalServices) || remote.securityOpen > 0;
-  const focusedAccent = isNight ? CIRCUIT_META[focused.circuit].night : CIRCUIT_META[focused.circuit].paper;
+  const systemState = !remote.syncedAt ? "BOOT" : systemAlert ? "ALERT" : "LIVE";
+  const focusedAccent = CIRCUIT_META[focused.circuit].color;
+  const activeLens = LENSES.find(item => item.id === lens) ?? LENSES[0];
 
   return (
-    <section className="zo-product dt-page" aria-label="组织数字孪生">
-      {/* Editorial Masthead & Tactile Instrument Bar */}
+    <section className="zo-product dt-page" data-phosphor={phosphor} aria-label="组织数字孪生">
       <header className="dt-head">
-        <div className="dt-head-top">
-          <div className="dt-title-wrap">
-            <div className="dt-eyebrow">
-              <span>KUNLUN ORGANISM · SPATIAL TELEMETRY</span>
-              <i aria-hidden="true" />
-              <span>22 核心舱室 · 13 阶价值链 · 31 神经束</span>
-            </div>
-            <div className="dt-title-row">
-              {nav}
-              <h1>组织数字孪生</h1>
-              <span className="dt-live-seal" data-alert={systemAlert}>
-                <i aria-hidden="true" />
-                {pending.length > 0
-                  ? `${pending.length} 项待拍板 · 实时沙盘`
-                  : servicesReady
-                    ? `全息脉搏在线 · ${22 + productStages.length} 锚点直连`
-                    : "正在接入神经遥测…"}
-              </span>
-            </div>
-            <p className="dt-sub">
-              将一人公司（OPC）的决策脑枢、昆仑多 Agent 工坊、商业四部与十三阶价值流映射为实时可交互星枢——悬停透视链路，单击直达现场。
-            </p>
-          </div>
-
-          <button
-            type="button"
-            className="dt-refresh"
-            data-syncing={refreshing}
-            disabled={refreshing}
-            onClick={() => {
-              void loadRemote();
-              void activityIndex.load(true);
-            }}
-          >
+        <div className="dt-statusbar">
+          <span className="dt-sb-brand">
+            <i aria-hidden="true" />
+            KUNLUN//OPC
+          </span>
+          <span className="dt-sb-cell dt-sb-host">twin@opc:~/organism</span>
+          <span className="dt-sb-cell dt-sb-count">
+            <em>NODES</em>
+            <b>{nodes.length}</b>
+          </span>
+          <span className="dt-sb-cell dt-sb-count">
+            <em>STAGES</em>
+            <b>{productStages.length}</b>
+          </span>
+          <span className="dt-sb-cell dt-sb-count">
+            <em>LINKS</em>
+            <b>{EDGES.length}</b>
+          </span>
+          <span className="dt-sb-fill" aria-hidden="true" />
+          <span className="dt-sb-cell dt-sb-state" data-state={systemState}>
+            <i aria-hidden="true" />
+            <b>{systemState}</b>
+          </span>
+          <DtClock />
+          <button type="button" className="dt-refresh" disabled={refreshing} onClick={refresh}>
             <DtIcon name="sync" className={refreshing ? "dt-ico is-spinning" : "dt-ico"} />
-            <span>{refreshing ? "同步脉搏…" : remote.syncedAt ? `脉搏 ${remote.syncedAt}` : "同步脉搏"}</span>
+            <span>{refreshing ? "SYNCING…" : remote.syncedAt ? `SYNC ${remote.syncedAt}` : "SYNC"}</span>
+            <kbd>R</kbd>
           </button>
         </div>
 
-        <div className="dt-controls">
-          <div className="dt-seg" role="group" aria-label="孪生透镜视角">
-            <button type="button" aria-pressed={lens === "spatial"} onClick={() => setLens("spatial")}>
-              <DtIcon name="spatial" />
-              <span>全息空间沙盘</span>
-            </button>
-            <button type="button" aria-pressed={lens === "loops"} onClick={() => setLens("loops")}>
-              <DtIcon name="loops" />
-              <span>双闭环价值流</span>
-            </button>
-            <button type="button" aria-pressed={lens === "atlas"} onClick={() => setLens("atlas")}>
-              <DtIcon name="atlas" />
-              <span>全功能星图</span>
-              <small>{22 + productStages.length}</small>
-            </button>
+        <div className="dt-head-main">
+          <div className="dt-title-wrap">
+            <p className="dt-prompt" aria-hidden="true">
+              <span className="dt-p-user">kunlun@opc</span>
+              <span className="dt-p-dim">:</span>
+              <span className="dt-p-path">~/organism</span>
+              <span className="dt-p-dim">$ </span>
+              <span className="dt-p-cmd">twin --lens={lens} --circuit={circuit} --watch=10s</span>
+              <i className="dt-caret" />
+            </p>
+            <div className="dt-title-row">
+              {nav}
+              <h1 data-text="组织数字孪生">组织数字孪生</h1>
+              <span className="dt-live-seal" data-alert={systemAlert}>
+                <i aria-hidden="true" />
+                {pending.length > 0
+                  ? `${pending.length} 项待拍板`
+                  : servicesReady
+                    ? `ONLINE · ${nodes.length + productStages.length} 锚点直连`
+                    : "正在接入遥测…"}
+              </span>
+            </div>
+            <p className="dt-sub">
+              <span aria-hidden="true">// </span>
+              一人公司（OPC）的决策脑枢、昆仑多 Agent 工坊、商业四部与十三阶价值流的实时拓扑。悬停节点追踪上下游，单击直达现场。
+            </p>
           </div>
 
-          {lens === "spatial" ? (
-            <div className="dt-seg dt-seg-compact" role="group" aria-label="沙盘画布风格">
-              <button type="button" aria-pressed={theme === "night"} onClick={() => setTheme("night")}>
-                <DtIcon name="moon" />
-                <span>昆仑夜航</span>
-              </button>
-              <button type="button" aria-pressed={theme === "paper"} onClick={() => setTheme("paper")}>
-                <DtIcon name="scroll" />
-                <span>宣纸堪舆</span>
-              </button>
-            </div>
-          ) : (
-            <span className="dt-lens-caption">
-              {lens === "loops" ? "产研交付链 × 商业变现链双轨透视" : "全应用 22 舱室与 13 阶工作台快速检索"}
-            </span>
-          )}
+          <aside className="dt-tail" aria-label="最新信号日志">
+            <header>
+              <span className="dt-tail-title">
+                <i aria-hidden="true" />
+                tail -f signals.log
+              </span>
+              <span>
+                {messages.length} 条 · <b data-hot={pending.length > 0}>{pending.length} 待办</b>
+              </span>
+            </header>
+            <ol>
+              {signalLog.length > 0 ? (
+                signalLog.map(item => (
+                  <li key={item.id}>
+                    <a href={decisionTarget(item)} data-pending={item.pending} data-kind={item.kind} title={item.taskTitle}>
+                      <time dateTime={item.at}>{clockStamp(item.at)}</time>
+                      <b>{item.pending ? "PEND" : SIGNAL_TAG[item.kind]}</b>
+                      <span className="dt-tail-src">{item.source}</span>
+                      <span className="dt-tail-msg">{item.taskTitle}</span>
+                    </a>
+                  </li>
+                ))
+              ) : (
+                <li className="dt-tail-note">-- 暂无信号，等待 Agent 上报 --</li>
+              )}
+              <li className="dt-tail-note" aria-hidden="true">
+                <span className="dt-caret" />
+              </li>
+            </ol>
+          </aside>
         </div>
       </header>
 
-      {/* 6-Card Precision Telemetry Vital Signs Strip */}
       <nav className="dt-vitals" aria-label="组织实时生命体征">
         <a
           className="dt-vital"
@@ -1203,312 +1351,348 @@ export function DigitalTwin({
         </a>
       </nav>
 
-      {/* LENS 1: Spatial Holographic Twin Blueprint */}
+      <div className="dt-lensbar">
+        <div className="dt-tabs" role="group" aria-label="孪生透镜视角">
+          {LENSES.map((item, idx) => (
+            <button key={item.id} type="button" aria-pressed={lens === item.id} onClick={() => setLens(item.id)}>
+              <kbd>{idx + 1}</kbd>
+              <span>{item.label}</span>
+              <small>{item.code}</small>
+              {item.id === "atlas" && <b>{nodes.length + productStages.length}</b>}
+            </button>
+          ))}
+        </div>
+        <span className="dt-lens-caption">
+          <span aria-hidden="true">» </span>
+          {activeLens.caption}
+        </span>
+        <div className="dt-phosphor" role="group" aria-label="终端磷光配色">
+          <span>PHOSPHOR</span>
+          {PHOSPHORS.map(item => (
+            <button key={item.id} type="button" aria-pressed={phosphor === item.id} onClick={() => setPhosphor(item.id)}>
+              <i data-phosphor={item.id} aria-hidden="true" />
+              {item.code} {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {lens === "spatial" && (
-        <div className="dt-stage-shell" data-theme={theme}>
-          <div className="dt-stage-bar">
+        <div className="dt-screen">
+          <div className="dt-screen-bar">
+            <span className="dt-screen-title">[ TOPOLOGY ]</span>
             <div className="dt-circuits" role="group" aria-label="信息流回路高亮">
-              <span className="dt-circuits-label">神经回路透视</span>
+              <span className="dt-flag" aria-hidden="true">
+                --circuit=
+              </span>
               <button type="button" aria-pressed={circuit === "all"} onClick={() => setCircuit("all")}>
-                全部回路
+                全部
               </button>
-              {(Object.keys(CIRCUIT_META) as Array<Exclude<Circuit, "all">>).map(key => {
-                const sw = isNight ? CIRCUIT_META[key].night : CIRCUIT_META[key].paper;
-                return (
-                  <button key={key} type="button" aria-pressed={circuit === key} onClick={() => setCircuit(key)}>
-                    <i className="dt-circuit-dot" style={{ background: sw }} aria-hidden="true" />
-                    {CIRCUIT_META[key].name}
-                  </button>
-                );
-              })}
+              {(Object.keys(CIRCUIT_META) as Array<Exclude<Circuit, "all">>).map(key => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={circuit === key}
+                  title={CIRCUIT_META[key].name}
+                  onClick={() => setCircuit(key)}
+                >
+                  <i className="dt-circuit-dot" style={{ background: CIRCUIT_META[key].color }} aria-hidden="true" />
+                  {CIRCUIT_META[key].short}
+                </button>
+              ))}
             </div>
-            <span className="dt-stage-hint">悬停透视上下游神经束 · 单击舱室立即直达</span>
+            <span className="dt-screen-hint">HOVER 追踪链路 · CLICK 直达</span>
           </div>
 
-          <div className="dt-canvas-scroll">
-            <svg
-              className="dt-svg"
-              viewBox="0 0 1200 668"
-              role="img"
-              aria-label="OPC 一人公司全息组织数字孪生拓扑沙盘"
-            >
-              <defs>
-                <pattern id="dt-grid-minor" width="24" height="24" patternUnits="userSpaceOnUse">
-                  <path d="M 24 0 L 0 0 0 24" fill="none" stroke={palette.minorGrid} strokeWidth="1" />
-                </pattern>
-                <pattern id="dt-grid-major" width="120" height="120" patternUnits="userSpaceOnUse">
-                  <rect width="120" height="120" fill="url(#dt-grid-minor)" />
-                  <path d="M 120 0 L 0 0 0 120" fill="none" stroke={palette.majorGrid} strokeWidth="1" />
-                  <path d="M -3 0 H 3 M 0 -3 V 3" fill="none" stroke={palette.reticle} strokeWidth="1" />
-                </pattern>
+          <div className="dt-canvas">
+            <div className="dt-canvas-scroll">
+              <svg className="dt-svg" viewBox="0 0 1200 668" role="img" aria-label="OPC 一人公司组织数字孪生拓扑沙盘">
+                <defs>
+                  <pattern id="dt-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+                    <rect x="11.4" y="11.4" width="1.2" height="1.2" fill={screen.dot} />
+                  </pattern>
+                  <pattern id="dt-cross" width="120" height="120" patternUnits="userSpaceOnUse">
+                    <path d="M 55 60 H 65 M 60 55 V 65" fill="none" stroke={screen.cross} strokeWidth="1" />
+                  </pattern>
+                  <filter id="dt-glow" x="-200%" y="-200%" width="500%" height="500%">
+                    <feGaussianBlur stdDeviation="2.4" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
 
-                <linearGradient id="dt-card-night" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#1e2d2b" />
-                  <stop offset="100%" stopColor="#15211f" />
-                </linearGradient>
-                <linearGradient id="dt-card-night-active" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#283d39" />
-                  <stop offset="100%" stopColor="#1c2c29" />
-                </linearGradient>
-                <linearGradient id="dt-card-paper" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#fffef9" />
-                  <stop offset="100%" stopColor="#f8f4e9" />
-                </linearGradient>
-                <linearGradient id="dt-card-paper-active" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#fffaf0" />
-                  <stop offset="100%" stopColor="#f4e6d2" />
-                </linearGradient>
+                <rect x="0" y="0" width="1200" height="668" fill={screen.bg} />
+                <rect x="0" y="0" width="1200" height="668" fill="url(#dt-dots)" />
+                <rect x="0" y="0" width="1200" height="668" fill="url(#dt-cross)" />
 
-                <radialGradient id="dt-aura-cortex" cx="50%" cy="0%" r="60%">
-                  <stop offset="0%" stopColor={isNight ? "rgba(242, 146, 99, 0.11)" : "rgba(163, 58, 32, 0.05)"} />
-                  <stop offset="100%" stopColor="rgba(0,0,0,0)" />
-                </radialGradient>
-                <radialGradient id="dt-aura-rd" cx="25%" cy="50%" r="48%">
-                  <stop offset="0%" stopColor={isNight ? "rgba(90, 217, 164, 0.08)" : "rgba(33, 97, 71, 0.04)"} />
-                  <stop offset="100%" stopColor="rgba(0,0,0,0)" />
-                </radialGradient>
-                <radialGradient id="dt-aura-comm" cx="78%" cy="50%" r="48%">
-                  <stop offset="0%" stopColor={isNight ? "rgba(232, 202, 136, 0.08)" : "rgba(140, 91, 28, 0.045)"} />
-                  <stop offset="100%" stopColor="rgba(0,0,0,0)" />
-                </radialGradient>
+                <line x1="600" y1="142" x2="600" y2="548" stroke={screen.spine} strokeDasharray="1 5" aria-hidden="true" />
 
-                <filter id="dt-glow" x="-20%" y="-20%" width="140%" height="140%">
-                  <feGaussianBlur stdDeviation="3.2" result="blur" />
-                  <feMerge>
-                    <feMergeNode in="blur" />
-                    <feMergeNode in="SourceGraphic" />
-                  </feMerge>
-                </filter>
-              </defs>
-
-              {/* Base Cartographic Ground & Ambient Zone Auras */}
-              <rect x="0" y="0" width="1200" height="668" fill={palette.canvasBg} />
-              <rect x="0" y="0" width="1200" height="668" fill="url(#dt-grid-major)" />
-              <rect x="0" y="0" width="1200" height="240" fill="url(#dt-aura-cortex)" />
-              <rect x="0" y="140" width="620" height="420" fill="url(#dt-aura-rd)" />
-              <rect x="580" y="140" width="620" height="420" fill="url(#dt-aura-comm)" />
-
-              {/* Central Neural Spine Guide */}
-              <line
-                x1="600"
-                y1="142"
-                x2="600"
-                y2="548"
-                stroke={palette.zoneStroke}
-                strokeDasharray="2 6"
-                aria-hidden="true"
-              />
-
-              {/* 4 Architectural Zone Plates */}
-              <g aria-hidden="true">
-                <rect x="24" y="14" width="1152" height="124" rx="6" fill={palette.zoneBg} stroke={palette.zoneStroke} />
-                <ZoneBrackets x={24} y={14} w={1152} h={124} stroke={palette.zoneBracket} />
-
-                <rect x="24" y="164" width="558" height="366" rx="6" fill={palette.zoneBg} stroke={palette.zoneStroke} />
-                <ZoneBrackets x={24} y={164} w={558} h={366} stroke={palette.zoneBracket} />
-
-                <rect x="618" y="164" width="558" height="366" rx="6" fill={palette.zoneBg} stroke={palette.zoneStroke} />
-                <ZoneBrackets x={618} y={164} w={558} h={366} stroke={palette.zoneBracket} />
-
-                <rect x="24" y="554" width="1152" height="104" rx="6" fill={palette.zoneBg} stroke={palette.zoneStroke} />
-                <ZoneBrackets x={24} y={554} w={1152} h={104} stroke={palette.zoneBracket} />
-              </g>
-
-              {/* Animated Information-Flow Conduits */}
-              <g aria-hidden="true">
-                {EDGES.map((edge, idx) => {
-                  const a = nodeMap.get(edge.from);
-                  const b = nodeMap.get(edge.to);
-                  if (!a || !b) return null;
-                  const route = conduitRoute(a, b);
-                  const color = isNight ? CIRCUIT_META[edge.circuit].night : CIRCUIT_META[edge.circuit].paper;
-                  const circuitMatch = circuit === "all" || circuit === edge.circuit;
-                  const hot = circuitMatch && (edge.from === focused.id || edge.to === focused.id);
-                  const dim = !circuitMatch;
-                  return (
-                    <g key={idx}>
-                      {hot && <path className="dt-conduit-halo" d={route.d} stroke={color} filter="url(#dt-glow)" />}
-                      <path className="dt-conduit" d={route.d} stroke={color} data-hot={hot} data-dim={dim} />
-                      <path className="dt-conduit-flow" d={route.d} stroke={color} data-hot={hot} data-dim={dim} />
-                      {hot && (
-                        <>
-                          <circle cx={route.start[0]} cy={route.start[1]} r="3" fill={color} />
-                          <circle cx={route.end[0]} cy={route.end[1]} r="3" fill={color} />
-                        </>
-                      )}
-                    </g>
-                  );
-                })}
-              </g>
-
-              {/* Silkscreen Zone Title Plates (rendered above conduits so traces never obscure typography) */}
-              <g aria-hidden="true">
-                {[
-                  { x: 36, y: 21, w: 468, code: "ZONE 01", text: "创始人决策脑枢与调度总控 · FOUNDER CORTEX" },
-                  { x: 36, y: 171, w: 446, code: "ZONE 02", text: "产研资产库与昆仑多 AGENT 工坊 · R&D FOUNDRY" },
-                  { x: 630, y: 171, w: 454, code: "ZONE 03", text: "商业变现与公司四部治理平面 · COMMERCIAL HUB" },
-                  { x: 36, y: 560, w: 492, code: "ZONE 04", text: "现场会话、能量账本与微服务底座 · SUBSTRATE" },
-                ].map(z => (
-                  <g key={z.code}>
-                    <rect x={z.x} y={z.y} width={z.w} height="19" rx="3" fill={palette.zonePillBg} stroke={palette.zonePillStroke} />
-                    <text x={z.x + 8} y={z.y + 13} fill={palette.zoneCode} fontSize="9.8" fontWeight="700" fontFamily="var(--dt-mono)" letterSpacing="0.08em">
-                      {z.code}
-                    </text>
-                    <text x={z.x + 62} y={z.y + 13} fill={palette.zoneLabel} fontSize="10.4" fontWeight="600" letterSpacing="0.05em">
-                      {z.text}
-                    </text>
-                  </g>
-                ))}
-              </g>
-
-              {/* 22 Interactive Clickable Twin Chambers */}
-              {nodes.map(node => {
-                const selected = focused.id === node.id;
-                const neighbor = lineage.connected.has(node.id) && !selected;
-                const circuitMatch = circuit === "all" || circuit === node.circuit;
-                const dim = !circuitMatch && !lineage.connected.has(node.id);
-                const meta = CIRCUIT_META[node.circuit];
-                const accent = isNight ? meta.night : meta.paper;
-                const softBg = isNight ? meta.softNight : meta.softPaper;
-                const dot = statusColor(node.status);
-                const compact = node.w < 190;
-                const subY = node.h < 74 ? 41 : 44;
-                const pillH = 18;
-                const pillY = node.y + node.h - pillH - 6;
-
-                return (
-                  <a
-                    key={node.id}
-                    href={node.href}
-                    className="dt-node"
-                    data-selected={selected}
-                    data-neighbor={neighbor}
-                    data-dim={dim}
-                    aria-label={`${node.title}（${node.metric}）— 点击直达`}
-                    onMouseEnter={() => setFocusedId(node.id)}
-                    onFocus={() => setFocusedId(node.id)}
-                  >
-                    {node.status === "alert" && (
+                <g aria-hidden="true">
+                  {ZONES.map(zone => (
+                    <g key={zone.code}>
                       <rect
-                        className="dt-pulse-ring"
-                        x={node.x - 2}
-                        y={node.y - 2}
-                        width={node.w + 4}
-                        height={node.h + 4}
-                        rx="7"
+                        x={zone.x}
+                        y={zone.y}
+                        width={zone.w}
+                        height={zone.h}
+                        fill={screen.zoneFill}
+                        stroke={screen.zoneStroke}
+                        strokeDasharray="2 4"
                       />
-                    )}
-                    <rect
-                      className="dt-node-box"
-                      x={node.x}
-                      y={node.y}
-                      width={node.w}
-                      height={node.h}
-                      rx="5"
-                      fill={selected ? palette.cardSelected : palette.cardFill}
-                      stroke={selected ? accent : neighbor ? accent : palette.cardStroke}
-                      strokeOpacity={selected ? 1 : neighbor ? 0.58 : 1}
-                    />
-                    {/* Subtle Top Specular Hairline */}
-                    <line
-                      x1={node.x + 6}
-                      y1={node.y + 1}
-                      x2={node.x + node.w - 6}
-                      y2={node.y + 1}
-                      stroke={palette.cardTopHighlight}
-                      strokeWidth="1"
-                    />
-                    {/* Left Circuit Accent Bar */}
-                    <rect x={node.x + 1} y={node.y + 5} width="3" height={node.h - 10} rx="1.5" fill={accent} />
+                      <Brackets x={zone.x} y={zone.y} w={zone.w} h={zone.h} size={12} stroke={screen.bracket} />
+                    </g>
+                  ))}
+                </g>
 
-                    {/* Status Dot + Chamber Title */}
-                    <circle cx={node.x + 14} cy={node.y + 20} r="3.6" fill={dot} />
-                    {node.status === "active" && (
-                      <circle cx={node.x + 14} cy={node.y + 20} r="6.2" fill="none" stroke={dot} strokeOpacity="0.28" />
-                    )}
-                    <text
-                      x={node.x + 24}
-                      y={node.y + 24.5}
-                      fill={palette.title}
-                      fontSize={compact ? "13.8" : "15"}
-                      fontWeight="600"
-                      fontFamily="var(--dt-serif)"
+                <g aria-hidden="true">
+                  {EDGES.map((edge, idx) => {
+                    const a = nodeMap.get(edge.from);
+                    const b = nodeMap.get(edge.to);
+                    if (!a || !b) return null;
+                    const route = conduitRoute(a, b);
+                    const color = CIRCUIT_META[edge.circuit].color;
+                    const circuitMatch = circuit === "all" || circuit === edge.circuit;
+                    const hot = circuitMatch && (edge.from === focused.id || edge.to === focused.id);
+                    const dim = !circuitMatch;
+                    return (
+                      <g key={idx}>
+                        {hot && <path className="dt-conduit-halo" d={route.d} stroke={color} />}
+                        <path className="dt-conduit" d={route.d} stroke={color} data-hot={hot} data-dim={dim} />
+                        <path className="dt-conduit-flow" d={route.d} stroke={color} data-hot={hot} data-dim={dim} />
+                        {hot && (
+                          <>
+                            <rect x={route.start[0] - 2.5} y={route.start[1] - 2.5} width="5" height="5" fill={color} />
+                            <rect x={route.end[0] - 2.5} y={route.end[1] - 2.5} width="5" height="5" fill={color} />
+                            {!reducedMotion &&
+                              [0, 1].map(i => (
+                                <rect key={i} x="-2.5" y="-2.5" width="5" height="5" fill={color} filter="url(#dt-glow)">
+                                  <animateMotion dur="2.4s" begin={`-${i * 1.2}s`} repeatCount="indefinite" path={route.d} />
+                                </rect>
+                              ))}
+                          </>
+                        )}
+                      </g>
+                    );
+                  })}
+                </g>
+
+                {/* Title plates sit on the zone's top border and above the conduits, so traces pass under the label. */}
+                <g aria-hidden="true">
+                  {ZONES.map(zone => {
+                    const codeText = `[ZONE.${zone.code}]`;
+                    const codeWidth = monoTextWidth(codeText, 9.6);
+                    const plateX = zone.x + 16;
+                    const plateWidth = 8 + codeWidth + 8 + monoTextWidth(zone.label, 10) + 8;
+                    return (
+                      <g key={zone.code}>
+                        <rect x={plateX} y={zone.y - 8} width={plateWidth} height="16" fill={screen.bg} />
+                        <text
+                          x={plateX + 8}
+                          y={zone.y + 3.5}
+                          fill={screen.zoneCode}
+                          fontSize="9.6"
+                          fontWeight="700"
+                          fontFamily="var(--dt-mono)"
+                        >
+                          {codeText}
+                        </text>
+                        <text
+                          x={plateX + 16 + codeWidth}
+                          y={zone.y + 3.5}
+                          fill={screen.zoneLabel}
+                          fontSize="10"
+                          fontWeight="500"
+                          fontFamily="var(--dt-mono)"
+                        >
+                          {zone.label}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </g>
+
+                {nodes.map(node => {
+                  const selected = focused.id === node.id;
+                  const neighbor = lineage.connected.has(node.id) && !selected;
+                  const circuitMatch = circuit === "all" || circuit === node.circuit;
+                  const dim = !circuitMatch && !lineage.connected.has(node.id);
+                  const accent = CIRCUIT_META[node.circuit].color;
+                  const alert = node.status === "alert";
+                  const compact = node.w < 190;
+                  const metricY = node.y + node.h - 22;
+                  const metricColor = alert ? ALERT_COLOR : node.quiet ? screen.quiet : accent;
+                  const headInk = selected ? screen.ink : undefined;
+
+                  return (
+                    <a
+                      key={node.id}
+                      href={node.href}
+                      className="dt-node"
+                      data-selected={selected}
+                      data-neighbor={neighbor}
+                      data-dim={dim}
+                      aria-label={`${node.title}（${node.metric}）— 点击直达`}
+                      onMouseEnter={() => setFocusedId(node.id)}
+                      onFocus={() => setFocusedId(node.id)}
                     >
-                      {node.title}
-                    </text>
-
-                    {/* Top-right Code & Direct Arrow */}
-                    {!compact && (
+                      {alert && (
+                        <rect
+                          className="dt-pulse-ring"
+                          x={node.x - 4}
+                          y={node.y - 4}
+                          width={node.w + 8}
+                          height={node.h + 8}
+                        />
+                      )}
+                      {(selected || neighbor) && (
+                        <Brackets
+                          x={node.x - 4}
+                          y={node.y - 4}
+                          w={node.w + 8}
+                          h={node.h + 8}
+                          size={7}
+                          stroke={accent}
+                          opacity={selected ? 1 : 0.6}
+                        />
+                      )}
+                      <rect
+                        className="dt-node-box"
+                        x={node.x}
+                        y={node.y}
+                        width={node.w}
+                        height={node.h}
+                        rx="2"
+                        fill={selected ? screen.nodeBgSelected : screen.nodeBg}
+                        stroke={accent}
+                        strokeOpacity={selected ? 1 : neighbor ? 0.8 : 0.34}
+                        filter={selected ? "url(#dt-glow)" : undefined}
+                      />
+                      {selected ? (
+                        <rect x={node.x} y={node.y} width={node.w} height="24" rx="2" fill={accent} />
+                      ) : (
+                        <line
+                          x1={node.x + 1}
+                          y1={node.y + 24.5}
+                          x2={node.x + node.w - 1}
+                          y2={node.y + 24.5}
+                          stroke={accent}
+                          strokeOpacity="0.16"
+                        />
+                      )}
+                      <rect
+                        className={alert ? "dt-led-blink" : undefined}
+                        x={node.x + 9}
+                        y={node.y + 9}
+                        width="6"
+                        height="6"
+                        fill={statusColor(node.status)}
+                        stroke={selected ? screen.ink : "none"}
+                        strokeWidth="1.5"
+                      />
                       <text
-                        x={node.x + node.w - 24}
-                        y={node.y + 23}
-                        textAnchor="end"
-                        fill={palette.code}
-                        fontSize="9.5"
+                        x={node.x + 22}
+                        y={node.y + 16.5}
+                        fill={headInk ?? screen.title}
+                        fontSize={compact ? "12.5" : "13.5"}
+                        fontWeight="700"
                         fontFamily="var(--dt-mono)"
                       >
-                        {node.code}
+                        {node.title}
                       </text>
-                    )}
-                    <text
-                      x={node.x + node.w - 10}
-                      y={node.y + 23.5}
-                      textAnchor="end"
-                      fill={selected ? accent : palette.sub}
-                      fontSize="11.5"
-                    >
-                      ↗
-                    </text>
-
-                    {/* Subtitle */}
-                    <text x={node.x + 14} y={node.y + subY} fill={palette.sub} fontSize="11">
-                      {node.svgSub}
-                    </text>
-
-                    {/* Live Metric Pill (active chambers pop; 0-state chambers stay calm) */}
-                    <rect
-                      x={node.x + 11}
-                      y={pillY}
-                      width={node.w - 22}
-                      height={pillH}
-                      rx="3"
-                      fill={node.status === "alert" ? "rgba(255, 106, 74, 0.16)" : node.quiet ? palette.quietBg : softBg}
-                      stroke={node.quiet ? "none" : accent}
-                      strokeOpacity={node.status === "alert" ? 0.55 : 0.24}
-                    />
-                    <text
-                      x={node.x + 18}
-                      y={pillY + 12.6}
-                      fill={node.status === "alert" ? dot : node.quiet ? palette.quietText : accent}
-                      fontSize="10.6"
-                      fontFamily="var(--dt-mono)"
-                      fontWeight={node.quiet ? "500" : "600"}
-                    >
-                      {node.metric}
-                    </text>
-                  </a>
-                );
-              })}
-            </svg>
+                      {!compact && (
+                        <text
+                          x={node.x + node.w - 22}
+                          y={node.y + 16}
+                          textAnchor="end"
+                          fill={headInk ?? screen.code}
+                          fontSize="9.5"
+                          fontFamily="var(--dt-mono)"
+                        >
+                          {node.code}
+                        </text>
+                      )}
+                      <text
+                        x={node.x + node.w - 9}
+                        y={node.y + 16.5}
+                        textAnchor="end"
+                        fill={headInk ?? accent}
+                        fontSize="11"
+                        fontFamily="var(--dt-mono)"
+                      >
+                        ↗
+                      </text>
+                      <text x={node.x + 10} y={node.y + 39} fill={screen.sub} fontSize="10.5" fontFamily="var(--dt-mono)">
+                        {node.svgSub}
+                      </text>
+                      <rect
+                        x={node.x + 8}
+                        y={metricY}
+                        width={node.w - 16}
+                        height="16"
+                        fill={metricColor}
+                        fillOpacity={alert ? 0.16 : node.quiet ? 0.05 : 0.1}
+                      />
+                      <rect x={node.x + 8} y={metricY} width="2" height="16" fill={metricColor} />
+                      <text
+                        x={node.x + 15}
+                        y={metricY + 11.5}
+                        fill={metricColor}
+                        fontSize="10.5"
+                        fontFamily="var(--dt-mono)"
+                        fontWeight={node.quiet ? "500" : "700"}
+                      >
+                        {`> ${node.metric}`}
+                        {selected && <tspan className="dt-caret-svg">▌</tspan>}
+                      </text>
+                    </a>
+                  );
+                })}
+              </svg>
+            </div>
           </div>
 
-          {/* Live Chamber Telemetry & Lineage HUD */}
-          <div className="dt-hud" role="region" aria-label="当前聚焦舱室透视">
-            <div className="dt-hud-main">
-              <div className="dt-hud-title">
-                <span className="dt-hud-code" style={{ borderColor: focusedAccent, color: focusedAccent }}>
-                  {focused.code} · {focused.zone}
-                </span>
+          <div
+            className="dt-inspector"
+            role="region"
+            aria-label="当前聚焦舱室透视"
+            style={{ "--acc": focusedAccent } as CSSProperties}
+          >
+            <div className="dt-insp-main">
+              <p className="dt-insp-cmd" aria-hidden="true">
+                <span>$</span> inspect <b>{focused.code}</b> --zone="{focused.zone}"
+              </p>
+              <div className="dt-insp-title">
                 <strong>{focused.title}</strong>
-                <span className="dt-hud-metric">{focused.metric}</span>
-                <code className="dt-hud-route">{focused.href}</code>
+                <span className="dt-insp-state" data-status={focused.status}>
+                  {STATUS_META[focused.status].tag}
+                </span>
               </div>
-              <p>{focused.subtitle}</p>
+              <dl className="dt-insp-kv">
+                <div>
+                  <dt>metric</dt>
+                  <dd className="dt-insp-metric">{focused.metric}</dd>
+                </div>
+                <div>
+                  <dt>route</dt>
+                  <dd>
+                    <code>{readableRoute(focused.href)}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>desc</dt>
+                  <dd>{focused.subtitle}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <div className="dt-insp-side">
               {(lineage.upstream.length > 0 || lineage.downstream.length > 0) && (
-                <div className="dt-hud-lineage" aria-label="上下游传导关系">
+                <div className="dt-lineage" role="group" aria-label="上下游传导关系">
                   {lineage.upstream.length > 0 && (
                     <span className="dt-lineage-group">
-                      <em>上游输入</em>
+                      <em>UPSTREAM</em>
                       {lineage.upstream.map(up => (
                         <button key={up.id} type="button" onClick={() => setFocusedId(up.id)}>
                           ← {up.title}
@@ -1518,7 +1702,7 @@ export function DigitalTwin({
                   )}
                   {lineage.downstream.length > 0 && (
                     <span className="dt-lineage-group">
-                      <em>下游传导</em>
+                      <em>DOWNSTREAM</em>
                       {lineage.downstream.map(down => (
                         <button key={down.id} type="button" onClick={() => setFocusedId(down.id)}>
                           {down.title} →
@@ -1528,40 +1712,40 @@ export function DigitalTwin({
                   )}
                 </div>
               )}
-            </div>
-
-            <div className="dt-hud-links">
-              {focused.chips?.map(chip => (
-                <a
-                  key={chip.label + chip.href}
-                  className="dt-hud-chip"
-                  href={chip.href}
-                  target={chip.href.startsWith("http") ? "_blank" : undefined}
-                  rel={chip.href.startsWith("http") ? "noreferrer" : undefined}
-                >
-                  {chip.label}
-                </a>
-              ))}
-              <a className="dt-hud-chip primary" href={focused.href}>
-                直达 {focused.title} ↗
+              {focused.chips && focused.chips.length > 0 && (
+                <div className="dt-insp-links">
+                  {focused.chips.map(chip => (
+                    <a
+                      key={chip.label + chip.href}
+                      className="dt-insp-chip"
+                      href={chip.href}
+                      target={chip.href.startsWith("http") ? "_blank" : undefined}
+                      rel={chip.href.startsWith("http") ? "noreferrer" : undefined}
+                    >
+                      {chip.label}
+                    </a>
+                  ))}
+                </div>
+              )}
+              <a className="dt-insp-go" href={focused.href}>
+                <span aria-hidden="true">⏎</span> 直达 {focused.title}
               </a>
             </div>
           </div>
         </div>
       )}
 
-      {/* LENS 2: Dual Closed-Loop Value Stream */}
       {lens === "loops" && (
-        <div className="dt-loops" aria-label="双闭环价值流视图">
-          <section className="dt-loop-card" data-loop="rd">
-            <header className="dt-loop-head">
+        <div className="dt-loops" role="region" aria-label="双闭环价值流视图">
+          <section className="dt-pipe" style={{ "--acc": CIRCUIT_META.rd.color } as CSSProperties}>
+            <header className="dt-pipe-head">
               <div>
-                <span className="dt-loop-kicker">CLOSED LOOP A · R&amp;D &amp; SWARM DELIVERY</span>
+                <span className="dt-pipe-kicker">PIPELINE_A · R&amp;D_SWARM_DELIVERY</span>
                 <h3>情报立项 → 多 Agent 产研 → 安全发布交付链</h3>
               </div>
-              <span className="dt-loop-return">↺ 开源能力反哺下一轮立项</span>
+              <span className="dt-pipe-return">↺ 开源能力反哺下一轮立项</span>
             </header>
-            <div className="dt-loop-steps">
+            <ol className="dt-pipe-steps">
               {[
                 { step: "A1", tag: "认知输入", title: "信息与想法", sub: `${remote.ideaCount} 条日记与想法沉淀`, href: "#ideas" },
                 { step: "A2", tag: "价值筛选", title: "研发选题", sub: `${remote.opportunityCount} 个候选特性待转化`, href: "#opportunities" },
@@ -1570,29 +1754,33 @@ export function DigitalTwin({
                 { step: "A5", tag: "安全门禁", title: "安全部门审查", sub: `${remote.securityTotal} 项评审 · ${remote.securityOpen} 待整改`, href: "#security-department" },
                 { step: "A6", tag: "资产沉淀", title: "开源能力与项目架", sub: `${remote.capabilityCount} 项能力跨线复用`, href: "#capabilities" },
               ].map(item => (
-                <a key={item.step} className="dt-loop-step" href={item.href}>
-                  <span className="dt-loop-step-top">
-                    <b>{item.step} · {item.tag}</b>
-                    <em aria-hidden="true">↗</em>
-                  </span>
-                  <strong>{item.title}</strong>
-                  <small>{item.sub}</small>
-                </a>
+                <li key={item.step}>
+                  <a className="dt-pipe-step" href={item.href}>
+                    <span className="dt-pipe-step-top">
+                      <b>
+                        {item.step} · {item.tag}
+                      </b>
+                      <em aria-hidden="true">↗</em>
+                    </span>
+                    <strong>{item.title}</strong>
+                    <small>{item.sub}</small>
+                  </a>
+                </li>
               ))}
-            </div>
+            </ol>
           </section>
 
-          <section className="dt-loop-card" data-loop="commercial">
-            <header className="dt-loop-head">
+          <section className="dt-pipe" style={{ "--acc": CIRCUIT_META.commercial.color } as CSSProperties}>
+            <header className="dt-pipe-head">
               <div>
-                <span className="dt-loop-kicker">CLOSED LOOP B · MONETIZATION &amp; UNIT ECONOMICS</span>
+                <span className="dt-pipe-kicker">PIPELINE_B · MONETIZATION &amp; UNIT_ECONOMICS</span>
                 <h3>产品门面 → UTM 获客 → 离线授权收银 → DuckDB 经营复盘链</h3>
               </div>
-              <span className="dt-loop-return">
+              <span className="dt-pipe-return">
                 1号试点：{remote.commercial?.pilot.product ?? "PageLens"}（{pilotPct}% 就绪）
               </span>
             </header>
-            <div className="dt-loop-steps">
+            <ol className="dt-pipe-steps">
               {[
                 { step: "B1", tag: "商业假设", title: "公司业务线", sub: `${lines.length} 业务线 · ${trials.length} 轮实验`, href: "#business-lines" },
                 { step: "B2", tag: "门面合规", title: "GTM 阶段工作单", sub: "着陆页、定价锚点与合规", href: "#stage?step=gtm" },
@@ -1601,48 +1789,57 @@ export function DigitalTwin({
                 { step: "B5", tag: "留存运维", title: "运维与客服探针", sub: `${healthyServices}/${totalServices} 在线 · ${remote.commercial?.metrics.openTickets ?? 0} 工单`, href: "#operations-department" },
                 { step: "B6", tag: "毛利对账", title: "资源成本与记账", sub: `${remote.resourcePlans} 份算力套餐成本核算`, href: "#resource-department" },
               ].map(item => (
-                <a key={item.step} className="dt-loop-step" href={item.href}>
-                  <span className="dt-loop-step-top">
-                    <b>{item.step} · {item.tag}</b>
-                    <em aria-hidden="true">↗</em>
-                  </span>
-                  <strong>{item.title}</strong>
-                  <small>{item.sub}</small>
-                </a>
+                <li key={item.step}>
+                  <a className="dt-pipe-step" href={item.href}>
+                    <span className="dt-pipe-step-top">
+                      <b>
+                        {item.step} · {item.tag}
+                      </b>
+                      <em aria-hidden="true">↗</em>
+                    </span>
+                    <strong>{item.title}</strong>
+                    <small>{item.sub}</small>
+                  </a>
+                </li>
               ))}
-            </div>
+            </ol>
           </section>
         </div>
       )}
 
-      {/* LENS 3: Searchable Full-Feature Star Map */}
       {lens === "atlas" && (
-        <section className="dt-atlas-panel" aria-label="全功能星图目录">
+        <section className="dt-atlas" aria-label="全功能星图目录">
           <div className="dt-atlas-toolbar">
-            <div className="dt-search-box">
-              <DtIcon name="search" />
+            <div className="dt-search">
+              <span className="dt-search-prompt" aria-hidden="true">
+                grep -i
+              </span>
               <input
+                ref={searchRef}
                 type="search"
                 aria-label="搜索应用全部功能模块或阶段"
-                placeholder="搜索 35 个功能舱室与阶段台（如：委派、商业、安全、PRD…）"
+                placeholder={`在 ${nodes.length + productStages.length} 个舱室与阶段台中检索（委派、商业、安全、PRD…）`}
                 value={query}
                 onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Escape") setQuery("");
+                }}
               />
               {query && (
                 <button type="button" className="dt-search-clear" onClick={() => setQuery("")}>
-                  清空
+                  ESC 清空
                 </button>
               )}
             </div>
 
             <div className="dt-atlas-filters" role="group" aria-label="按象限筛选星图">
               {([
-                ["all", `全部 (${22 + productStages.length})`],
+                ["all", `全部 ${nodes.length + productStages.length}`],
                 ["decision", "决策脑枢"],
                 ["rd", "产研工坊"],
                 ["commercial", "商业四部"],
                 ["runtime", "底座遥测"],
-                ["stages", `十三阶 (${productStages.length})`],
+                ["stages", `十三阶 ${productStages.length}`],
               ] as Array<[AtlasFilter, string]>).map(([key, label]) => (
                 <button key={key} type="button" aria-pressed={atlasFilter === key} onClick={() => setAtlasFilter(key)}>
                   {label}
@@ -1650,31 +1847,62 @@ export function DigitalTwin({
               ))}
             </div>
 
-            <span className="dt-atlas-count">匹配 {atlasItems.length} 项</span>
+            <span className="dt-atlas-count">
+              <b>{atlasItems.length}</b> hits
+            </span>
           </div>
 
-          <div className="dt-atlas-grid">
-            {atlasItems.map(item => (
-              <a key={item.key} className="dt-atlas-card" data-category={item.category} href={item.href}>
-                <div className="dt-atlas-top">
-                  <span>
-                    <i>{item.code}</i> {item.group}
-                  </span>
-                  <b data-quiet={item.quiet}>{item.metric} ↗</b>
-                </div>
-                <strong>{item.title}</strong>
-                <p>{item.desc}</p>
-              </a>
-            ))}
+          <div className="dt-atlas-head" aria-hidden="true">
+            <span>CODE</span>
+            <span>ZONE</span>
+            <span>MODULE</span>
+            <span>METRIC</span>
           </div>
+          {atlasItems.length > 0 ? (
+            <ul className="dt-atlas-list">
+              {atlasItems.map(item => (
+                <li key={item.key}>
+                  <a
+                    className="dt-atlas-row"
+                    href={item.href}
+                    style={{ "--cat": item.category === "stages" ? "var(--fg-2)" : CIRCUIT_META[item.category].color } as CSSProperties}
+                  >
+                    <span className="dt-atlas-code">{item.code}</span>
+                    <span className="dt-atlas-zone">{item.group}</span>
+                    <span className="dt-atlas-main">
+                      <strong>{item.title}</strong>
+                      <small>{item.desc}</small>
+                    </span>
+                    <span className="dt-atlas-metric" data-quiet={item.quiet}>
+                      {item.metric} ↗
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="dt-atlas-empty">
+              <p>
+                <span aria-hidden="true">grep: </span>没有匹配「{query}」的舱室或阶段台
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery("");
+                  setAtlasFilter("all");
+                }}
+              >
+                重置检索
+              </button>
+            </div>
+          )}
         </section>
       )}
 
-      {/* Always-On 13-Stage Lifecycle Value Conveyor */}
       <section className="dt-section" aria-label="十三阶全生命周期价值传送带">
         <div className="dt-section-head">
           <div className="dt-section-title">
-            <span className="dt-section-kicker">LIFECYCLE VALUE CONVEYOR · STAGES 01–13</span>
+            <span className="dt-section-kicker">&gt;&gt; LIFECYCLE_PIPELINE · STAGES 01–13</span>
             <h2>十三阶全生命周期价值传送带</h2>
           </div>
           <a className="dt-section-link" href="#product">
@@ -1691,7 +1919,7 @@ export function DigitalTwin({
                   <b>{group.title}</b>
                   <small>{group.range}</small>
                 </span>
-                <span className="dt-phase-hint">直达工作单</span>
+                <span className="dt-phase-hint">▸ 直达工作单</span>
               </header>
               <div className="dt-stage-track">
                 {group.slice.map(stage => {
@@ -1727,18 +1955,17 @@ export function DigitalTwin({
         </div>
       </section>
 
-      {/* Balanced 4-Column Sub-Entity Direct Portals */}
       <section className="dt-section" aria-label="组织实体分舱直达">
         <div className="dt-section-head">
           <div className="dt-section-title">
-            <span className="dt-section-kicker">LIVE ENTITY PORTALS · DIRECT CHAMBERS</span>
+            <span className="dt-section-kicker">&gt;&gt; ENTITY_PORTALS · DIRECT_CHAMBERS</span>
             <h2>组织活跃实体分舱直达</h2>
           </div>
           <span className="dt-section-meta">业务线 · 协作频道 · 目录收件夹 · 伴生服务探针</span>
         </div>
 
         <div className="dt-portal-grid">
-          <div className="dt-portal-box">
+          <div className="dt-pane">
             <header>
               <h3>
                 <DtIcon name="layers" />
@@ -1769,7 +1996,7 @@ export function DigitalTwin({
             </ul>
           </div>
 
-          <div className="dt-portal-box">
+          <div className="dt-pane">
             <header>
               <h3>
                 <DtIcon name="chat" />
@@ -1812,7 +2039,7 @@ export function DigitalTwin({
             </ul>
           </div>
 
-          <div className="dt-portal-box">
+          <div className="dt-pane">
             <header>
               <h3>
                 <DtIcon name="folder" />
@@ -1841,7 +2068,7 @@ export function DigitalTwin({
             </ul>
           </div>
 
-          <div className="dt-portal-box">
+          <div className="dt-pane">
             <header>
               <h3>
                 <DtIcon name="pulse" />
@@ -1861,8 +2088,8 @@ export function DigitalTwin({
                         </span>
                         <span className="dt-svc-sub">{svc.capabilityNote}</span>
                       </span>
-                      <small className="dt-portal-tag">
-                        {svc.latencyMs != null ? `${svc.latencyMs}ms` : svc.layer} ↗
+                      <small className="dt-portal-tag" data-up={svc.healthy}>
+                        {svc.healthy ? "UP" : "DOWN"} · {svc.latencyMs != null ? `${svc.latencyMs}ms` : svc.layer}
                       </small>
                     </a>
                   </li>
@@ -1880,19 +2107,36 @@ export function DigitalTwin({
         </div>
       </section>
 
-      {/* Production Architectural Legend & System Colophon */}
-      <footer className="dt-colophon" aria-label="星枢图例与系统状态">
+      <footer className="dt-keybar" aria-label="快捷键、图例与系统状态">
+        <div className="dt-keys">
+          <span>
+            <kbd>1</kbd>沙盘
+          </span>
+          <span>
+            <kbd>2</kbd>闭环
+          </span>
+          <span>
+            <kbd>3</kbd>星图
+          </span>
+          <span>
+            <kbd>R</kbd>同步
+          </span>
+          <span>
+            <kbd>/</kbd>检索
+          </span>
+        </div>
         <div className="dt-legend">
-          <span className="dt-legend-title">状态图例</span>
-          <span><i data-tone="alert" /> 待裁决 / 告警</span>
-          <span><i data-tone="active" /> 实时活跃运行</span>
-          <span><i data-tone="ok" /> 稳态在线就绪</span>
-          <span><i data-tone="idle" /> 静默待命</span>
+          {(Object.keys(STATUS_META) as NodeStatus[]).map(status => (
+            <span key={status}>
+              <i data-tone={status} aria-hidden="true" />
+              {STATUS_META[status].label}
+            </span>
+          ))}
         </div>
         <div className="dt-colophon-links">
-          <span>每 10 秒自动刷新全公司遥测</span>
-          <a href="#executive">总裁办 · Bot 架构 ↗</a>
-          <a href="#dark-factory">Agent 暗工厂 ↗</a>
+          <span>AUTO-SYNC 10s</span>
+          <a href="#executive">总裁办 ↗</a>
+          <a href="#dark-factory">暗工厂 ↗</a>
           <a href="#overview">全局看板 ↗</a>
         </div>
       </footer>

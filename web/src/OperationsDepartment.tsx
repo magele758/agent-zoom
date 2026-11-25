@@ -202,7 +202,7 @@ function FleetSection({
           ))}
         </div>
         {filteredDeployments.length === 0 ? <p>该机器当前未发现已部署服务，可在下方服务台账登记。</p> : (
-          <div className="ops-deploy-wrap">
+          <div className="ops-deploy-wrap opc-table-scroll" role="region" aria-label="已部署服务" tabIndex={0}>
             <table className="ops-deploy-table">
               <thead>
                 <tr>

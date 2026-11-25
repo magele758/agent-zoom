@@ -73,7 +73,7 @@ function renderToken(token: Token, anchor?: string): ReactNode {
     case "checkbox": return <span aria-label={token.checked ? "已完成" : "未完成"}>{token.checked ? "☑ " : "☐ "}</span>;
     case "table": {
       const table = token as Tokens.Table;
-      return <div className="ci-table" tabIndex={0}><table><thead><tr>{table.header.map((cell,index) =>
+      return <div className="ci-table opc-table-scroll" role="region" aria-label="日读表格" tabIndex={0}><table><thead><tr>{table.header.map((cell,index) =>
         <th key={index} scope="col">{markdownNodes(cell.tokens)}</th>)}</tr></thead><tbody>
         {table.rows.map((row,index) => <tr key={index}>{row.map((cell,column) =>
           <td key={column}>{markdownNodes(cell.tokens)}</td>)}</tr>)}</tbody></table></div>;

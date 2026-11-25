@@ -317,26 +317,28 @@ function Totals({ records }: { records: TrialEvidence[] }) {
   }
   if (!totals.size) return <p className="bl-muted">尚未登记收款、退款或费用凭据。</p>;
   return (
-    <table className="bl-money">
-      <caption>已登记现金记录</caption>
-      <thead>
-        <tr>
-          {["币种", "收款", "退款", "费用", "净流入"].map((c) => (
-            <th key={c}>{c}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {[...totals].map(([c, t]) => (
-          <tr key={c}>
-            <th>{c}</th>
-            {[t.receipt, t.refund, t.expense, t.receipt - t.refund - t.expense].map((n, i) => (
-              <td key={i}>{displayMoney(n, c)}</td>
+    <div className="opc-table-scroll" role="region" aria-label="现金记录明细" tabIndex={0}>
+      <table className="bl-money">
+        <caption>已登记现金记录</caption>
+        <thead>
+          <tr>
+            {["币种", "收款", "退款", "费用", "净流入"].map((c) => (
+              <th scope="col" key={c}>{c}</th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {[...totals].map(([c, t]) => (
+            <tr key={c}>
+              <th scope="row">{c}</th>
+              {[t.receipt, t.refund, t.expense, t.receipt - t.refund - t.expense].map((n, i) => (
+                <td key={i}>{displayMoney(n, c)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 function TrialReviewPanel({ trial, onDone }: { trial: BusinessTrial; onDone: () => Promise<void> }) {

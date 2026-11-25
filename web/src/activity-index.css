@@ -222,6 +222,13 @@
 .idx-col p {
   font-size: 13px;
 }
+.idx-purpose {
+  margin: 2px 0 0;
+  line-height: 1.45;
+}
+.idx-purpose[data-empty] {
+  color: var(--muted);
+}
 .idx-state[data-state="working"]::before {
   content: "";
   display: inline-block;

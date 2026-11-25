@@ -29,6 +29,7 @@ import { DarkFactory } from "./DarkFactory";
 import { TaskPlanning } from "./TaskPlanning";
 import { MetabolismHub } from "./MetabolismHub";
 import { CompanyHub } from "./CompanyHub";
+import { CliLedger } from "./CliLedger";
 import { chatRoomLink, companyDepartments, decisionTarget, inboxScope, type DepartmentPage } from "./zoom-routes";
 import "./zoom.css";
 
@@ -62,6 +63,13 @@ const AUTONOMY_META: Record<AutonomyMode, { short: string; hint: string }> = {
     short: "全自治",
     hint: "低风险自动放行 + 高分自动立项 + 临期配额自动派活",
   },
+};
+type ArbitratorModeView = "off" | "advisory" | "delegated_safe" | "full_delegated";
+const BOT_MODE_SHORT: Record<ArbitratorModeView, string> = {
+  off: "人工拍板",
+  advisory: "Bot 研判",
+  delegated_safe: "安全代拍",
+  full_delegated: "全权托管",
 };
 const icons = {
   all: "m3 14 3-8h12l3 8v5H3z M3 14h5l2 3h4l2-3h5",
@@ -128,11 +136,13 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   const [product, setProduct] = useState("");
   const [projects, setProjects] = useState<string[]>([]);
   const [pendingDecisions, setPendingDecisions] = useState(0);
+  const [pendingMailboxIssues, setPendingMailboxIssues] = useState<number | null>(null);
 
   const workflowView = workflowId !== undefined;
   const overviewView = !workflowView && (!hash || routeName === "overview");
   const companyArchView = !workflowView && routeName === "company-architecture";
   const strategyHubView = !workflowView && routeName === "strategy-hub";
+  const cliLedgerView = !workflowView && routeName === "cli-ledger";
   const twinView = !workflowView && routeName === "digital-twin";
   const mailboxView = !workflowView && routeName === "mailbox";
   const executiveView = !workflowView && routeName === "executive";
@@ -159,6 +169,9 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   const [mobileView, setMobileView] = useState<"list" | "nav">("list");
   const [policy, setPolicy] = useState<GovernancePolicy | null>(null);
   const [policyBusy, setPolicyBusy] = useState(false);
+  const [botMode, setBotMode] = useState<ArbitratorModeView | null>(null);
+  const [plannotatorOnline, setPlannotatorOnline] = useState<boolean | null>(null);
+  const [plannotatorUrl, setPlannotatorUrl] = useState("http://localhost:53798/");
   const [workbenchesOpen, setWorkbenchesOpen] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem(WORKBENCHES_STORAGE_KEY);
@@ -194,6 +207,40 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const loadAutomationStrip = async () => {
+      const [arbRes, planRes] = await Promise.allSettled([
+        request<{ policy?: { mode?: ArbitratorModeView; arbitrationMode?: ArbitratorModeView } }>("/api/opc/arbitrator/status"),
+        request<{ available?: boolean; health?: { available?: boolean; url?: string | null }; config?: { baseUrl?: string } }>("/api/opc/plannotator/status"),
+      ]);
+      if (!active) return;
+      if (arbRes.status === "fulfilled") {
+        const mode = arbRes.value.policy?.arbitrationMode ?? arbRes.value.policy?.mode;
+        if (mode) setBotMode(mode);
+      }
+      if (planRes.status === "fulfilled") {
+        const available = planRes.value.available ?? planRes.value.health?.available ?? false;
+        setPlannotatorOnline(Boolean(available));
+        const url = planRes.value.health?.url ?? planRes.value.config?.baseUrl;
+        if (url) setPlannotatorUrl(url);
+      }
+    };
+    const onUpdated = () => void loadAutomationStrip();
+    void loadAutomationStrip();
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void loadAutomationStrip();
+    }, 30_000);
+    window.addEventListener("opc:arbitrator-updated", onUpdated);
+    window.addEventListener("opc:plannotator-updated", onUpdated);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener("opc:arbitrator-updated", onUpdated);
+      window.removeEventListener("opc:plannotator-updated", onUpdated);
+    };
+  }, []);
+
   const switchAutonomyMode = async (mode: AutonomyMode) => {
     if (policyBusy || policy?.autonomyMode === mode) return;
     setPolicyBusy(true);
@@ -223,7 +270,9 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       if (generation !== latest.current) return;
       setMessages(response.messages);
       setProjects([...(response.products ?? []), ...(response.projectFolders ?? [])]);
-      setPendingDecisions(Number((response as { pendingDecisions?: number }).pendingDecisions ?? 0));
+      const counts = response as { pendingDecisions?: number; pendingMailboxIssues?: number };
+      setPendingDecisions(Number(counts.pendingDecisions ?? 0));
+      if (typeof counts.pendingMailboxIssues === "number") setPendingMailboxIssues(counts.pendingMailboxIssues);
       setReady(true);
       setError("");
     } catch (reason) {
@@ -279,10 +328,11 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   }, [routeName, legacyInbox.message, legacyInbox.stage, legacyInbox.folder, messages]);
 
   const views = useMemo(() => messageViews(messages), [messages]);
+  const mailboxPending = pendingMailboxIssues ?? views.pending.length + pendingDecisions;
   const folders = useMemo(() => folderEntries(views.all, projects), [views.all, projects]);
   const productNames = folders.filter(entry => !entry.depth).map(entry => entry.path);
 
-  const openPage = (target: DepartmentPage | "overview" | "company-architecture" | "strategy-hub" | "digital-twin" | "mailbox" | "executive" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "canvas" | "metabolism" | "planning" | "dark-factory" | "capabilities" | "activity-index" | "delegations") => {
+  const openPage = (target: DepartmentPage | "overview" | "company-architecture" | "strategy-hub" | "cli-ledger" | "digital-twin" | "mailbox" | "executive" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "canvas" | "metabolism" | "planning" | "dark-factory" | "capabilities" | "activity-index" | "delegations") => {
     setMobileView("list");
     location.hash = target;
   };
@@ -316,12 +366,45 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
             <p className="zo-autonomy-hint">{AUTONOMY_META[policy.autonomyMode].hint}</p>
           </div>
         )}
+        {(botMode !== null || plannotatorOnline !== null) && (
+          <div className="zo-bot-strip" role="region" aria-label="Bot 代拍板与 Plannotator 状态">
+            <div className="zo-bot-strip-head">
+              <strong>🤖 Bot 代拍板</strong>
+              {botMode && (
+                <span className="zo-bot-mode-tag" data-mode={botMode}>
+                  {BOT_MODE_SHORT[botMode] ?? botMode}
+                </span>
+              )}
+            </div>
+            <div className="zo-bot-strip-row">
+              <a
+                className="zo-plannotator-pill"
+                data-online={plannotatorOnline ? "true" : "false"}
+                href={plannotatorUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={plannotatorOnline ? "打开本机 Plannotator Inbox (:53798)" : "Plannotator Inbox 暂未连接"}
+              >
+                <span className="zo-plannotator-dot" aria-hidden="true" />
+                <span>{plannotatorOnline ? "Plannotator :53798" : "Plannotator 离线"}</span>
+              </a>
+              <button
+                type="button"
+                className="zo-bot-quick-link"
+                onClick={() => openPage("mailbox")}
+              >
+                审批台 ↗
+              </button>
+            </div>
+          </div>
+        )}
         <nav aria-label="主导航" className="zo-views">
           <span className="zo-nav-section" aria-hidden="true">总裁驾驶舱</span>
           <button type="button" aria-label="全局看板" aria-pressed={overviewView} onClick={() => openPage("overview")}><Icon name="board" /><span>全局看板</span></button>
-          <button type="button" aria-label="公司架构与扩展落位" aria-pressed={companyArchView} onClick={() => openPage("company-architecture")}><Icon name="twin" /><span>六大部门与架构</span></button>
+          <button type="button" aria-label="CLI 指令与进度" aria-pressed={cliLedgerView} onClick={() => openPage("cli-ledger")}><Icon name="thread" /><span>CLI 指令与进度</span></button>
+          <button type="button" aria-label="公司架构与扩展落位" aria-pressed={companyArchView} onClick={() => openPage("company-architecture")}><Icon name="twin" /><span>来龙去脉与六大部门</span></button>
           <button type="button" aria-label="总裁信箱" aria-pressed={mailboxView} onClick={() => openPage("mailbox")}>
-            <Icon name="all" /><span>总裁信箱 · 审批网关</span>{(views.pending.length + pendingDecisions) > 0 && <small>{views.pending.length + pendingDecisions}</small>}
+            <Icon name="all" /><span>总裁信箱 · 审批网关</span>{mailboxPending > 0 && <small>{mailboxPending}</small>}
           </button>
 
           <span className="zo-nav-section" aria-hidden="true">六大公司职能部门</span>
@@ -380,8 +463,9 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
     </aside>
 
     {workflowView ? <WorkflowBoard id={workflowId} nav={openNav} />
-      : companyArchView ? <CompanyHub key={`arch:${pageParams.get("tab") ?? ""}`} nav={openNav} initialTab={(["architecture", "mainlines", "habits"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "architecture" | "mainlines" | "habits" : "architecture")} />
-      : strategyHubView ? <CompanyHub key={`strat:${pageParams.get("tab") ?? ""}`} nav={openNav} initialTab={(["architecture", "mainlines", "habits"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "architecture" | "mainlines" | "habits" : "mainlines")} />
+      : companyArchView ? <CompanyHub key={`arch:${pageParams.get("tab") ?? ""}`} nav={openNav} initialTab={(["story", "architecture", "mainlines", "habits"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "story" | "architecture" | "mainlines" | "habits" : "architecture")} />
+      : strategyHubView ? <CompanyHub key={`strat:${pageParams.get("tab") ?? ""}`} nav={openNav} initialTab={(["story", "architecture", "mainlines", "habits"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "story" | "architecture" | "mainlines" | "habits" : "mainlines")} />
+      : cliLedgerView ? <CliLedger nav={openNav} initialSessionId={pageParams.get("session") ?? undefined} initialProvider={pageParams.get("provider") ?? undefined} initialProject={pageParams.get("project") ?? undefined} />
       : page === "commercial" ? <CommercialHub nav={openNav} />
       : page === "security-department" ? <SecurityDepartment key={hash} nav={openNav} />
       : page === "operations-department" ? <OperationsDepartment key={hash} nav={openNav} />
@@ -397,7 +481,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       : factoryView ? <DarkFactory nav={openNav} initialRunId={pageParams.get("run") ?? undefined} />
       : worklogView ? <Worklog key={hash} line={pageParams.get("line") ?? ""} nav={openNav} />
       : businessView ? <BusinessLines nav={openNav} />
-      : mailboxView ? <FounderMailbox nav={openNav} messages={views.all} onResolved={() => void refresh()} />
+      : mailboxView ? <FounderMailbox nav={openNav} messages={messages} onResolved={() => void refresh()} onPendingCountChange={setPendingMailboxIssues} />
       : executiveView ? <ExecutiveOffice nav={openNav} pending={views.pending} />
       : twinView ? <DigitalTwin nav={openNav} messages={views.all} pending={views.pending} handled={views.handled} folders={folders} products={productNames} workflowEnabled={workflowEnabled} activityIndex={activityIndex} />
       : overviewView ? <Overview activityIndex={activityIndex} nav={openNav} products={projects.filter(name => !name.includes("/"))} messages={views.all} pending={views.pending} ready={ready} error={error} onRetry={() => void refresh()} />

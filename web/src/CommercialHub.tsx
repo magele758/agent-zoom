@@ -534,30 +534,30 @@ export function CommercialHub({ nav }: { nav: ReactNode }) {
                   {(() => {
                     const crmCustomers = bridgeData?.crm?.customers ?? bridgeData?.crmSummary?.recentCustomers ?? [];
                     return crmCustomers.length > 0 ? (
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.84rem" }}>
-                        <thead>
-                          <tr>
-                            <th style={{ textAlign: "left", padding: 6 }}>客户标识</th>
-                            <th style={{ textAlign: "left", padding: 6 }}>来源渠道</th>
-                            <th style={{ textAlign: "left", padding: 6 }}>生命周期阶段</th>
-                            <th style={{ textAlign: "left", padding: 6 }}>订单 / 有效授权 / 待办工单</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {crmCustomers.slice(0, 20).map((c) => (
-                            <tr key={c.customerId} style={{ borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-                              <td style={{ padding: 6 }}>
-                                <strong>{c.customerId}</strong> {c.emailMasked && <small>({c.emailMasked})</small>}
-                              </td>
-                              <td style={{ padding: 6 }}>{c.channel || "direct"}</td>
-                              <td style={{ padding: 6 }}><span className="cm-badge">{c.stage}</span></td>
-                              <td style={{ padding: 6 }}>
-                                {c.ordersCount} 单 · {c.activeLicenses} 授权 · {c.openTickets} 工单
-                              </td>
+                      <div className="opc-table-scroll" role="region" aria-label="客户明细" tabIndex={0}>
+                        <table className="cm-customer-table">
+                          <thead>
+                            <tr>
+                              <th scope="col">客户标识</th>
+                              <th scope="col">来源渠道</th>
+                              <th scope="col">生命周期阶段</th>
+                              <th scope="col">订单 / 有效授权 / 待办工单</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {crmCustomers.slice(0, 20).map((c) => (
+                              <tr key={c.customerId}>
+                                <td>
+                                  <strong>{c.customerId}</strong> {c.emailMasked && <small>({c.emailMasked})</small>}
+                                </td>
+                                <td>{c.channel || "direct"}</td>
+                                <td><span className="cm-badge">{c.stage}</span></td>
+                                <td>{c.ordersCount} 单 · {c.activeLicenses} 授权 · {c.openTickets} 工单</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     ) : (
                       <p className="cm-muted">
                         当前暂无真实客户入库（CRM 与统一总账桥接底座已就绪，后续产品推向市场产生候补、激活或订单后将在此自动汇聚客户全生命周期）。

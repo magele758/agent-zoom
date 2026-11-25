@@ -550,13 +550,13 @@
 }
 
 .df-table-wrap {
-  overflow-x: auto;
   border: 1px solid #cfd3c7;
   background: #fffdf8;
 }
 
 .df-table {
   width: 100%;
+  min-width: 48rem;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -567,6 +567,7 @@
   padding: 10px 12px;
   border-bottom: 1px solid #e3e2d8;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .df-table th {
@@ -574,7 +575,10 @@
   font-size: 12px;
   color: #4f5c53;
   font-weight: 600;
+  white-space: nowrap;
 }
+
+.df-table td:last-child :is(button, .df-pr-link) { white-space: nowrap; }
 
 .df-table tr.is-selected td {
   background: #f3f7f3;

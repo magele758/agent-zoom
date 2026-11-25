@@ -1,0 +1,253 @@
+.dt-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.dt-origin-opc_dispatched {
+  background: rgba(24, 118, 108, 0.12);
+  color: #135e56;
+  border-color: rgba(24, 118, 108, 0.25);
+}
+
+.dt-origin-founder_managed {
+  background: rgba(180, 106, 28, 0.12);
+  color: #8a4b0f;
+  border-color: rgba(180, 106, 28, 0.26);
+}
+
+.dt-cat-company_product {
+  background: rgba(31, 94, 168, 0.1);
+  color: #194b87;
+  border-color: rgba(31, 94, 168, 0.22);
+}
+
+.dt-cat-rd_infra {
+  background: rgba(102, 65, 168, 0.1);
+  color: #52328a;
+  border-color: rgba(102, 65, 168, 0.22);
+}
+
+.dt-cat-personal {
+  background: rgba(98, 108, 102, 0.12);
+  color: #425048;
+  border-color: rgba(98, 108, 102, 0.24);
+}
+
+.dt-pill.is-editable {
+  cursor: pointer;
+}
+
+.dt-pill.is-editable:hover {
+  filter: brightness(0.95);
+}
+
+.dt-edit-hint {
+  opacity: 0.6;
+  font-size: 10px;
+}
+
+.dt-herdr {
+  background: rgba(30, 44, 38, 0.08);
+  color: #243830;
+  border-color: rgba(30, 44, 38, 0.18);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.dt-linked-task {
+  background: rgba(39, 126, 74, 0.12);
+  color: #1d6439;
+  border-color: rgba(39, 126, 74, 0.28);
+  text-decoration: none;
+}
+
+.dt-linked-task:hover {
+  text-decoration: underline;
+}
+
+.dt-classify-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #c2cbc4;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.dt-classify-editor select,
+.dt-classify-editor input {
+  font-size: 11px;
+  padding: 2px 5px;
+  border: 1px solid #cfd7d0;
+  border-radius: 4px;
+  max-width: 110px;
+}
+
+.dt-mini-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #c6cfc8;
+  background: #f6f8f6;
+  color: #26352c;
+  cursor: pointer;
+}
+
+.dt-mini-btn.primary {
+  background: #1f5c4a;
+  border-color: #1f5c4a;
+  color: #fff;
+}
+
+.dt-mini-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Sub-agent tree inside ActivityIndex */
+.dt-subagents {
+  grid-column: 1 / -1;
+  margin: 6px 0 0 22px;
+  padding: 6px 10px;
+  border-left: 2px solid #cdd7cf;
+  background: rgba(244, 247, 244, 0.7);
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dt-subagent-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: #36453c;
+}
+
+.dt-row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.dt-background-drawer {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px dashed #c8d1ca;
+  border-radius: 8px;
+  background: rgba(247, 249, 247, 0.7);
+}
+
+.dt-background-drawer summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #506056;
+}
+
+/* Dual-track live strip inside TaskPlanning */
+.dt-live-strip {
+  margin: 12px 0 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #d5ded7;
+  background: linear-gradient(180deg, rgba(247, 250, 248, 0.96), rgba(242, 246, 243, 0.9));
+}
+
+.dt-live-strip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.dt-live-strip-head h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #1f3229;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dt-live-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+}
+
+.dt-live-card {
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid #d8e1da;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dt-live-card-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.dt-live-card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1f2e26;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.dt-live-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: #5b6a61;
+}
+
+.dt-ext-session-bar {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(24, 118, 108, 0.06);
+  border: 1px solid rgba(24, 118, 108, 0.16);
+  font-size: 11.5px;
+  color: #24473e;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dt-ext-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}

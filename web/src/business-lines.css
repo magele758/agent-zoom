@@ -198,6 +198,7 @@
   text-align: left;
   padding: 7px 2px;
   border-bottom: 1px solid #d5d7cc;
+  white-space: nowrap;
 }
 .bl-body * {
   overflow-wrap: anywhere;

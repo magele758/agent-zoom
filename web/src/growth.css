@@ -27,8 +27,9 @@
 .growth-section-head { padding: 25px 0 12px; }
 .growth-section-head h2, .growth-empty h2 { font: 600 clamp(21px, 2vw, 28px)/1.35 var(--serif); overflow-wrap: anywhere; }
 .growth-section-head > span { flex-shrink: 0; font-size: 12px; color: var(--muted); }
-.growth-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.growth-table { width: 100%; min-inline-size: 26rem; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .growth-table th, .growth-table td { text-align: right; }
+.growth-table thead th, .growth-table td button { white-space: nowrap; }
 .growth-table tr > :first-child { text-align: left; width: 26%; }
 .growth-table thead { border-bottom: 1px solid var(--line-strong); }
 .growth-table thead th { color: var(--muted); padding: 8px 10px; font-size: 13px; font-weight: 500; }
@@ -81,10 +82,6 @@
   .growth-head { gap: 8px; }
   .growth-head h1 { font-size: 29px; flex-shrink: 0; }
   .growth-head select { min-width: 0; max-width: 40%; }
-  .growth-table tr > :first-child { width: 26%; }
-  .growth-table thead th, .zoom .growth-table td button { padding-inline: 3px; }
-  .growth-table thead th { font-size: 12px; }
-  .growth-table td span { font-size: 10px; }
   .growth-section-head { gap: 8px; }
   .growth-events li { grid-template-columns: minmax(0, 1fr); gap: 7px; }
 }

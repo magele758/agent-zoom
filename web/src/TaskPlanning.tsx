@@ -10,6 +10,9 @@ import {
 import {
   PLANNING_TASK_STATUSES,
   PLANNING_TASK_TYPES,
+  extractExternalSession,
+  extractTaskOriginTrack,
+  extractTaskTriage,
   type DailyTrendPoint,
   type DailyTrendResponse,
   type KanbanBoardResponse,
@@ -22,8 +25,25 @@ import {
   type PlanningTaskType,
   type PlanningTaskWithSubtasks,
   type RoiDashboardResponse,
+  type TaskTriageMeta,
+  type TriageConfig,
+  type TriageFunnelCounts,
+  type TriageRunItemResult,
+  type TriageRunReport,
+  type TriageStatus,
+  type TriageStatusResponse,
 } from "../../src/task-planning-types";
+import {
+  WORK_ORIGIN_LABELS,
+  WORKSPACE_CATEGORIES,
+  WORKSPACE_CATEGORY_LABELS,
+  type WorkOriginTrack,
+  type WorkspaceCategory,
+} from "../../src/workspace-classification-types";
+import type { WorkstreamHerdrTree, WorkstreamsOverview } from "../../src/workstreams-types";
 import { request } from "./api";
+import { ClassificationBadge, HerdrBadge, OriginTrackBadge } from "./ClassificationBadge";
+import { PlanningConversation } from "./PlanningConversation";
 import "./task-planning.css";
 
 const API_BASE = "/api/opc/planning";
@@ -111,6 +131,53 @@ const TYPE_LABELS: Record<PlanningTaskType, string> = {
   bug: "Bug",
   prd: "PRD",
 };
+
+type TodoTriageFilter = "verified" | "unreviewed" | "needs_scope" | "all";
+type SingleTriageAction = "code_check" | "verify";
+
+const TRIAGE_LABELS: Record<TriageStatus, string> = {
+  unreviewed: "⏳ 待审查",
+  triaging: "⏳ 审查中",
+  verified: "✓ 已验真就绪",
+  needs_scope: "⚠ 需补范围",
+  idea_demoted: "💡 已降级想法",
+  noise_archived: "🧹 噪音归档",
+  superseded: "↪ 已替代",
+};
+
+function readTaskTriage(task: PlanningTask): TaskTriageMeta | null {
+  const hasExplicit = Boolean(
+    task.metadata &&
+      typeof task.metadata === "object" &&
+      task.metadata.triage &&
+      typeof task.metadata.triage === "object",
+  );
+  if (hasExplicit || task.status === "todo") {
+    return extractTaskTriage(task.metadata);
+  }
+  return null;
+}
+
+function summarizeTriageReport(report: TriageRunReport, mode: "sweep" | "run"): string {
+  if (mode === "sweep") {
+    return report.noiseArchivedCount > 0
+      ? `🧹 Layer 0 规则清噪完成：扫描 ${report.scannedCount} 项，自动归档纯噪音 ${report.noiseArchivedCount} 项。`
+      : `🧹 Layer 0 规则清噪完成：扫描 ${report.scannedCount} 项，未命中新的纯摘要噪音。`;
+  }
+  const parts = [
+    report.noiseArchivedCount > 0 ? `噪音归档 ${report.noiseArchivedCount}` : "",
+    report.verifiedCount > 0 ? `已验真就绪 ${report.verifiedCount}` : "",
+    report.ideaDemotedCount > 0 ? `降级为想法 ${report.ideaDemotedCount}` : "",
+    report.needsScopeCount > 0 ? `需补范围 ${report.needsScopeCount}` : "",
+    report.supersededCount > 0 ? `已替代/完成 ${report.supersededCount}` : "",
+    report.codeCheckedCount > 0 ? `agy 代码复核 ${report.codeCheckedCount}` : "",
+    report.dispatchedCount > 0 ? `自动轮动派工 ${report.dispatchedCount}` : "",
+  ].filter(Boolean);
+  const fallbackHint = report.fallbackUsed ? "（产研 Bot 暂不可达，已用本地规则兜底）" : "";
+  return parts.length
+    ? `🤖 审查漏斗执行完成：${parts.join(" · ")}${fallbackHint}。`
+    : `🤖 审查漏斗执行完成：当前没有新的待审查项${fallbackHint}。`;
+}
 
 function priorityTier(priority: number): "high" | "mid" | "low" {
   if (priority >= 8) return "high";
@@ -330,6 +397,7 @@ interface TaskCardProps {
   ) => Promise<void>;
   onCreateSubtask: (parent: PlanningTaskWithSubtasks, title: string) => Promise<void>;
   onDeleteTask: (taskId: string) => Promise<void>;
+  onTriageTask: (taskId: string, action: SingleTriageAction) => Promise<void>;
 }
 
 function TaskCard({
@@ -345,6 +413,7 @@ function TaskCard({
   onRecordPomodoro,
   onCreateSubtask,
   onDeleteTask,
+  onTriageTask,
 }: TaskCardProps) {
   const [showPomo, setShowPomo] = useState(false);
   const [showDispatch, setShowDispatch] = useState(false);
@@ -361,6 +430,7 @@ function TaskCard({
 
   const tier = priorityTier(task.priority);
   const overdue = isOverdue(task);
+  const triage = readTaskTriage(task);
   const subPct =
     task.subtaskStats.total > 0
       ? Math.round((task.subtaskStats.done / task.subtaskStats.total) * 100)
@@ -387,7 +457,17 @@ function TaskCard({
       <div className="tp-card-top">
         <span className={`tp-pill mono prio-${tier}`}>P{task.priority}</span>
         <span className={`tp-pill type-${task.type}`}>{TYPE_LABELS[task.type]}</span>
+        <OriginTrackBadge track={task.originTrack ?? extractTaskOriginTrack(task)} />
+        <ClassificationBadge classification={task.classification} />
         <span className="tp-pill">{task.project}</span>
+        {triage && (
+          <span
+            className={`tp-pill triage-${triage.status}`}
+            title={triage.reason || TRIAGE_LABELS[triage.status]}
+          >
+            {TRIAGE_LABELS[triage.status]}
+          </span>
+        )}
         {task.status === "pr_open" && <span className="tp-pill pr-open">PR Open</span>}
         {task.status === "published" && <span className="tp-pill published">Published</span>}
         {task.dueAt && (
@@ -400,6 +480,11 @@ function TaskCard({
 
       <div className="tp-card-title">{task.title}</div>
       {task.description && <div className="tp-card-desc">{task.description}</div>}
+      {triage?.reason && (
+        <div className="tp-triage-reason" title={triage.reason}>
+          🤖 {triage.reason}
+        </div>
+      )}
 
       {task.tags.length > 0 && (
         <div className="tp-card-tags">
@@ -428,6 +513,44 @@ function TaskCard({
           </span>
         )}
       </div>
+
+      {(() => {
+        const ext = task.externalSession ?? extractExternalSession(task.metadata);
+        if (!ext) return null;
+        const stLabel =
+          ext.liveStatus === "running"
+            ? "⚡ 执行中"
+            : ext.liveStatus === "waiting_user"
+              ? "💬 等你确认"
+              : ext.liveStatus === "completed"
+                ? "✓ 已交付本轮"
+                : ext.liveStatus === "blocked"
+                  ? "⛔ 受阻"
+                  : "⏸ 静默";
+        return (
+          <div className="dt-ext-session-bar" aria-label="绑定的实时会话同步状态">
+            <div className="dt-ext-session-row">
+              <strong>
+                {stLabel}
+                {ext.herdrAddress ? ` · Herdr ${ext.herdrAddress}` : ext.provider ? ` · ${ext.provider}` : ""}
+              </strong>
+              <span>
+                {ext.filesModifiedCount ? `改 ${ext.filesModifiedCount} 文件 · ` : ""}
+                {ext.sessionId ? (
+                  <a href={`#cli-ledger?session=${encodeURIComponent(ext.sessionId)}`}>查看台账 ↗</a>
+                ) : (
+                  <a href="#activity-index">查看现场 ↗</a>
+                )}
+              </span>
+            </div>
+            {ext.latestProgress && (
+              <div style={{ opacity: 0.88, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ext.latestProgress}>
+                {ext.latestProgress}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {(task.prUrl || task.latestRunId || task.sourceRef) && (
         <div className="tp-card-links">
@@ -579,6 +702,28 @@ function TaskCard({
         >
           → 派给 Agent
         </button>
+        {task.status === "todo" && (triage?.status === "unreviewed" || triage?.status === "needs_scope") && (
+          <>
+            <button
+              type="button"
+              className="tp-ghost"
+              disabled={busy}
+              title="使用 agy 只读复核该任务在代码仓中是否真实存在"
+              onClick={() => void onTriageTask(task.id, "code_check")}
+            >
+              🤖 代码复核
+            </button>
+            <button
+              type="button"
+              className="tp-ghost"
+              disabled={busy}
+              title="人工确认该任务可执行，标记为已验真就绪"
+              onClick={() => void onTriageTask(task.id, "verify")}
+            >
+              ✓ 标为就绪
+            </button>
+          </>
+        )}
         {(task.status === "review" || task.status === "pr_open") && (
           <>
             <button
@@ -692,7 +837,22 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
   const [viewMode, setViewMode] = useState<"board" | "tree">("board");
   const [projectFilter, setProjectFilter] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState<"all" | "human" | "agent">("all");
+  const [originFilter, setOriginFilter] = useState<"all" | WorkOriginTrack>("all");
+  const [categoryFilter, setCategoryFilter] = useState<"" | WorkspaceCategory>("");
+  const [todoTriageFilter, setTodoTriageFilter] = useState<TodoTriageFilter>("verified");
   const [showArchiveDrawer, setShowArchiveDrawer] = useState(false);
+  const [workstreams, setWorkstreams] = useState<WorkstreamsOverview | null>(null);
+  const [showLiveStrip, setShowLiveStrip] = useState(true);
+  const [promotingHerdrId, setPromotingHerdrId] = useState<string | null>(null);
+
+  const [triageConfig, setTriageConfig] = useState<Pick<TriageConfig, "autoSweepEnabled" | "autoRollEnabled" | "useAgyCodeCheck">>({
+    autoSweepEnabled: true,
+    autoRollEnabled: false,
+    useAgyCodeCheck: true,
+  });
+  const [triageServerCounts, setTriageServerCounts] = useState<TriageFunnelCounts | null>(null);
+  const [triageBusy, setTriageBusy] = useState(false);
+  const [triageReceipt, setTriageReceipt] = useState("");
 
   const [kanban, setKanban] = useState<KanbanBoardResponse | null>(null);
   const [signals, setSignals] = useState<ProductSignalItem[]>([]);
@@ -724,6 +884,7 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
 
   // Task / Epic Creator form
   const [showCreator, setShowCreator] = useState(false);
+  const [showConversation, setShowConversation] = useState(false);
   const [createMode, setCreateMode] = useState<"task" | "epic">("task");
   const [draftTitle, setDraftTitle] = useState("");
   const [draftProject, setDraftProject] = useState("default");
@@ -745,6 +906,24 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
     const data = await request<KanbanBoardResponse>(`${API_BASE}/kanban${query}`);
     setKanban(data);
   }, [projectFilter]);
+
+  const loadTriageStatus = useCallback(async () => {
+    try {
+      const res = await request<TriageStatusResponse>(`${API_BASE}/triage/status`);
+      if (res.config) {
+        setTriageConfig({
+          autoSweepEnabled: Boolean(res.config.autoSweepEnabled),
+          autoRollEnabled: Boolean(res.config.autoRollEnabled),
+          useAgyCodeCheck: Boolean(res.config.useAgyCodeCheck),
+        });
+      }
+      if (res.funnel) {
+        setTriageServerCounts(res.funnel);
+      }
+    } catch {
+      // Triage status endpoint may not be mounted in legacy test harnesses.
+    }
+  }, []);
 
   const loadRoiAndTrend = useCallback(async () => {
     const [roiData, trendData] = await Promise.all([
@@ -779,18 +958,72 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
     [signalStatusFilter],
   );
 
+  const loadWorkstreams = useCallback(async () => {
+    try {
+      const res = await request<WorkstreamsOverview>("/api/opc/workstreams");
+      setWorkstreams(res);
+    } catch {
+      // Optional live strip
+    }
+  }, []);
+
+  const handlePromoteWorkstream = useCallback(
+    async (tree: WorkstreamHerdrTree) => {
+      setPromotingHerdrId(tree.id);
+      setError("");
+      try {
+        const res = await request<{ taskId: string; title: string; alreadyLinked?: boolean }>(
+          `${API_BASE}/promote-herdr`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              herdrAddress: tree.address,
+              sessionId: tree.linkedSessionId ?? "",
+              project: tree.classification?.canonicalProject || tree.spaceName || "个人工作区",
+              provider: tree.provider,
+              title: tree.title || tree.label,
+              herdrSpace: tree.spaceName,
+              workspace: tree.workspace,
+              liveStatus:
+                tree.effectiveState === "working"
+                  ? "running"
+                  : tree.effectiveState === "waiting"
+                    ? "waiting_user"
+                    : "idle",
+              latestProgress: tree.what || tree.title || null,
+              originTrack: tree.originTrack,
+            }),
+          },
+        );
+        setNotice(
+          res.alreadyLinked
+            ? `已同步实时会话到看板任务「${res.title}」`
+            : `已将 Herdr 会话纳入看板持续追踪：「${res.title}」`,
+        );
+        await Promise.all([loadKanban(), loadWorkstreams()]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "纳入看板失败");
+      } finally {
+        setPromotingHerdrId(null);
+      }
+    },
+    [loadKanban, loadWorkstreams],
+  );
+
   const refreshAll = useCallback(async () => {
     try {
-      await Promise.all([loadKanban(), loadSignals(), loadRoiAndTrend(), loadPatrolHistory()]);
+      await Promise.all([loadKanban(), loadWorkstreams(), loadTriageStatus(), loadSignals(), loadRoiAndTrend(), loadPatrolHistory()]);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载任务规划数据失败");
     }
-  }, [loadKanban, loadSignals, loadRoiAndTrend, loadPatrolHistory]);
+  }, [loadKanban, loadWorkstreams, loadTriageStatus, loadSignals, loadRoiAndTrend, loadPatrolHistory]);
 
   useEffect(() => {
     void loadKanban().catch((err) => setError(err instanceof Error ? err.message : "加载看板失败"));
-  }, [loadKanban]);
+    void loadWorkstreams();
+    void loadTriageStatus();
+  }, [loadKanban, loadWorkstreams, loadTriageStatus]);
 
   useEffect(() => {
     if (activeTab === "signals") {
@@ -810,11 +1043,37 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
 
   const filterTasks = useCallback(
     (list: PlanningTaskWithSubtasks[]) => {
-      if (assigneeFilter === "all") return list;
-      return list.filter((t) => t.assigneeType === assigneeFilter);
+      return list.filter((t) => {
+        if (assigneeFilter !== "all" && t.assigneeType !== assigneeFilter) return false;
+        if (originFilter !== "all") {
+          const track = t.originTrack ?? extractTaskOriginTrack(t);
+          if (track !== originFilter) return false;
+        }
+        if (categoryFilter) {
+          const cat = t.classification?.category ?? "personal";
+          if (cat !== categoryFilter) return false;
+        }
+        return true;
+      });
     },
-    [assigneeFilter],
+    [assigneeFilter, originFilter, categoryFilter],
   );
+
+  const visibleHerdrTrees = useMemo(() => {
+    const trees = workstreams?.herdrTrees ?? [];
+    const projLow = projectFilter.trim().toLowerCase();
+    return trees.filter((t) => {
+      if (originFilter !== "all" && t.originTrack !== originFilter) return false;
+      if (categoryFilter && (t.classification?.category ?? "personal") !== categoryFilter) return false;
+      if (projLow) {
+        const names = [t.classification?.canonicalProject, t.classification?.group, t.spaceName]
+          .filter(Boolean)
+          .map((s) => s!.toLowerCase());
+        if (!names.some((n) => n === projLow || projLow.includes(n) || n.includes(projLow))) return false;
+      }
+      return true;
+    });
+  }, [workstreams, originFilter, categoryFilter, projectFilter]);
 
   const allBoardTasks = useMemo(() => {
     if (!kanban) return [];
@@ -829,9 +1088,162 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
     ];
   }, [kanban]);
 
+  const localTriageCounts = useMemo<TriageFunnelCounts>(() => {
+    const c: TriageFunnelCounts = {
+      totalTodo: 0,
+      unreviewed: 0,
+      triaging: 0,
+      verified: 0,
+      needs_scope: 0,
+      idea_demoted: 0,
+      noise_archived: 0,
+      superseded: 0,
+    };
+    for (const task of allBoardTasks) {
+      const t = readTaskTriage(task);
+      if (!t) continue;
+      if (task.status === "todo") {
+        c.totalTodo++;
+        if (t.status === "unreviewed") c.unreviewed++;
+        else if (t.status === "triaging") c.triaging++;
+        else if (t.status === "verified") c.verified++;
+        else if (t.status === "needs_scope") c.needs_scope++;
+      } else {
+        if (t.status === "idea_demoted") c.idea_demoted++;
+        else if (t.status === "noise_archived") c.noise_archived++;
+        else if (t.status === "superseded") c.superseded++;
+      }
+    }
+    return c;
+  }, [allBoardTasks]);
+
+  const funnelCounts = useMemo<TriageFunnelCounts>(() => {
+    if (!projectFilter && triageServerCounts) {
+      return triageServerCounts;
+    }
+    return localTriageCounts;
+  }, [projectFilter, triageServerCounts, localTriageCounts]);
+
+  const filterTodoByTriage = useCallback(
+    (list: PlanningTaskWithSubtasks[]) => {
+      if (todoTriageFilter === "all") return list;
+      return list.filter((task) => {
+        const status = readTaskTriage(task)?.status ?? "unreviewed";
+        if (todoTriageFilter === "unreviewed") return status === "unreviewed" || status === "triaging";
+        return status === todoTriageFilter;
+      });
+    },
+    [todoTriageFilter],
+  );
+
+  const handleUpdateTriageConfig = async (
+    patch: Partial<Pick<TriageConfig, "autoSweepEnabled" | "autoRollEnabled" | "useAgyCodeCheck">>,
+  ) => {
+    if (triageBusy) return;
+    setTriageBusy(true);
+    setError("");
+    try {
+      const res = await request<{ config: TriageConfig }>(`${API_BASE}/triage/config`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      setTriageConfig({
+        autoSweepEnabled: Boolean(res.config.autoSweepEnabled),
+        autoRollEnabled: Boolean(res.config.autoRollEnabled),
+        useAgyCodeCheck: Boolean(res.config.useAgyCodeCheck),
+      });
+      setNotice("自动审查与轮动配置已保存");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存自动审查配置失败");
+    } finally {
+      setTriageBusy(false);
+    }
+  };
+
+  const handleRunTriageSweep = async () => {
+    if (triageBusy || busy) return;
+    setTriageBusy(true);
+    setError("");
+    setTriageReceipt("");
+    try {
+      const report = await request<TriageRunReport>(`${API_BASE}/triage/sweep`, {
+        method: "POST",
+        body: JSON.stringify({ dryRun: false }),
+      });
+      const summary = summarizeTriageReport(report, "sweep");
+      setTriageReceipt(summary);
+      setNotice(summary);
+      await Promise.all([loadKanban(), loadTriageStatus()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "规则清噪执行失败");
+    } finally {
+      setTriageBusy(false);
+    }
+  };
+
+  const handleRunTriageOnce = async () => {
+    if (triageBusy || busy) return;
+    setTriageBusy(true);
+    setError("");
+    setTriageReceipt("");
+    try {
+      const report = await request<TriageRunReport>(`${API_BASE}/triage/run-once`, {
+        method: "POST",
+        body: JSON.stringify({
+          dryRun: false,
+          useAgyCodeCheck: triageConfig.useAgyCodeCheck,
+        }),
+      });
+      const summary = summarizeTriageReport(report, "run");
+      setTriageReceipt(summary);
+      setNotice(summary);
+      await Promise.all([loadKanban(), loadTriageStatus()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "产研 Bot 批审执行失败");
+    } finally {
+      setTriageBusy(false);
+    }
+  };
+
+  const handleTriageSingleTask = async (taskId: string, action: SingleTriageAction) => {
+    if (triageBusy || busy) return;
+    setTriageBusy(true);
+    setError("");
+    try {
+      const res = await request<{
+        task: PlanningTaskWithSubtasks;
+        item: TriageRunItemResult;
+        funnel: TriageFunnelCounts;
+      }>(`${API_BASE}/triage/tasks/${encodeURIComponent(taskId)}`, {
+        method: "POST",
+        body: JSON.stringify({
+          action,
+          ...(action === "verify" ? { reason: "人工确认可执行" } : {}),
+        }),
+      });
+      if (res.funnel) setTriageServerCounts(res.funnel);
+      const summary = `🤖 单条审查完成（${TRIAGE_LABELS[res.item.nextStatus] ?? res.item.nextStatus}）${
+        res.item.reason ? `：${res.item.reason}` : ""
+      }`;
+      setTriageReceipt(summary);
+      setNotice(summary);
+      await Promise.all([loadKanban(), loadTriageStatus()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "单条任务审查失败");
+    } finally {
+      setTriageBusy(false);
+    }
+  };
+
   const visibleTreeTasks = useMemo(() => {
-    return filterTasks(allBoardTasks).filter((t) => t.status !== "archived");
-  }, [allBoardTasks, filterTasks]);
+    return filterTasks(allBoardTasks).filter((t) => {
+      if (t.status === "archived") return false;
+      if (t.status !== "todo" || todoTriageFilter === "all") return true;
+      const status = readTaskTriage(t)?.status ?? "unreviewed";
+      if (todoTriageFilter === "unreviewed") return status === "unreviewed" || status === "triaging";
+      return status === todoTriageFilter;
+    });
+  }, [allBoardTasks, filterTasks, todoTriageFilter]);
 
   const handleStatusChange = async (taskId: string, nextStatus: PlanningTaskStatus) => {
     setError("");
@@ -1311,12 +1723,25 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
           <button
             type="button"
             className="tp-primary"
+            aria-expanded={showConversation && activeTab === "kanban"}
             onClick={() => {
               setActiveTab("kanban");
-              setShowCreator((v) => !v);
+              setShowCreator(false);
+              setShowConversation(activeTab !== "kanban" || !showConversation);
             }}
           >
-            {showCreator ? "收起新建面板" : "+ 新建任务 / Epic"}
+            {showConversation && activeTab === "kanban" ? "收起任务对话" : "和 Bot 聊任务"}
+          </button>
+          <button
+            type="button"
+            aria-expanded={showCreator && activeTab === "kanban"}
+            onClick={() => {
+              setActiveTab("kanban");
+              setShowConversation(false);
+              setShowCreator(activeTab !== "kanban" || !showCreator);
+            }}
+          >
+            {showCreator && activeTab === "kanban" ? "收起手动表单" : "手动新建"}
           </button>
           <button type="button" disabled={busy} onClick={() => void refreshAll()}>
             刷新数据
@@ -1382,6 +1807,43 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
               ))}
             </select>
 
+            <select
+              aria-label="按归属分类筛选"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value as "" | WorkspaceCategory)}
+            >
+              <option value="">全部分类</option>
+              {WORKSPACE_CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>
+                  {WORKSPACE_CATEGORY_LABELS[cat]}
+                </option>
+              ))}
+            </select>
+
+            <div className="tp-segmented" role="group" aria-label="任务来源轨道筛选">
+              <button
+                type="button"
+                aria-pressed={originFilter === "all"}
+                onClick={() => setOriginFilter("all")}
+              >
+                双轨全部
+              </button>
+              <button
+                type="button"
+                aria-pressed={originFilter === "opc_dispatched"}
+                onClick={() => setOriginFilter("opc_dispatched")}
+              >
+                ⚙ {WORK_ORIGIN_LABELS.opc_dispatched}
+              </button>
+              <button
+                type="button"
+                aria-pressed={originFilter === "founder_managed"}
+                onClick={() => setOriginFilter("founder_managed")}
+              >
+                👤 {WORK_ORIGIN_LABELS.founder_managed}
+              </button>
+            </div>
+
             <div className="tp-segmented" role="group" aria-label="归属筛选">
               <button
                 type="button"
@@ -1444,6 +1906,8 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
       )}
 
       {/* Create Task / Epic Form */}
+      {showConversation && activeTab === "kanban" &&
+        <PlanningConversation key={projectFilter} project={projectFilter} onCreated={loadKanban} />}
       {showCreator && activeTab === "kanban" && (
         <form className="tp-creator" onSubmit={(e) => void handleCreateSubmit(e)}>
           <div className="tp-creator-head">
@@ -1622,13 +2086,230 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
       {/* ==================== TAB 1: KANBAN / EPIC TREE ==================== */}
       {activeTab === "kanban" && (
         <>
+          <section className="tp-triage-bar" aria-label="自动审查漏斗与轮动引擎" data-testid="triage-funnel-bar">
+            <div className="tp-triage-head">
+              <div className="tp-triage-title">
+                <h2>🧹 自动审查漏斗 & 轮动引擎</h2>
+                <small>
+                  Layer 0 规则清噪 → 产研 Bot 验真分级 → agy 只读复核 → 仅「已验真就绪」进入自动派工队列
+                </small>
+              </div>
+              <div className="tp-triage-funnel" role="group" aria-label="审查漏斗状态筛选">
+                <button
+                  type="button"
+                  className="tp-funnel-chip tone-verified"
+                  aria-pressed={todoTriageFilter === "verified"}
+                  onClick={() => setTodoTriageFilter("verified")}
+                >
+                  <span>已验真就绪</span>
+                  <strong>{funnelCounts.verified}</strong>
+                </button>
+                <button
+                  type="button"
+                  className="tp-funnel-chip tone-unreviewed"
+                  aria-pressed={todoTriageFilter === "unreviewed"}
+                  onClick={() => setTodoTriageFilter("unreviewed")}
+                >
+                  <span>待审查</span>
+                  <strong>{funnelCounts.unreviewed + funnelCounts.triaging}</strong>
+                </button>
+                <button
+                  type="button"
+                  className="tp-funnel-chip tone-scope"
+                  aria-pressed={todoTriageFilter === "needs_scope"}
+                  onClick={() => setTodoTriageFilter("needs_scope")}
+                >
+                  <span>需补范围</span>
+                  <strong>{funnelCounts.needs_scope}</strong>
+                </button>
+                <button
+                  type="button"
+                  className="tp-funnel-chip"
+                  aria-pressed={todoTriageFilter === "all"}
+                  onClick={() => setTodoTriageFilter("all")}
+                >
+                  <span>全部 Todo</span>
+                  <strong>{kanban ? filterTasks(kanban.todo).length : 0}</strong>
+                </button>
+                <button
+                  type="button"
+                  className="tp-funnel-chip tone-idea"
+                  title="已降级沉淀到「信息与想法 (#ideas)」并从待办清出"
+                  onClick={() => setShowArchiveDrawer(true)}
+                >
+                  <span>已降级想法</span>
+                  <strong>{funnelCounts.idea_demoted}</strong>
+                </button>
+                <button
+                  type="button"
+                  className="tp-funnel-chip tone-noise"
+                  title="展开下方归档抽屉查看已清理的纯摘要噪音与已替代项"
+                  onClick={() => setShowArchiveDrawer(true)}
+                >
+                  <span>噪音归档</span>
+                  <strong>{funnelCounts.noise_archived + funnelCounts.superseded}</strong>
+                </button>
+              </div>
+            </div>
+
+            <div className="tp-triage-controls">
+              <div className="tp-triage-btns">
+                <button
+                  type="button"
+                  className="tp-primary"
+                  disabled={triageBusy || busy}
+                  onClick={() => void handleRunTriageOnce()}
+                >
+                  {triageBusy ? "产研 Bot 审查中…" : "🧹 规则清噪 + 🤖 产研 Bot 批审"}
+                </button>
+                <button
+                  type="button"
+                  disabled={triageBusy || busy}
+                  onClick={() => void handleRunTriageSweep()}
+                >
+                  仅规则清噪
+                </button>
+              </div>
+              <div className="tp-triage-toggles">
+                <label className="tp-triage-check">
+                  <input
+                    type="checkbox"
+                    checked={triageConfig.autoSweepEnabled}
+                    disabled={triageBusy}
+                    onChange={(e) => void handleUpdateTriageConfig({ autoSweepEnabled: e.target.checked })}
+                  />
+                  <span>自动定时审查</span>
+                </label>
+                <label className="tp-triage-check">
+                  <input
+                    type="checkbox"
+                    checked={triageConfig.autoRollEnabled}
+                    disabled={triageBusy}
+                    onChange={(e) => void handleUpdateTriageConfig({ autoRollEnabled: e.target.checked })}
+                  />
+                  <span>自动轮动派工</span>
+                </label>
+                <label className="tp-triage-check">
+                  <input
+                    type="checkbox"
+                    checked={triageConfig.useAgyCodeCheck}
+                    disabled={triageBusy}
+                    onChange={(e) => void handleUpdateTriageConfig({ useAgyCodeCheck: e.target.checked })}
+                  />
+                  <span>agy 只读代码复核</span>
+                </label>
+              </div>
+            </div>
+
+            {triageReceipt && (
+              <div className="tp-triage-receipt" role="status">
+                <span>{triageReceipt}</span>
+                <button type="button" className="tp-ghost" onClick={() => setTriageReceipt("")}>
+                  关闭
+                </button>
+              </div>
+            )}
+          </section>
+
+          {/* Dual-Track Herdr / CLI Live Workstream Strip */}
+          {workstreams && visibleHerdrTrees.length > 0 && (
+            <section className="dt-live-strip" aria-label="Herdr 与 CLI 实时双轨工作带">
+              <div className="dt-live-strip-head">
+                <h3>
+                  <span>⚡ Herdr 实时工作现场（{visibleHerdrTrees.length} 条主线）</span>
+                  <span className="dt-pill dt-origin-opc_dispatched">
+                    ⚙ OPC 派发 {visibleHerdrTrees.filter((t) => t.originTrack === "opc_dispatched").length}
+                  </span>
+                  <span className="dt-pill dt-origin-founder_managed">
+                    👤 自主跟进 {visibleHerdrTrees.filter((t) => t.originTrack === "founder_managed").length}
+                  </span>
+                </h3>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <a href="#activity-index" style={{ fontSize: 12 }}>
+                    完整工作现场 ↗
+                  </a>
+                  <button
+                    type="button"
+                    className="tp-ghost"
+                    onClick={() => setShowLiveStrip((v) => !v)}
+                  >
+                    {showLiveStrip ? "收起" : "展开"}
+                  </button>
+                </div>
+              </div>
+              {showLiveStrip && (
+                <div className="dt-live-grid">
+                  {visibleHerdrTrees.slice(0, 8).map((tree) => (
+                    <article key={tree.id} className="dt-live-card">
+                      <div className="dt-live-card-top">
+                        <OriginTrackBadge track={tree.originTrack} />
+                        <ClassificationBadge
+                          classification={tree.classification}
+                          editable
+                          onChanged={() => void Promise.all([loadWorkstreams(), loadKanban()])}
+                        />
+                        <HerdrBadge
+                          address={tree.address}
+                          spaceName={tree.spaceName}
+                          subCount={tree.subAgents.length}
+                        />
+                      </div>
+                      <div className="dt-live-card-title" title={tree.title || tree.label}>
+                        {tree.effectiveState === "working"
+                          ? "⚡ "
+                          : tree.effectiveState === "waiting"
+                            ? "💬 "
+                            : "⏸ "}
+                        {tree.title || tree.label}
+                      </div>
+                      <div className="dt-live-card-foot">
+                        <span>
+                          {tree.classification?.canonicalProject || tree.spaceName || tree.provider}
+                          {tree.subAgents.length > 0 ? ` · ${tree.subAgents.length} 子 worker` : ""}
+                        </span>
+                        {tree.linkedTaskId ? (
+                          <a
+                            className="dt-pill dt-linked-task"
+                            href={`#planning?task=${encodeURIComponent(tree.linkedTaskId)}`}
+                          >
+                            ✓ 已绑定任务 ↗
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            className="dt-mini-btn"
+                            disabled={promotingHerdrId === tree.id}
+                            onClick={() => void handlePromoteWorkstream(tree)}
+                          >
+                            {promotingHerdrId === tree.id ? "纳入中…" : "📌 纳入看板同步"}
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
           {!kanban ? (
             <p role="status">正在加载任务看板…</p>
           ) : viewMode === "board" ? (
             <>
-              <div className="tp-board" aria-label="人机混合五列看板">
+              <div className="tp-board" role="region" aria-label="人机混合五列看板" tabIndex={0}>
                 {KANBAN_COLUMNS.map((col) => {
-                  const items = filterTasks(kanban[col.key]);
+                  const baseItems = filterTasks(kanban[col.key]);
+                  const items = col.key === "todo" ? filterTodoByTriage(baseItems) : baseItems;
+                  const todoHint =
+                    col.key === "todo"
+                      ? todoTriageFilter === "verified"
+                        ? "已验真就绪"
+                        : todoTriageFilter === "unreviewed"
+                          ? "待审查"
+                          : todoTriageFilter === "needs_scope"
+                            ? "需补范围"
+                            : col.hint
+                      : col.hint;
                   return (
                     <section
                       key={col.key}
@@ -1644,20 +2325,49 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                         <div className="tp-col-title">
                           <span className={`tp-col-dot ${col.key}`} />
                           <span>{col.label}</span>
-                          <small style={{ fontWeight: 400, color: "#616e65", fontSize: 11 }}>{col.hint}</small>
+                          <small style={{ fontWeight: 400, color: "#616e65", fontSize: 11 }}>{todoHint}</small>
                         </div>
-                        <span className="tp-col-count">{items.length}</span>
+                        <span className="tp-col-count">
+                          {col.key === "todo" && todoTriageFilter !== "all"
+                            ? `${items.length}/${baseItems.length}`
+                            : items.length}
+                        </span>
                       </header>
                       <div className="tp-col-body">
                         {items.length === 0 ? (
-                          <div className="tp-col-empty">拖拽任务卡片到此处</div>
+                          col.key === "todo" && todoTriageFilter === "verified" && baseItems.length > 0 ? (
+                            <div className="tp-todo-filter-hint">
+                              <span>
+                                已验真就绪 0 项（当前还有 {baseItems.length} 项待审查/需补范围已折叠，避免刷屏）
+                              </span>
+                              <div className="tp-todo-filter-hint-actions">
+                                <button
+                                  type="button"
+                                  className="tp-primary"
+                                  disabled={triageBusy || busy}
+                                  onClick={() => void handleRunTriageOnce()}
+                                >
+                                  🧹 清噪 + 🤖 Bot 批审
+                                </button>
+                                <button
+                                  type="button"
+                                  className="tp-ghost"
+                                  onClick={() => setTodoTriageFilter("unreviewed")}
+                                >
+                                  查看待审查 ({funnelCounts.unreviewed + funnelCounts.triaging})
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="tp-col-empty">拖拽任务卡片到此处</div>
+                          )
                         ) : (
                           items.map((task) => (
                             <TaskCard
                               key={task.id}
                               task={task}
                               agents={kanban.agents}
-                              busy={busy}
+                              busy={busy || triageBusy}
                               isDragging={draggingId === task.id}
                               onDragStart={handleDragStart}
                               onDragEnd={handleDragEnd}
@@ -1667,6 +2377,7 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                               onRecordPomodoro={handleRecordPomodoro}
                               onCreateSubtask={handleCreateSubtask}
                               onDeleteTask={handleDeleteTask}
+                              onTriageTask={handleTriageSingleTask}
                             />
                           ))
                         )}
@@ -1704,7 +2415,9 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                     {[...filterTasks(kanban.failed), ...filterTasks(kanban.archived)].length === 0 ? (
                       <div style={{ fontSize: 12.5, color: "#657268" }}>暂无失败或已归档任务。</div>
                     ) : (
-                      [...filterTasks(kanban.failed), ...filterTasks(kanban.archived)].map((task) => (
+                      [...filterTasks(kanban.failed), ...filterTasks(kanban.archived)].map((task) => {
+                        const triage = readTaskTriage(task);
+                        return (
                         <div key={task.id} className="tp-card" style={{ cursor: "default" }}>
                           <div className={`tp-card-prio-bar ${task.status === "failed" ? "high" : "low"}`} />
                           <div className="tp-card-top">
@@ -1713,8 +2426,18 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                             </span>
                             <span className="tp-pill">{task.project}</span>
                             <span className="tp-pill mono">P{task.priority}</span>
+                            {triage && (
+                              <span className={`tp-pill triage-${triage.status}`}>
+                                {TRIAGE_LABELS[triage.status]}
+                              </span>
+                            )}
                           </div>
                           <div className="tp-card-title">{task.title}</div>
+                          {triage?.reason && (
+                            <div className="tp-triage-reason" title={triage.reason}>
+                              🤖 {triage.reason}
+                            </div>
+                          )}
                           <div className="tp-card-actions">
                             <button
                               type="button"
@@ -1740,7 +2463,8 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                             </button>
                           </div>
                         </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 )}
@@ -1759,6 +2483,7 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                       : task.status === "done" || task.status === "published"
                         ? 100
                         : 0;
+                  const triage = readTaskTriage(task);
                   return (
                     <div key={task.id} className="tp-tree-node">
                       <div className="tp-tree-head">
@@ -1770,6 +2495,11 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                             <span className={`tp-pill type-${task.type}`}>{TYPE_LABELS[task.type]}</span>
                             <span className="tp-pill">{task.project}</span>
                             <span className="tp-pill">{STATUS_LABELS[task.status]}</span>
+                            {triage && (
+                              <span className={`tp-pill triage-${triage.status}`}>
+                                {TRIAGE_LABELS[triage.status]}
+                              </span>
+                            )}
                             <span className={`tp-pill ${task.assigneeType}`}>
                               {task.assigneeType === "agent" ? "◈ " : "◉ "}
                               {task.assigneeName || task.assigneeId || "未分配"}
@@ -2266,7 +2996,7 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
                   <h2>Epic & 项目级 ROI 投入产出表</h2>
                   <span className="tp-pill mono">{roi.epicRoi.length} 项汇总</span>
                 </div>
-                <div className="tp-table-wrap">
+                <div className="tp-table-wrap opc-table-scroll" role="region" aria-label="项目投入产出" tabIndex={0}>
                   <table className="tp-table">
                     <thead>
                       <tr>
@@ -2481,7 +3211,7 @@ export function TaskPlanning({ nav, initialTab }: { nav?: ReactNode; initialTab?
               <h2>最近巡检记录历史</h2>
               <span className="tp-pill mono">{patrolHistory.length} 次记录</span>
             </div>
-            <div className="tp-table-wrap">
+            <div className="tp-table-wrap opc-table-scroll" role="region" aria-label="任务巡检记录" tabIndex={0}>
               <table className="tp-table">
                 <thead>
                   <tr>
