@@ -331,6 +331,40 @@ function fromHerdr(value: unknown, now: string): Reading {
 }
 
 export function parseHerdrMachinesOutput(stdout: string): HerdrMachineInfo[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as { machines?: unknown };
+      if (Array.isArray(parsed.machines)) {
+        const out: HerdrMachineInfo[] = [];
+        for (const item of parsed.machines) {
+          if (!item || typeof item !== "object") continue;
+          const m = item as { name?: unknown; state?: unknown; status?: unknown; target?: unknown; version?: unknown };
+          if (typeof m.name !== "string" || !m.name.trim()) continue;
+          const st =
+            typeof m.state === "string" && m.state.trim()
+              ? m.state.trim().toLowerCase()
+              : typeof m.status === "string" && m.status.trim()
+                ? m.status.trim().toLowerCase()
+                : "unknown";
+          const detailParts = [
+            typeof m.target === "string" && m.target.trim() ? m.target.trim() : null,
+            typeof m.version === "string" && m.version.trim() ? `hc ${m.version.trim()}` : null,
+          ].filter(Boolean);
+          out.push({
+            name: m.name.trim(),
+            status: st,
+            detail: detailParts.join(" · "),
+          });
+        }
+        return out;
+      }
+      return [];
+    } catch {
+      // Fall through to text table parsing
+    }
+  }
   const out: HerdrMachineInfo[] = [];
   for (const rawLine of stdout.split("\n")) {
     const line = rawLine.trim();

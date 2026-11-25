@@ -182,19 +182,28 @@ export class HerdrController {
     const address = validateHerdrAddress(rawAddress);
     const limit = Math.max(5, Math.min(80, Math.floor(Number(maxLines) || 24)));
     try {
-      const { stdout } = await this.execFn(this.hcBin, ["screen", address], {
+      const { stdout } = await this.execFn(this.hcBin, ["read", "--lines", String(limit), address], {
         timeout: 3000,
         maxBuffer: 2 * 1024 * 1024,
       });
-      const allLines = stdout
+      const rawLines = stdout
         .replace(/\r/g, "")
         .split("\n")
         .map((line) => redactScreenLine(line.trimEnd()));
-      while (allLines.length > 0 && allLines[allLines.length - 1].trim() === "") {
-        allLines.pop();
+      // Collapse large vertical terminal padding runs into at most a single blank line
+      const compactLines: string[] = [];
+      let prevBlank = false;
+      for (const line of rawLines) {
+        const blank = line.trim() === "";
+        if (blank && (compactLines.length === 0 || prevBlank)) continue;
+        compactLines.push(line);
+        prevBlank = blank;
       }
-      const truncated = allLines.length > limit;
-      const lines = truncated ? allLines.slice(-limit) : allLines;
+      while (compactLines.length > 0 && compactLines[compactLines.length - 1].trim() === "") {
+        compactLines.pop();
+      }
+      const truncated = compactLines.length > limit;
+      const lines = truncated ? compactLines.slice(-limit) : compactLines;
       return { ok: true, address, lines, truncated };
     } catch {
       throw new ApiError(502, "herdr_screen_failed", `无法读取 Herdr 终端 ${address} 的屏幕内容。`);

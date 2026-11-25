@@ -501,9 +501,9 @@ test("P2 HerdrController focus, send blocked-guard, screen redaction, and HTTP a
         assert.ok(!args.includes("--force"), "must NEVER pass --force to hc send");
         return { stdout: "ok", stderr: "" };
       }
-      if (file === "mock-hc" && args[0] === "screen") {
+      if (file === "mock-hc" && args[0] === "read") {
         return {
-          stdout: "line 1\nAPI_KEY=sk-abcdefghijklmnopqrstuvwxyz123456\nWaiting for reply?\n\n",
+          stdout: "line 1\n\n\n\nAPI_KEY=sk-abcdefghijklmnopqrstuvwxyz123456\nWaiting for reply?\n\n",
           stderr: "",
         };
       }
@@ -540,11 +540,11 @@ test("P2 HerdrController focus, send blocked-guard, screen redaction, and HTTP a
     (err: { status?: number; code?: string }) => err.status === 400 && err.code === "invalid_herdr_address",
   );
 
-  // Screen tail redacts secrets
+  // Screen tail redacts secrets and collapses excess blank lines
   const scr = await ctrl.readScreenTail("t90", 10);
-  assert.equal(scr.lines.length, 3);
+  assert.equal(scr.lines.length, 4);
   assert.doesNotMatch(scr.lines.join("\n"), /sk-abc/);
-  assert.match(scr.lines[1], /\[REDACTED\]/);
+  assert.match(scr.lines.join("\n"), /\[REDACTED\]/);
   assert.match(redactScreenLine("bearer: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaaaaaaaaaa.bbbbbb"), /\[REDACTED\]/);
 
   // HTTP routes enforce human session authentication (401 without session)
@@ -692,11 +692,20 @@ test("P2 buildAttentionItems unifies blocked/waiting Herdr + recent CLI items, d
 
 test("P2 remote Herdr terminals and machines stay isolated from localWorkspaces, and Hub circuit breaker degrades fast", async (t) => {
   const machines = parseHerdrMachinesOutput(
-    "ubuntu1          connected  ubuntu1 · hc 0.1.17\nubuntu2          connected  ubuntu2 · hc 0.1.17\n{\"terminals\":[]}\n",
+    JSON.stringify({
+      machines: [
+        { name: "ubuntu1", state: "connected", target: "ubuntu1", version: "0.1.17" },
+        { name: "ubuntu2", state: "connected", target: "ubuntu2", version: "0.1.17" },
+      ],
+    }),
   );
   assert.deepEqual(machines, [
     { name: "ubuntu1", status: "connected", detail: "ubuntu1 · hc 0.1.17" },
     { name: "ubuntu2", status: "connected", detail: "ubuntu2 · hc 0.1.17" },
+  ]);
+  assert.deepEqual(parseHerdrMachinesOutput('{"terminals":[]}'), []);
+  assert.deepEqual(parseHerdrMachinesOutput("ubuntu1 connected ubuntu1 · hc 0.1.17\n"), [
+    { name: "ubuntu1", status: "connected", detail: "ubuntu1 · hc 0.1.17" },
   ]);
 
   const view = await readAgentIndex({
