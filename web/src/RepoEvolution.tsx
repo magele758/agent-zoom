@@ -1492,7 +1492,7 @@ export function RepoEvolution({
         includeForks: incForks ? "true" : "false",
         includeRejected: incRej ? "true" : "false",
         maxStarsPerOwned: String(perOwned),
-        maxTotalStars: "240",
+        maxTotalStars: String(Math.min(600, Math.max(240, perOwned * 15))),
       });
       if (st !== "all") qs.set("status", st);
 
@@ -2322,6 +2322,27 @@ export function RepoEvolution({
     }
   };
 
+  const triggerRecalibrate = async () => {
+    setBusyAction("recalibrate");
+    setError("");
+    try {
+      const res = await request<ClusterAndRecallResult>(`${API_BASE}/recalibrate`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setNotice({
+        text: `分类体系与关联校准完成（${(res.durationMs / 1000).toFixed(1)}s）：校准领域 ${res.domainsCalibrated ?? 0} · 画像补全 ${res.ownedProfilesEnriched ?? 0} · 自有归类 ${res.ownedDomainsAssigned ?? 0} · 清理旧建议 ${res.clearedSuggestedLinks ?? 0} · 重建高置信边 ${res.linksSuggested}（Spotlight ${res.spotlightMatches}）。`,
+      });
+      await refreshGraphs();
+      if (activeTab === "domains") await loadNodesPage();
+      if (activeTab === "timeline") await loadTimeline(false);
+    } catch (err) {
+      setError(describeError(err, "校准分类体系失败"));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const openSettings = () => {
     const cfg = radialGraph?.config ?? macroGraph?.config;
     if (cfg) {
@@ -3125,6 +3146,15 @@ export function RepoEvolution({
             >
               {busyAction === "cluster" ? "精准聚类召回中…" : "AI 精准聚类与召回"}
             </button>
+            <button
+              type="button"
+              data-testid="radial-recalibrate-btn"
+              disabled={Boolean(busyAction)}
+              title="一键校准内置领域体系、补全自有库画像并清理低质 AI 建议边（保留所有人工审批与手动连线）"
+              onClick={() => void triggerRecalibrate()}
+            >
+              {busyAction === "recalibrate" ? "校准分类中…" : "校准分类与关联"}
+            </button>
             <button type="button" onClick={openSettings}>
               ⚙ 设置
             </button>
@@ -3515,7 +3545,7 @@ export function RepoEvolution({
                               <strong>{node.fullName}</strong>
                             </span>
                             <span className="re-pill">
-                              {node.role === "owned" ? "L2 自有" : `L3 ★ ${formatStars(node.starsCount)}`}
+                              {node.role !== "starred" ? "L2 自有" : `L3 ★ ${formatStars(node.starsCount)}`}
                             </span>
                           </button>
                         </li>
@@ -4966,7 +4996,7 @@ export function RepoEvolution({
                                   {node.priorityTier === "spotlight" && <span className="re-pill spotlight">★ 重点</span>}
                                   {node.visibility === "private" && <span className="re-pill private">🔒 私有</span>}
                                   {node.isFork && <span className="re-pill fork">⑂ Fork</span>}
-                                  {node.role === "owned" && <span className="re-pill active">自有</span>}
+                                  {(node.role === "owned" || node.role === "both") && <span className="re-pill active">自有</span>}
                                   {node.primaryLanguage && <span className="re-pill">{node.primaryLanguage}</span>}
                                 </div>
                                 {node.description && <div className="re-repo-desc">{node.description}</div>}
