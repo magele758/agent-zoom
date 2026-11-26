@@ -7,8 +7,50 @@ import { parseEnv } from "node:util";
 
 const root = resolve(import.meta.dirname, "..");
 const zoomLocalDir = resolve(process.env.KUNLUN_LOCAL_DIR || join(root, "data", "zoom-local"));
+const serviceFile = join(zoomLocalDir, "service.env");
 const submitFile = join(zoomLocalDir, "submit.env");
 const pidsFile = join(root, "data", "companion-runtime", "pids.json");
+
+function resolveConfiguredPgUrl() {
+  if (process.env.OPC_PG_URL) return process.env.OPC_PG_URL.trim();
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL.trim();
+  if (existsSync(serviceFile)) {
+    try {
+      const env = parseEnv(readFileSync(serviceFile, "utf8"));
+      return (env.OPC_PG_URL || env.DATABASE_URL || "").trim();
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function checkOrStartPostgres(ensureRunning = false) {
+  const pgUrl = resolveConfiguredPgUrl();
+  const container = (process.env.OPC_PG_CONTAINER || "opc-postgres").trim();
+  if (!pgUrl) return { enabled: false, container, ready: false };
+
+  const inspect = spawnSync("docker", ["inspect", "-f", "{{.State.Running}}", container], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  let running = inspect.status === 0 && inspect.stdout.trim() === "true";
+
+  if (ensureRunning && inspect.status === 0 && !running) {
+    const start = spawnSync("docker", ["start", container], { encoding: "utf8", stdio: "ignore" });
+    running = start.status === 0;
+  }
+
+  let ready = false;
+  if (running) {
+    const readyCheck = spawnSync("docker", ["exec", container, "pg_isready", "-U", "opc", "-d", "opc_os"], {
+      encoding: "utf8",
+      stdio: "ignore",
+    });
+    ready = readyCheck.status === 0;
+  }
+  return { enabled: true, container, running, ready };
+}
 
 const usage = `用法: node scripts/opc-stack.mjs <up|status|verify|stop>
   up      启动或连接本机 OPC OS，自动拉起 Commerce / GTM / Ops / Data Analysis 服务并纳管公司 7 层全景
@@ -114,6 +156,7 @@ try {
     process.exit(0);
   }
 
+  const postgres = checkOrStartPostgres(cmd === "up");
   const conn = await ensureOpcOsRunning();
   connectZoomCli();
 
@@ -129,6 +172,7 @@ try {
           cockpitUrl: `${conn.origin}/#commercial`,
           businessLinesUrl: `${conn.origin}/#business-lines`,
           inboxUrl: `${conn.origin}/#inbox`,
+          postgres,
           bootstrap,
           startedServices: ensured.started,
           completionPct: overview.completionPct,
@@ -150,6 +194,7 @@ try {
         {
           opcOsOrigin: conn.origin,
           cockpitUrl: `${conn.origin}/#commercial`,
+          postgres,
           pilot: overview.pilot,
           completionPct: overview.completionPct,
           metrics: overview.metrics,

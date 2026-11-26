@@ -37,7 +37,7 @@ export function addWorkflowBoardRoutes(app: Hono, db: DatabaseSync, requireBrows
     if (through > Number(run.events)) throw new ApiError(409, "workflow_mark", "请刷新任务记录后重试");
     if (action === "read") {
       db.prepare(`INSERT INTO local_workflow_marks(run_id,seen_through) VALUES (?,?)
-        ON CONFLICT(run_id) DO UPDATE SET seen_through=max(seen_through,excluded.seen_through)`).run(id,through);
+        ON CONFLICT(run_id) DO UPDATE SET seen_through=max(local_workflow_marks.seen_through,excluded.seen_through)`).run(id,through);
     } else {
       db.prepare(`INSERT INTO local_workflow_marks(run_id,archived_through) VALUES (?,?)
         ON CONFLICT(run_id) DO UPDATE SET archived_through=excluded.archived_through`).run(id,action === "archive" ? through : null);

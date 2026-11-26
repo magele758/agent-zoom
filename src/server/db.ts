@@ -1,6 +1,44 @@
-import { mkdirSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  PgDatabaseSync,
+  createPgPool,
+  deriveTestSchemaForPath,
+  isPgDatabase,
+  isTempDatabasePath,
+  resolvePgUrl,
+} from "./pg-db.ts";
+
+export { PgDatabaseSync, createPgPool, isPgDatabase, resolvePgUrl };
+
+const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "ascii");
+
+function isExistingSqliteFile(filePath: string): boolean {
+  if (!existsSync(filePath)) return false;
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, "r");
+    const buf = Buffer.alloc(SQLITE_HEADER.length);
+    const bytes = readSync(fd, buf, 0, SQLITE_HEADER.length, 0);
+    return bytes === SQLITE_HEADER.length && buf.equals(SQLITE_HEADER);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+export interface OpenDatabaseOptions {
+  pgUrl?: string;
+  schema?: string;
+}
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -269,7 +307,29 @@ CREATE TABLE IF NOT EXISTS stage_receipts (
 );
 `;
 
-export function openDatabase(path: string): DatabaseSync {
+export function openDatabase(path: string, options: OpenDatabaseOptions = {}): DatabaseSync {
+  const pgUrl = resolvePgUrl(options.pgUrl);
+  if (pgUrl) {
+    // Keep SQLite fallback only when a test explicitly creates a legacy SQLite fixture file on disk in tmpdir
+    // and passes that file to openDatabase() to verify legacy SQLite migration.
+    const isLegacySqliteFixture =
+      path !== ":memory:" && !options.schema && isTempDatabasePath(path) && isExistingSqliteFile(path);
+    if (!isLegacySqliteFixture) {
+      const target = options.schema
+        ? { schema: options.schema, createSchema: options.schema !== "public", dropSchemaOnClose: false }
+        : deriveTestSchemaForPath(path);
+      const db = new PgDatabaseSync({
+        connectionString: pgUrl,
+        schema: target.schema,
+        createSchema: target.createSchema,
+        dropSchemaOnClose: target.dropSchemaOnClose,
+      }) as unknown as DatabaseSync;
+      db.exec(SCHEMA);
+      migrate(db);
+      return db;
+    }
+  }
+
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   if (path !== ":memory:") db.exec("PRAGMA journal_mode = WAL;");
@@ -280,12 +340,23 @@ export function openDatabase(path: string): DatabaseSync {
 }
 
 function migrate(db: DatabaseSync) {
-  const names = (table: string) =>
-    new Set(
-      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
-    );
+  const columnCache = new Map<string, Set<string>>();
+  const names = (table: string) => {
+    let set = columnCache.get(table);
+    if (!set) {
+      set = new Set(
+        (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
+      );
+      columnCache.set(table, set);
+    }
+    return set;
+  };
   const add = (table: string, column: string, definition: string) => {
-    if (!names(table).has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+    const cols = names(table);
+    if (!cols.has(column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+      cols.add(column);
+    }
   };
   add("messages", "design_group", "design_group TEXT NOT NULL DEFAULT ''");
   add("zoom_tasks", "stage", "stage TEXT");

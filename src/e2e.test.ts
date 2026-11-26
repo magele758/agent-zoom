@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { GROUPS } from "./groups.ts";
+import { openDatabase } from "./server/db.ts";
 import { MAX_LEVEL, MIN_LEVEL, PRESENCE_MS } from "./server/logic.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -72,7 +72,7 @@ const agentRow = async (handle: string) => (await snapshot()).members.agents.fin
 const post = (body: string, kind = "instruction", extra: Json = {}) =>
   call(`/api/rooms/${roomId}/messages`, { body: { body, kind, ...extra } });
 const inbox = async (handle: string, type?: string) => {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = openDatabase(dbPath);
   try {
     const events = db
       .prepare("SELECT event_type, ref_id FROM inbox WHERE recipient_id = ? ORDER BY id")
@@ -85,7 +85,7 @@ const inbox = async (handle: string, type?: string) => {
 const bidsOn = (messages: Json[], taskId: string) => messages.filter((m) => m.taskId === taskId && m.kind === "bid");
 
 function ageSeen(handle: string, ms: number) {
-  const db = new DatabaseSync(dbPath);
+  const db = openDatabase(dbPath);
   try {
     db.prepare("UPDATE agents SET last_seen_at = ? WHERE id = ?").run(new Date(Date.now() - ms).toISOString(), agents[handle].id);
   } finally {

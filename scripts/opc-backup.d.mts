@@ -10,7 +10,7 @@ export interface BackupManifestSlot {
 export interface BackupManifestFile {
   slotId: string;
   relativePath: string;
-  kind: "sqlite" | "file";
+  kind: "sqlite" | "postgres" | "file";
   size: number;
   mode: number;
   sha256: string;
@@ -26,6 +26,7 @@ export interface BackupManifest {
   includeAgentHome: boolean;
   fileCount: number;
   sqliteCount: number;
+  postgresCount?: number;
   totalSourceBytes: number;
   slots: BackupManifestSlot[];
   files: BackupManifestFile[];
@@ -35,6 +36,7 @@ export interface CreateBackupOptions {
   rootDir?: string;
   homeDir?: string;
   env?: Record<string, string | undefined>;
+  pgUrl?: string;
   outPath?: string;
   backupDir?: string;
   encrypt?: boolean;
@@ -53,6 +55,7 @@ export interface CreateBackupResult {
   archiveSizeBytes: number;
   fileCount: number;
   sqliteCount: number;
+  postgresCount?: number;
   slots: BackupManifestSlot[];
   verified: boolean;
   manifest: BackupManifest;
@@ -71,6 +74,7 @@ export interface VerifyBackupResult {
   manifest: BackupManifest | null;
   checkedFiles: number;
   checkedSqlite: number;
+  checkedPostgres?: number;
   errors: string[];
 }
 
@@ -79,6 +83,7 @@ export interface RestoreBackupOptions {
   rootDir?: string;
   homeDir?: string;
   env?: Record<string, string | undefined>;
+  pgUrl?: string;
   targetRoot?: string;
   apply?: boolean;
   passphrase?: string;
@@ -94,7 +99,7 @@ export interface RestoreBackupResult {
   restoredFiles: Array<{
     slotId: string;
     relativePath: string;
-    kind: "sqlite" | "file";
+    kind: "sqlite" | "postgres" | "file";
     size: number;
     destPath: string;
     willOverwrite: boolean;

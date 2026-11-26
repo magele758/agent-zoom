@@ -120,6 +120,7 @@ async function start() {
     return;
   }
   const { service } = local;
+  const pgUrl = process.env.OPC_PG_URL || process.env.DATABASE_URL || service.OPC_PG_URL || service.DATABASE_URL;
   Object.assign(process.env, {
     PORT: String(local.port),
     KUNLUN_URL: local.origin,
@@ -129,6 +130,7 @@ async function start() {
     KUNLUN_PREVIEW: "0",
     OPC_ACTIVITY_INDEX: service.OPC_ACTIVITY_INDEX ?? process.env.OPC_ACTIVITY_INDEX ?? "1",
     KUNLUN_SESSION_COOKIE: service.KUNLUN_SESSION_COOKIE || "zoom_local_" + local.port,
+    ...(pgUrl ? { OPC_PG_URL: pgUrl } : {}),
   });
   console.log(links + "\nCLI 连接文件 " + submitFile);
   const workflow = workflowConfig(service);
