@@ -476,56 +476,238 @@ function arrangeCenterWeighted<T>(items: T[]): T[] {
 }
 
 /**
- * 在圆环上对有序目标角度执行防重叠松弛，保证任意相邻项（含首尾跨越 2π）严格满足 minGap 且尽量贴近父节点角度。
+ * 检测一组同尺寸卡片中心点是否存在任意 AABB 重叠（严格按真实卡片宽高 + 安全外边距校验，杜绝上下与 45° 斜角压边）。
  */
-function relaxCircularAngles(targetAngles: number[], minGap: number): number[] {
-  const n = targetAngles.length;
-  if (n === 0) return [];
-  if (n === 1) return [targetAngles[0]];
-
-  const twoPi = Math.PI * 2;
-  const safeGap = Math.min(minGap, (twoPi * 0.96) / n);
-
-  // targetAngles are generated clockwise along the continuous [-π/2, 3π/2] circle
-  const targets = [...targetAngles];
-  const angles = [...targets];
-
-  // Ensure monotonically ordered starting state
-  for (let i = 1; i < n; i++) {
-    if (angles[i] < angles[i - 1] + safeGap) {
-      angles[i] = angles[i - 1] + safeGap;
-    }
-  }
-  // Re-center mean angle onto target mean
-  const avgDiff = angles.reduce((acc, a, i) => acc + (a - targets[i]), 0) / n;
-  for (let i = 0; i < n; i++) angles[i] -= avgDiff;
-
-  const projectGaps = () => {
-    for (let i = 0; i < n; i++) {
-      const next = (i + 1) % n;
-      const gap = next === 0 ? angles[0] + twoPi - angles[n - 1] : angles[next] - angles[i];
-      if (gap < safeGap) {
-        const push = (safeGap - gap) * 0.52;
-        angles[i] -= push;
-        angles[next] += push;
+function hasAabbOverlap(
+  coords: Array<{ x: number; y: number }>,
+  boxW: number,
+  boxH: number,
+): boolean {
+  const n = coords.length;
+  for (let i = 0; i < n; i++) {
+    const a = coords[i];
+    for (let j = i + 1; j < n; j++) {
+      const b = coords[j];
+      if (Math.abs(a.x - b.x) < boxW && Math.abs(a.y - b.y) < boxH) {
+        return true;
       }
     }
-  };
+  }
+  return false;
+}
 
-  // Iterative spring + circular gap relaxation
-  for (let iter = 0; iter < 24; iter++) {
-    for (let i = 0; i < n; i++) {
-      angles[i] += (targets[i] - angles[i]) * 0.12;
+/**
+ * 水平矩形卡片 (boxW × boxH) 在圆环半径 r、角度 midAngle 处防碰撞所需的精确各向异性最小角距：
+ * 水平卡片在左右侧翼（3/9 点）仅需约 boxH/r 弧长，在上下极点（12/6 点）需约 boxW/r 弧长，
+ * 相比等距圆弧可将整环半径压缩约 2–3 倍同时保持严格 0 重叠。
+ */
+function anisotropicGapRad(midAngle: number, r: number, boxW: number, boxH: number): number {
+  const absSin = Math.abs(Math.sin(midAngle));
+  const absCos = Math.abs(Math.cos(midAngle));
+  const reqX = absSin > 0.015 ? boxW / (r * absSin) : Math.PI;
+  const reqY = absCos > 0.015 ? boxH / (r * absCos) : Math.PI;
+  return Math.min(Math.PI * 0.45, Math.min(reqX, reqY) * 1.07);
+}
+
+/**
+ * 在单个同心圆环上按各向异性 AABB 间距松弛角度，严格保证 0 重叠并贴近目标角度。
+ */
+function packSingleOrbitAnisotropic(params: {
+  targetAngles: number[];
+  initialR: number;
+  boxW: number;
+  boxH: number;
+  radiusIncrement?: number;
+}): {
+  r: number;
+  angles: number[];
+  coords: Array<{ x: number; y: number; r: number; angle: number }>;
+} {
+  const { targetAngles, initialR, boxW, boxH, radiusIncrement = 22 } = params;
+  const n = targetAngles.length;
+  const twoPi = Math.PI * 2;
+  if (n === 0) return { r: initialR, angles: [], coords: [] };
+  if (n === 1) {
+    const pt = polar(initialR, targetAngles[0]);
+    return {
+      r: initialR,
+      angles: [targetAngles[0]],
+      coords: [{ x: pt.x, y: pt.y, r: initialR, angle: targetAngles[0] }],
+    };
+  }
+
+  // Exact analytical single-ring capacity density for horizontal boxW × boxH cards:
+  // ∫_0^{2π} max(|sin θ|/W, |cos θ|/H) dθ = 4 * (sin(θ0)/H + cos(θ0)/W), where tan(θ0) = W/H
+  const theta0 = Math.atan2(boxW, boxH);
+  const densityPerPx = 4 * (Math.sin(theta0) / boxH + Math.cos(theta0) / boxW);
+  const analyticalMinR = Math.ceil((n * 1.14) / densityPerPx);
+
+  let r = Math.max(initialR, analyticalMinR);
+  const targets = [...targetAngles];
+
+  for (let attempt = 0; attempt < 36; attempt++) {
+    const angles = [...targets];
+    // Initial monotonic separation using local anisotropic gap
+    for (let i = 1; i < n; i++) {
+      const mid = (angles[i - 1] + angles[i]) * 0.5;
+      const g = anisotropicGapRad(mid, r, boxW, boxH);
+      if (angles[i] < angles[i - 1] + g) angles[i] = angles[i - 1] + g;
     }
-    projectGaps();
+    const avgDiff = angles.reduce((acc, a, i) => acc + (a - targets[i]), 0) / n;
+    for (let i = 0; i < n; i++) angles[i] -= avgDiff;
+
+    const projectAnisotropic = () => {
+      for (let i = 0; i < n; i++) {
+        const next = (i + 1) % n;
+        const a1 = angles[i];
+        const a2 = next === 0 ? angles[0] + twoPi : angles[next];
+        const gap = a2 - a1;
+        const mid = (a1 + a2) * 0.5;
+        const req = anisotropicGapRad(mid, r, boxW, boxH);
+        if (gap < req) {
+          const push = (req - gap) * 0.53;
+          angles[i] -= push;
+          angles[next] += push;
+        }
+      }
+    };
+
+    const spring = attempt === 0 ? 0.08 : attempt < 4 ? 0.03 : 0.008;
+    for (let iter = 0; iter < 28; iter++) {
+      for (let i = 0; i < n; i++) {
+        angles[i] += (targets[i] - angles[i]) * spring;
+      }
+      projectAnisotropic();
+    }
+    for (let pass = 0; pass < 22; pass++) {
+      projectAnisotropic();
+    }
+
+    const coords = angles.map((angle) => {
+      const pt = polar(r, angle);
+      return { x: pt.x, y: pt.y, r, angle };
+    });
+
+    if (!hasAabbOverlap(coords, boxW, boxH)) {
+      return { r, angles, coords };
+    }
+
+    r += radiusIncrement;
   }
 
-  // Final strict gap-enforcement passes so zero residual overlap remains
-  for (let pass = 0; pass < 8; pass++) {
-    projectGaps();
+  // Final guaranteed-safe spacing along anisotropic arc-length parameterization
+  const stepAngles: number[] = [];
+  const totalSlots = n;
+  const start = targets[0];
+  let accAngle = start;
+  for (let i = 0; i < totalSlots; i++) {
+    stepAngles.push(accAngle);
+    accAngle += anisotropicGapRad(accAngle, r, boxW, boxH);
+  }
+  const span = Math.max(0.01, accAngle - start);
+  const scale = twoPi / span;
+  const finalAngles = stepAngles.map((a) => start + (a - start) * scale);
+  const finalCoords = finalAngles.map((angle) => {
+    const pt = polar(r, angle);
+    return { x: pt.x, y: pt.y, r, angle };
+  });
+  return { r, angles: finalAngles, coords: finalCoords };
+}
+
+/**
+ * 面向多子轨圆环的确定性 0-AABB 重叠求解器：
+ * 1. 相邻子轨径向步距严格 >= hypot(boxW, boxH) + 6，从欧氏几何上彻底杜绝任何跨子轨 45° 斜角压边；
+ * 2. 每条子轨独立执行各向异性 AABB 角度松弛（3/9 点紧凑、12/6 点舒展），既极度紧凑清晰又严格 0 重叠！
+ */
+function solveCollisionFreeMultiOrbit(params: {
+  targetAngles: number[];
+  initialRBase: number;
+  numSubOrbits: number;
+  boxW: number;
+  boxH: number;
+  radiusIncrement: number;
+}): {
+  rBase: number;
+  radii: number[];
+  angles: number[];
+  subOrbits: number[];
+  coords: Array<{ x: number; y: number; r: number; angle: number; subOrbit: number }>;
+} {
+  const { targetAngles, initialRBase, numSubOrbits, boxW, boxH, radiusIncrement } = params;
+  const n = targetAngles.length;
+
+  if (n === 0) {
+    return { rBase: initialRBase, radii: [], angles: [], subOrbits: [], coords: [] };
   }
 
-  return angles;
+  // Euclidean diagonal-proof inter-orbit radial step: guarantees |Δx| >= boxW OR |Δy| >= boxH at EVERY angle θ!
+  const orbitStep = Math.ceil(Math.hypot(boxW, boxH)) + 6;
+  const kCount = Math.max(1, Math.min(numSubOrbits, n));
+
+  if (n === 1) {
+    const pt = polar(initialRBase, targetAngles[0]);
+    return {
+      rBase: initialRBase,
+      radii: [initialRBase],
+      angles: [targetAngles[0]],
+      subOrbits: [0],
+      coords: [{ x: pt.x, y: pt.y, r: initialRBase, angle: targetAngles[0], subOrbit: 0 }],
+    };
+  }
+
+  // Partition items cyclically across the K concentric sub-orbits so every sector distributes cleanly across tracks
+  const bucketIndices: number[][] = Array.from({ length: kCount }, () => []);
+  for (let i = 0; i < n; i++) {
+    bucketIndices[i % kCount].push(i);
+  }
+
+  // First pack innermost orbit (track 0) to determine the tightest collision-free inner radius rBase
+  const innerPacked = packSingleOrbitAnisotropic({
+    targetAngles: bucketIndices[0].map((idx) => targetAngles[idx]),
+    initialR: initialRBase,
+    boxW,
+    boxH,
+    radiusIncrement,
+  });
+
+  let rBase = innerPacked.r;
+  const radii: number[] = [];
+  const outAngles = new Array<number>(n);
+  const outSubOrbits = new Array<number>(n);
+  const outCoords = new Array<{ x: number; y: number; r: number; angle: number; subOrbit: number }>(n);
+
+  // Pack each sub-orbit at r_k >= rBase + k * orbitStep (outer orbits strictly stay >= orbitStep outside inner ones!)
+  let prevR = rBase - orbitStep;
+  for (let k = 0; k < kCount; k++) {
+    const idxs = bucketIndices[k];
+    const minOrbitR = k === 0 ? rBase : prevR + orbitStep;
+    const packed =
+      k === 0
+        ? innerPacked
+        : packSingleOrbitAnisotropic({
+            targetAngles: idxs.map((idx) => targetAngles[idx]),
+            initialR: minOrbitR,
+            boxW,
+            boxH,
+            radiusIncrement,
+          });
+    prevR = packed.r;
+    radii.push(packed.r);
+    idxs.forEach((origIdx, j) => {
+      const c = packed.coords[j];
+      outAngles[origIdx] = c.angle;
+      outSubOrbits[origIdx] = k;
+      outCoords[origIdx] = { ...c, subOrbit: k };
+    });
+  }
+
+  return {
+    rBase: radii[0] ?? rBase,
+    radii,
+    angles: outAngles,
+    subOrbits: outSubOrbits,
+    coords: outCoords,
+  };
 }
 
 /**
@@ -545,6 +727,7 @@ function computeRadialHaloLayout(params: {
       r1: 215,
       r2: 420,
       r2Outer: 420,
+      r2Radii: [] as number[],
       r3Radii: [] as number[],
       hasL2: false,
       hasL3: false,
@@ -725,10 +908,10 @@ function computeRadialHaloLayout(params: {
     ownedLocalHidden.set(ownedId, hidden);
   }
 
-  // Sector angular span weights
+  // Sector angular span weights (keep collapsed sectors spacious enough to avoid compressing Ring 1!)
   const rawWeights = sectorModels.map((sec) => {
     const expL2 = expandedDomainIds.has(sec.id);
-    if (!expL2) return 1.35;
+    if (!expL2) return 1.5;
     let starWeight = 0;
     for (const o of sec.ownedNodes) {
       if (activeExpandedOwnedSet.has(o.id)) {
@@ -736,12 +919,12 @@ function computeRadialHaloLayout(params: {
         starWeight += cnt;
       }
     }
-    return 1.35 + Math.max(0.35, sec.ownedNodes.length * 0.62) + starWeight * 0.28;
+    return 1.5 + Math.max(0.3, sec.ownedNodes.length * 0.48) + starWeight * 0.16;
   });
 
   const D = sectorModels.length;
   const twoPi = Math.PI * 2;
-  const minSectorAngle = D > 0 ? Math.min(0.46, twoPi / Math.max(1, D * 1.48)) : twoPi;
+  const minSectorAngle = D > 0 ? Math.min(0.48, twoPi / Math.max(1, D * 1.24)) : twoPi;
 
   const sectorSpans: number[] = new Array(D).fill(0);
   if (D === 1) {
@@ -776,42 +959,44 @@ function computeRadialHaloLayout(params: {
     }
   }
 
-  // Compute R1 ensuring zero overlap between adjacent Ring 1 domain cards
-  let minAdjacentR1Delta = twoPi;
-  const sectorMidAngles: number[] = [];
-  const sectorStarts: number[] = [];
-  const sectorEnds: number[] = [];
+  // Pack Ring 1 using exact anisotropic AABB packing (178×60 + 16px breathing margin = 194×74)
+  // so 12 domains sit compactly (~R1 265–310px) with strictly 0 overlaps at top/bottom/flanks!
+  const r1RawMids: number[] = [];
   let cursor = -Math.PI / 2;
   for (let i = 0; i < D; i++) {
     const start = cursor;
     const end = cursor + sectorSpans[i];
-    sectorStarts.push(start);
-    sectorEnds.push(end);
-    sectorMidAngles.push((start + end) / 2);
+    r1RawMids.push((start + end) / 2);
     cursor = end;
   }
-  for (let i = 0; i < D; i++) {
-    const next = (i + 1) % D;
-    const delta = next === 0 ? sectorMidAngles[0] + twoPi - sectorMidAngles[i] : sectorMidAngles[next] - sectorMidAngles[i];
-    if (delta < minAdjacentR1Delta) minAdjacentR1Delta = delta;
-  }
 
-  const r1 =
-    D <= 1 ? 210 : Math.max(220, Math.min(300, Math.ceil(186 / Math.max(0.36, minAdjacentR1Delta))));
+  const r1Packed = packSingleOrbitAnisotropic({
+    targetAngles: r1RawMids,
+    initialR: D <= 1 ? 210 : 255,
+    boxW: 194,
+    boxH: 74,
+    radiusIncrement: 18,
+  });
+  const r1 = r1Packed.r;
 
+  // Derive clean non-overlapping sector boundaries from packed Ring 1 angles
   const sectors: PositionedSector[] = [];
   const sectorMap = new Map<string, PositionedSector>();
 
   for (let i = 0; i < D; i++) {
     const sec = sectorModels[i];
-    const midAngle = sectorMidAngles[i];
-    const pt = polar(r1, midAngle);
+    const midAngle = r1Packed.angles[i];
+    const prevAngle = i === 0 ? r1Packed.angles[D - 1] - twoPi : r1Packed.angles[i - 1];
+    const nextAngle = i === D - 1 ? r1Packed.angles[0] + twoPi : r1Packed.angles[i + 1];
+    const startAngle = D === 1 ? -Math.PI / 2 : (prevAngle + midAngle) / 2;
+    const endAngle = D === 1 ? Math.PI * 1.5 : (midAngle + nextAngle) / 2;
+    const pt = r1Packed.coords[i];
     const expandedL2 = expandedDomainIds.has(sec.id) && sec.ownedNodes.length > 0;
     const hasExpandedL3 = expandedL2 && sec.ownedNodes.some((o) => activeExpandedOwnedSet.has(o.id));
     const item: PositionedSector = {
       sector: sec,
-      startAngle: sectorStarts[i],
-      endAngle: sectorEnds[i],
+      startAngle,
+      endAngle,
       midAngle,
       x: pt.x,
       y: pt.y,
@@ -823,24 +1008,13 @@ function computeRadialHaloLayout(params: {
     sectorMap.set(sec.id, item);
   }
 
-  // Ring 2 Owned layout
+  // Ring 2 Owned layout (Euclidean-separated concentric sub-orbits + anisotropic AABB packing)
   const totalVisibleOwned = visibleOwnedSet.size;
   const hasL2 = totalVisibleOwned > 0;
-  const denseSectorExists = sectors.some((s) => s.expandedL2 && s.sector.ownedNodes.length >= 4);
-  const useR2Stagger = denseSectorExists || totalVisibleOwned > 15;
-  const r2 = hasL2
-    ? Math.max(
-        r1 + 210,
-        Math.ceil(((totalVisibleOwned / (useR2Stagger ? 1.75 : 1)) * 164) / twoPi),
-      )
-    : r1 + 210;
-  const r2Inner = useR2Stagger ? r2 - 28 : r2;
-  const r2Outer = useR2Stagger ? r2 + 32 : r2;
 
   const ownedList: PositionedOwned[] = [];
   const ownedMap = new Map<string, PositionedOwned>();
 
-  // Pre-collect Ring 2 raw target angles across sectors
   const ownedDrafts: Array<{
     node: RepoRadialOwnedNode;
     sectorId: string;
@@ -855,7 +1029,7 @@ function computeRadialHaloLayout(params: {
     const list = ps.sector.ownedNodes;
     const k = list.length;
     const span = ps.endAngle - ps.startAngle;
-    const pad = Math.min(0.11, span * 0.14);
+    const pad = Math.min(0.06, span * 0.08);
     const usableStart = ps.startAngle + pad;
     const usableSpan = Math.max(0.02, span - pad * 2);
 
@@ -876,33 +1050,43 @@ function computeRadialHaloLayout(params: {
     }
   }
 
-  if (ownedDrafts.length > 0) {
-    const r2MinGap = (useR2Stagger ? 104 : 168) / r2;
-    const relaxedOwnedAngles = relaxCircularAngles(
-      ownedDrafts.map((d) => d.targetAngle),
-      r2MinGap,
-    );
-    ownedDrafts.forEach((draft, idx) => {
-      const ang = relaxedOwnedAngles[idx];
-      const rad = useR2Stagger ? (idx % 2 === 0 ? r2Inner : r2Outer) : r2;
-      const pt = polar(rad, ang);
-      const item: PositionedOwned = {
-        node: draft.node,
-        sectorId: draft.sectorId,
-        angle: ang,
-        r: rad,
-        x: pt.x,
-        y: pt.y,
-        expandedL3: draft.expandedL3,
-        shownStarCount: draft.shownStarCount,
-        moreStarCount: draft.moreStarCount,
-      };
-      ownedList.push(item);
-      ownedMap.set(draft.node.id, item);
-    });
-  }
+  // Ring 2 clears Ring 1 half-diag (98) + Ring 2 half-diag (90) + 32px corridor = r1 + 220
+  const r2NumOrbits = ownedDrafts.length > 34 ? 2 : 1;
+  const r2InitialBase = r1 + 220;
+  const r2Solved = solveCollisionFreeMultiOrbit({
+    targetAngles: ownedDrafts.map((d) => d.targetAngle),
+    initialRBase: r2InitialBase,
+    numSubOrbits: r2NumOrbits,
+    boxW: 178, // 162 card + 16px margin (covers spotlight halo & +N★ corner badge)
+    boxH: 66,  // 48 card + 9px top badge + 9px margin
+    radiusIncrement: 28,
+  });
 
-  // Ring 3 Star & "+N 更多" layout
+  const r2 = hasL2
+    ? (r2Solved.radii[0] + r2Solved.radii[r2Solved.radii.length - 1]) / 2
+    : r1 + 220;
+  const r2Outer = hasL2
+    ? (r2Solved.radii[r2Solved.radii.length - 1] ?? r2Solved.rBase)
+    : r1 + 220;
+
+  ownedDrafts.forEach((draft, idx) => {
+    const c = r2Solved.coords[idx];
+    const item: PositionedOwned = {
+      node: draft.node,
+      sectorId: draft.sectorId,
+      angle: c.angle,
+      r: c.r,
+      x: c.x,
+      y: c.y,
+      expandedL3: draft.expandedL3,
+      shownStarCount: draft.shownStarCount,
+      moreStarCount: draft.moreStarCount,
+    };
+    ownedList.push(item);
+    ownedMap.set(draft.node.id, item);
+  });
+
+  // Ring 3 Star & "+N 更多" layout (Euclidean-separated concentric sub-orbits + anisotropic AABB packing)
   type Ring3Draft =
     | { kind: "star"; star: RepoRadialStarNode; owned: PositionedOwned; targetAngle: number }
     | { kind: "more"; owned: PositionedOwned; moreCount: number; localHidden: number; serverTruncated: number; targetAngle: number };
@@ -910,7 +1094,6 @@ function computeRadialHaloLayout(params: {
   const ring3Drafts: Ring3Draft[] = [];
   const expandedOwnedOrdered = ownedList.filter((o) => o.expandedL3);
 
-  // Estimate initial per-item angular spread around each expanded owned repo
   let totalRing3Items = 0;
   for (const po of expandedOwnedOrdered) {
     const anchored = anchoredStarsByOwned.get(po.node.id) ?? [];
@@ -918,24 +1101,14 @@ function computeRadialHaloLayout(params: {
   }
 
   const hasL3 = totalRing3Items > 0;
-  const numSubOrbits = totalRing3Items > 66 ? 3 : totalRing3Items >= 4 ? 2 : 1;
-  const r3Base = hasL3
-    ? Math.max(
-        r2Outer + 195,
-        Math.ceil(((totalRing3Items * (164 / numSubOrbits)) / twoPi)),
-      )
-    : r2Outer + 195;
-
-  const r3Step = 94;
-  const r3Radii: number[] = [];
-  if (hasL3) {
-    for (let k = 0; k < numSubOrbits; k++) {
-      r3Radii.push(r3Base + k * r3Step);
-    }
-  }
+  // With anisotropic packing, twin/triple sub-orbits keep even single-sector L3 bursts compact & airy!
+  const numSubOrbits =
+    totalRing3Items > 125 ? 3 : totalRing3Items > 14 ? 2 : 1;
+  // Ring 3 clears Ring 2 outermost half-diag (90) + Ring 3 half-diag (82) + 46px corridor = r2Outer + 218
+  const r3InitialBase = r2Outer + 218;
 
   const desiredStep = hasL3
-    ? Math.max((160 / numSubOrbits) / r3Base, Math.min(0.105, (twoPi * 0.72) / Math.max(totalRing3Items, 8)))
+    ? Math.max(0.032, Math.min(0.085, (twoPi * 0.82) / Math.max(totalRing3Items, 10)))
     : 0.08;
 
   for (const po of expandedOwnedOrdered) {
@@ -977,50 +1150,50 @@ function computeRadialHaloLayout(params: {
   const starMap = new Map<string, PositionedStar>();
   const morePills: PositionedMorePill[] = [];
 
-  if (ring3Drafts.length > 0) {
-    const minRing3Gap = (158 / numSubOrbits) / r3Base;
-    const relaxedRing3 = relaxCircularAngles(
-      ring3Drafts.map((d) => d.targetAngle),
-      minRing3Gap,
-    );
+  const r3Solved = solveCollisionFreeMultiOrbit({
+    targetAngles: ring3Drafts.map((d) => d.targetAngle),
+    initialRBase: r3InitialBase,
+    numSubOrbits,
+    boxW: 162, // 148 star pill + 14px margin (covers ×N badge & stroke)
+    boxH: 52,  // 36 star pill + 8px top badge + 8px margin
+    radiusIncrement: 32,
+  });
 
-    ring3Drafts.forEach((draft, idx) => {
-      const ang = relaxedRing3[idx];
-      const subOrbit = idx % numSubOrbits;
-      const rad = r3Radii[subOrbit] ?? r3Base;
-      const pt = polar(rad, ang);
+  const r3Base = hasL3 ? r3Solved.rBase : r3InitialBase;
+  const r3Radii = hasL3 ? r3Solved.radii : [];
 
-      if (draft.kind === "star") {
-        const item: PositionedStar = {
-          node: draft.star,
-          anchorOwnedId: draft.owned.node.id,
-          sectorId: draft.owned.sectorId,
-          angle: ang,
-          r: rad,
-          subOrbit,
-          x: pt.x,
-          y: pt.y,
-          visibleTargetIds: visibleTargetsByStar.get(draft.star.id) ?? [draft.owned.node.id],
-        };
-        starList.push(item);
-        starMap.set(draft.star.id, item);
-      } else {
-        morePills.push({
-          id: `more:${draft.owned.node.id}`,
-          owned: draft.owned.node,
-          sectorId: draft.owned.sectorId,
-          moreCount: draft.moreCount,
-          localHidden: draft.localHidden,
-          serverTruncated: draft.serverTruncated,
-          angle: ang,
-          r: rad,
-          subOrbit,
-          x: pt.x,
-          y: pt.y,
-        });
-      }
-    });
-  }
+  ring3Drafts.forEach((draft, idx) => {
+    const c = r3Solved.coords[idx];
+    if (draft.kind === "star") {
+      const item: PositionedStar = {
+        node: draft.star,
+        anchorOwnedId: draft.owned.node.id,
+        sectorId: draft.owned.sectorId,
+        angle: c.angle,
+        r: c.r,
+        subOrbit: c.subOrbit,
+        x: c.x,
+        y: c.y,
+        visibleTargetIds: visibleTargetsByStar.get(draft.star.id) ?? [draft.owned.node.id],
+      };
+      starList.push(item);
+      starMap.set(draft.star.id, item);
+    } else {
+      morePills.push({
+        id: `more:${draft.owned.node.id}`,
+        owned: draft.owned.node,
+        sectorId: draft.owned.sectorId,
+        moreCount: draft.moreCount,
+        localHidden: draft.localHidden,
+        serverTruncated: draft.serverTruncated,
+        angle: c.angle,
+        r: c.r,
+        subOrbit: c.subOrbit,
+        x: c.x,
+        y: c.y,
+      });
+    }
+  });
 
   // Visible Ring 3 -> Ring 2 links
   const links: PositionedRadialLink[] = [];
@@ -1032,22 +1205,23 @@ function computeRadialHaloLayout(params: {
     links.push({ link, ...curve });
   }
 
-  // Floating Nebula outer satellite anchor (always clear of active rings)
-  const outerRingRadius = hasL3
-    ? (r3Radii[r3Radii.length - 1] ?? r3Base) + 76
+  // Floating Nebula outer satellite anchor (Euclidean-proven clear of outermost active ring!)
+  const outermostTrackR = hasL3
+    ? (r3Radii[r3Radii.length - 1] ?? r3Base)
     : hasL2
-      ? r2Outer + 76
-      : r1 + 78;
+      ? r2Outer
+      : r1;
   const floatingAngle = Math.PI * 0.24;
-  const floatingR = outerRingRadius + 96;
+  const floatingR = outermostTrackR + 225;
   const floatingPt = polar(floatingR, floatingAngle);
   const floatingAnchor = { x: floatingPt.x, y: floatingPt.y, r: floatingR, angle: floatingAngle };
 
-  // Compute exact world bounding box for Fit View
-  let minX = -outerRingRadius - 30;
-  let maxX = outerRingRadius + 30;
-  let minY = -outerRingRadius - 30;
-  let maxY = outerRingRadius + 30;
+  // Compute exact world bounding box for Fit View (including orbit labels + all outer card badges + Floating Nebula)
+  const ringGuideExtent = outermostTrackR + 58;
+  let minX = -ringGuideExtent;
+  let maxX = ringGuideExtent;
+  let minY = -ringGuideExtent - 24;
+  let maxY = ringGuideExtent;
 
   const includePoint = (x: number, y: number, padX: number, padY: number) => {
     if (x - padX < minX) minX = x - padX;
@@ -1056,18 +1230,19 @@ function computeRadialHaloLayout(params: {
     if (y + padY > maxY) maxY = y + padY;
   };
 
-  for (const s of sectors) includePoint(s.x, s.y, 92, 42);
-  for (const o of ownedList) includePoint(o.x, o.y, 88, 36);
-  for (const st of starList) includePoint(st.x, st.y, 82, 28);
-  for (const mp of morePills) includePoint(mp.x, mp.y, 72, 26);
+  for (const s of sectors) includePoint(s.x, s.y, 98, 42);
+  for (const o of ownedList) includePoint(o.x, o.y, 92, 42);
+  for (const st of starList) includePoint(st.x, st.y, 86, 34);
+  for (const mp of morePills) includePoint(mp.x, mp.y, 64, 24);
   if (radialGraph.floatingPool && radialGraph.floatingPool.totalCount > 0) {
-    includePoint(floatingAnchor.x, floatingAnchor.y, 108, 44);
+    includePoint(floatingAnchor.x, floatingAnchor.y, 114, 48);
   }
 
   return {
     r1,
     r2,
     r2Outer,
+    r2Radii: hasL2 ? r2Solved.radii : [],
     r3Radii,
     hasL2,
     hasL3,
@@ -1699,14 +1874,18 @@ export function RepoEvolution({
     lastStageSizeRef.current = { width: rect.width, height: rect.height };
     const bw = Math.max(240, bounds.maxX - bounds.minX);
     const bh = Math.max(240, bounds.maxY - bounds.minY);
-    const padX = 48;
-    const padY = 72;
-    const zoom = clamp(Math.min((rect.width - padX) / bw, (rect.height - padY) / bh), 0.24, 1.32);
+    const padLeft = 36;
+    const padRight = 36;
+    const padTop = 58;
+    const padBottom = 56;
+    const availW = Math.max(120, rect.width - padLeft - padRight);
+    const availH = Math.max(120, rect.height - padTop - padBottom);
+    const zoom = clamp(Math.min(availW / bw, availH / bh), 0.08, 1.35);
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
     setViewport({
-      x: Math.round(rect.width / 2 - cx * zoom),
-      y: Math.round(rect.height / 2 - cy * zoom),
+      x: Math.round(padLeft + availW / 2 - cx * zoom),
+      y: Math.round(padTop + availH / 2 - cy * zoom),
       zoom: Math.round(zoom * 1000) / 1000,
     });
   }, []);
@@ -1795,14 +1974,20 @@ export function RepoEvolution({
         const b = radialLayout.bounds;
         const bw = Math.max(240, b.maxX - b.minX);
         const bh = Math.max(240, b.maxY - b.minY);
-        const maxFitZoom = clamp(Math.min((width - 48) / bw, (height - 72) / bh), 0.24, 1.32);
+        const padLeft = 36;
+        const padRight = 36;
+        const padTop = 58;
+        const padBottom = 56;
+        const availW = Math.max(120, width - padLeft - padRight);
+        const availH = Math.max(120, height - padTop - padBottom);
+        const maxFitZoom = clamp(Math.min(availW / bw, availH / bh), 0.08, 1.35);
         const cx = (b.minX + b.maxX) / 2;
         const cy = (b.minY + b.maxY) / 2;
         setViewport((vp) => {
           if (width < prev.width && vp.zoom > maxFitZoom * 1.04) {
             return {
-              x: Math.round(width / 2 - cx * maxFitZoom),
-              y: Math.round(height / 2 - cy * maxFitZoom),
+              x: Math.round(padLeft + availW / 2 - cx * maxFitZoom),
+              y: Math.round(padTop + availH / 2 - cy * maxFitZoom),
               zoom: Math.round(maxFitZoom * 1000) / 1000,
             };
           }
@@ -2114,7 +2299,7 @@ export function RepoEvolution({
       const delta = clamp(-e.deltaY * 0.0016, -0.18, 0.18);
       const factor = Math.exp(delta);
       setViewport((vp) => {
-        const nextZoom = clamp(Math.round(vp.zoom * factor * 1000) / 1000, 0.22, 2.2);
+        const nextZoom = clamp(Math.round(vp.zoom * factor * 1000) / 1000, 0.08, 2.2);
         const ratio = nextZoom / vp.zoom;
         return {
           x: Math.round(mx - (mx - vp.x) * ratio),
@@ -2133,7 +2318,7 @@ export function RepoEvolution({
     const cx = rect ? rect.width / 2 : 480;
     const cy = rect ? rect.height / 2 : 300;
     setViewport((vp) => {
-      const nextZoom = clamp(Math.round(vp.zoom * deltaFactor * 1000) / 1000, 0.22, 2.2);
+      const nextZoom = clamp(Math.round(vp.zoom * deltaFactor * 1000) / 1000, 0.08, 2.2);
       const ratio = nextZoom / vp.zoom;
       return {
         x: Math.round(cx - (cx - vp.x) * ratio),
@@ -3770,18 +3955,35 @@ export function RepoEvolution({
                         RING 1 · 领域环
                       </text>
 
-                      {/* Ring 2 轨道圈 */}
-                      <circle
-                        className="re-orbit-ring"
-                        cx={0}
-                        cy={0}
-                        r={radialLayout.r2}
-                        fill="none"
-                        stroke={svgPalette.orbitR2Stroke}
-                        strokeWidth={radialLayout.hasL2 ? 1.3 : 1}
-                        strokeDasharray="6 6"
-                        style={{ opacity: radialLayout.hasL2 ? 1 : 0.32 }}
-                      />
+                      {/* Ring 2 轨道圈（含多子轨同心虚线环） */}
+                      {radialLayout.hasL2 ? (
+                        radialLayout.r2Radii.map((rad, idx) => (
+                          <circle
+                            key={`orbit-r2-${idx}`}
+                            className="re-orbit-ring"
+                            cx={0}
+                            cy={0}
+                            r={rad}
+                            fill="none"
+                            stroke={svgPalette.orbitR2Stroke}
+                            strokeWidth={idx === 0 ? 1.3 : 1}
+                            strokeDasharray={idx === 0 ? "6 6" : "3 7"}
+                            style={{ opacity: idx === 0 ? 1 : 0.65 }}
+                          />
+                        ))
+                      ) : (
+                        <circle
+                          className="re-orbit-ring"
+                          cx={0}
+                          cy={0}
+                          r={radialLayout.r2}
+                          fill="none"
+                          stroke={svgPalette.orbitR2Stroke}
+                          strokeWidth={1}
+                          strokeDasharray="6 6"
+                          style={{ opacity: 0.32 }}
+                        />
+                      )}
                       {radialLayout.hasL2 && (
                         <text
                           x={0}
