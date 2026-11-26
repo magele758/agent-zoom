@@ -15,6 +15,7 @@ export interface CreatePgPoolOptions {
   max?: number;
   idleTimeoutMillis?: number;
   connectionTimeoutMillis?: number;
+  allowExitOnIdle?: boolean;
 }
 
 export interface PgDatabaseSyncOptions {
@@ -72,7 +73,11 @@ export function createPgPool(urlOrOptions?: string | CreatePgPoolOptions): pg.Po
     max: opts.max ?? 10,
     idleTimeoutMillis: opts.idleTimeoutMillis ?? 30_000,
     connectionTimeoutMillis: opts.connectionTimeoutMillis ?? 10_000,
+    allowExitOnIdle: opts.allowExitOnIdle ?? true,
     ...(schema && schema !== "public" ? { options: `-c search_path=${schema},public` } : {}),
+  });
+  pool.on("error", (err) => {
+    console.error("PostgreSQL pool idle client error", err);
   });
   return pool;
 }

@@ -18,12 +18,23 @@ import { addHomeRoomRoutes } from "./home-room.ts";
 import { agentDelegationRoutes, type AgentDelegations } from "./delegated-agent.ts";
 import { addActivityIndex } from "./company-activity-index.ts";
 import { addZoomRoutes } from "./zoom-http.ts";
+import { createPgPool, isPgDatabase, resolvePgUrl } from "./pg-db.ts";
+import { addRepoEvolutionRoutes, RepoEvolutionService, type PgPoolLike } from "./repo-evolution.ts";
 
 const COOKIE = process.env.KUNLUN_SESSION_COOKIE || "ac_session";
 
 type Watcher = { userId: string; rooms: Set<string>; send: (data: string) => void };
 
-export function createApp(store: Store, options: { activityIndexEnabled?: boolean; coordinatorModel?: () => CoordinatorModel; workflow?: ReturnType<typeof configureWorkflow> } = {}) {
+export interface CreateAppOptions {
+  activityIndexEnabled?: boolean;
+  coordinatorModel?: () => CoordinatorModel;
+  workflow?: ReturnType<typeof configureWorkflow>;
+  pgPool?: PgPoolLike;
+  pgUrl?: string;
+  repoEvolution?: RepoEvolutionService;
+}
+
+export function createApp(store: Store, options: CreateAppOptions = {}) {
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const watchers = new Set<Watcher>();
@@ -86,7 +97,86 @@ export function createApp(store: Store, options: { activityIndexEnabled?: boolea
     user: c => requireUser(getCookie(c, COOKIE)),
   });
 
-  app.get("/api/health", (c) => c.json({ ok: true, sharedLocal: true }));
+  // Repo Evolution & Absorption Graph (native PG 18 + pgvector; graceful 503 in offline SQLite mode)
+  let repoEvolution: RepoEvolutionService | null = options.repoEvolution ?? null;
+  let ownedPgPool: PgPoolLike | null = null;
+  if (repoEvolution) {
+    repoEvolution.attachDecisionGateway(company.kernel.decisions);
+    repoEvolution.attachProvidersStore(providers);
+    repoEvolution.attachOpportunityStore(opportunities);
+  } else {
+    let pool: PgPoolLike | null = options.pgPool ?? null;
+    if (!pool) {
+      if (isPgDatabase(store.db)) {
+        ownedPgPool = createPgPool({
+          connectionString: options.pgUrl ?? store.db.connectionString,
+          schema: store.db.schema,
+          allowExitOnIdle: true,
+        });
+        pool = ownedPgPool;
+      } else {
+        const pgUrl = resolvePgUrl(options.pgUrl);
+        if (pgUrl) {
+          ownedPgPool = createPgPool({ connectionString: pgUrl, allowExitOnIdle: true });
+          pool = ownedPgPool;
+        }
+      }
+    }
+    if (pool) {
+      repoEvolution = new RepoEvolutionService({
+        pool,
+        decisions: company.kernel.decisions,
+        providers,
+        opportunities,
+      });
+    }
+  }
+
+  if (repoEvolution) {
+    addRepoEvolutionRoutes(app, repoEvolution, homeUser);
+  } else {
+    const unavailable = (c: Context) => {
+      homeUser(c);
+      c.header("Cache-Control", "no-store");
+      return c.json(
+        {
+          error: "pg_unavailable",
+          message: "开源进化图谱需要 PostgreSQL 18 + pgvector，当前未配置 OPC_PG_URL / DATABASE_URL。",
+        },
+        503,
+      );
+    };
+    app.all("/api/opc/repo-evolution", unavailable);
+    app.all("/api/opc/repo-evolution/*", unavailable);
+  }
+
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    if (ownedPgPool?.end) {
+      await ownedPgPool.end().catch(() => {});
+    }
+  };
+  if (ownedPgPool?.end) {
+    const db = store.db as unknown as { close?: () => void };
+    if (typeof db.close === "function") {
+      const origClose = db.close.bind(db);
+      db.close = () => {
+        void close();
+        origClose();
+      };
+    }
+  }
+
+  app.get("/api/health", (c) =>
+    c.json({
+      ok: true,
+      sharedLocal: true,
+      storage: isPgDatabase(store.db) ? "postgres" : "sqlite",
+      repoEvolutionEnabled: Boolean(repoEvolution),
+    }),
+  );
 
   const openLocal = (c: Context) => {
     c.header("Cache-Control", "no-store");
@@ -585,6 +675,8 @@ export function createApp(store: Store, options: { activityIndexEnabled?: boolea
     taskTriage,
     botArbitrator,
     plannotatorBridge,
+    repoEvolution,
+    close,
   };
 }
 

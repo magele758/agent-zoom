@@ -811,6 +811,16 @@ function mapRawGhRepo(node: RawGhRepo, starredAt?: string | null): GitHubRepoSna
   };
 }
 
+function isTransientGhError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  const stderr =
+    err && typeof err === "object" && "stderr" in err ? String((err as { stderr?: unknown }).stderr ?? "") : "";
+  const combined = `${msg}\n${stderr}`;
+  return /HTTP\s+50[234]|50[234]\s+Gateway|502\s+Bad\s+Gateway|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|timed?\s*out/i.test(
+    combined,
+  );
+}
+
 async function runGhGraphql<T>(query: string, vars: Record<string, string | null> = {}): Promise<T> {
   const args = ["api", "--hostname", "github.com", "graphql", "-f", `query=${query}`];
   for (const [k, v] of Object.entries(vars)) {
@@ -818,17 +828,31 @@ async function runGhGraphql<T>(query: string, vars: Record<string, string | null
       args.push("-f", `${k}=${v}`);
     }
   }
-  const { stdout } = await exec("gh", args, {
-    timeout: 30_000,
-    maxBuffer: 32 * 1024 * 1024,
-    env: { ...process.env, GH_PROMPT_DISABLED: "1" },
-  });
-  const parsed = JSON.parse(stdout) as { data?: T; errors?: Array<{ message?: string }> };
-  if (parsed.errors?.length) {
-    throw new Error(parsed.errors.map((e) => e.message || "GitHub GraphQL error").join("; "));
+  const backoffsMs = [1500, 3500, 7000];
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= backoffsMs.length; attempt++) {
+    try {
+      const { stdout } = await exec("gh", args, {
+        timeout: 45_000,
+        maxBuffer: 32 * 1024 * 1024,
+        env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+      });
+      const parsed = JSON.parse(stdout) as { data?: T; errors?: Array<{ message?: string }> };
+      if (parsed.errors?.length) {
+        throw new Error(parsed.errors.map((e) => e.message || "GitHub GraphQL error").join("; "));
+      }
+      if (!parsed.data) throw new Error("GitHub GraphQL returned empty data");
+      return parsed.data;
+    } catch (err) {
+      lastError = err;
+      if (attempt < backoffsMs.length && isTransientGhError(err)) {
+        await new Promise((r) => setTimeout(r, backoffsMs[attempt]));
+        continue;
+      }
+      throw err;
+    }
   }
-  if (!parsed.data) throw new Error("GitHub GraphQL returned empty data");
-  return parsed.data;
+  throw lastError;
 }
 
 export function createGhCliFetcher(): GitHubEvolutionFetcher {

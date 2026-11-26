@@ -8,7 +8,8 @@ import { DecisionGateway } from "./kernel/decisions.ts";
 import { DomainEventBus } from "./kernel/events.ts";
 import { AssetRegistry } from "./kernel/registry.ts";
 import { OpportunityStore } from "./server/autonomy.ts";
-import { ApiError } from "./server/logic.ts";
+import { createApp } from "./server/http.ts";
+import { ApiError, openStore } from "./server/logic.ts";
 import {
   addRepoEvolutionRoutes,
   BUILTIN_REPO_DOMAINS,
@@ -961,6 +962,162 @@ describe("repo-evolution PostgreSQL 18 + pgvector end-to-end", async () => {
     } finally {
       await pool2.end?.();
       await pgHandle.adminPool.query(`DROP SCHEMA IF EXISTS ${schema2} CASCADE`);
+    }
+  });
+});
+
+// ---- 3. createApp Server Wiring & Graceful 503 Degradation Tests ----
+
+describe("repo-evolution createApp wiring", () => {
+  it("gracefully degrades /api/opc/repo-evolution/* to 503 without crashing when PG URL is not configured", async () => {
+    const store = openStore(":memory:", { pgUrl: "" });
+    const { app, repoEvolution, close } = createApp(store, { pgUrl: "" });
+    try {
+      assert.equal(repoEvolution, null);
+
+      const healthRes = await app.request("/api/health");
+      assert.equal(healthRes.status, 200);
+      const health = (await healthRes.json()) as {
+        ok: boolean;
+        sharedLocal: boolean;
+        storage: string;
+        repoEvolutionEnabled: boolean;
+      };
+      assert.equal(health.ok, true);
+      assert.equal(health.sharedLocal, true);
+      assert.equal(health.storage, "sqlite");
+      assert.equal(health.repoEvolutionEnabled, false);
+
+      // Unauthenticated request still returns 401
+      const unauth = await app.request("/api/opc/repo-evolution/graph/macro");
+      assert.equal(unauth.status, 401);
+
+      // Authenticated session receives clear 503 degradation JSON
+      const sessRes = await app.request("/api/session", { method: "POST" });
+      assert.equal(sessRes.status, 200);
+      const cookie = (sessRes.headers.get("set-cookie") ?? "").split(";")[0];
+      assert.ok(cookie);
+
+      const degraded = await app.request("/api/opc/repo-evolution/graph/macro", {
+        headers: { cookie },
+      });
+      assert.equal(degraded.status, 503);
+      const payload = (await degraded.json()) as { error: string; message: string };
+      assert.equal(payload.error, "pg_unavailable");
+      assert.match(payload.message, /PostgreSQL/);
+    } finally {
+      await close();
+      store.db.close();
+    }
+  });
+
+  it("wires RepoEvolutionService into createApp over isolated PG schema with mailbox & OpportunityStore end-to-end", async () => {
+    const probe = await tryCreateIsolatedPgPool();
+    if (!probe) return;
+    await probe.pool.end?.();
+    await probe.adminPool.query(`DROP SCHEMA IF EXISTS ${probe.schema} CASCADE`);
+    await probe.adminPool.end?.();
+
+    const store = openStore(":memory:", { pgUrl: PG_URL });
+    const { app, repoEvolution, opportunities, company, close } = createApp(store, { pgUrl: PG_URL });
+    try {
+      assert.ok(repoEvolution, "repoEvolution should auto-wire when PG URL is configured");
+
+      const healthRes = await app.request("/api/health");
+      assert.equal(healthRes.status, 200);
+      const health = (await healthRes.json()) as {
+        ok: boolean;
+        storage: string;
+        repoEvolutionEnabled: boolean;
+      };
+      assert.equal(health.ok, true);
+      assert.equal(health.storage, "postgres");
+      assert.equal(health.repoEvolutionEnabled, true);
+
+      const sessRes = await app.request("/api/session", { method: "POST" });
+      const cookie = (sessRes.headers.get("set-cookie") ?? "").split(";")[0];
+      const headers = { cookie, "content-type": "application/json" };
+
+      const macroRes = await app.request("/api/opc/repo-evolution/graph/macro", { headers: { cookie } });
+      assert.equal(macroRes.status, 200);
+      const macro = (await macroRes.json()) as { domains: Array<{ slug: string }> };
+      assert.equal(macro.domains.length, BUILTIN_REPO_DOMAINS.length);
+
+      // Register spotlight target + create star node & link, submit to mailbox, approve, promote to opportunity
+      const regTarget = await app.request("/api/opc/repo-evolution/nodes/register", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          fullName: "magele758/ai-agent-node",
+          visibility: "public",
+          priorityTier: "spotlight",
+          description: "Spotlight agent runtime",
+        }),
+      });
+      assert.equal(regTarget.status, 200);
+      const targetNode = (await regTarget.json()) as { id: string; priorityTier: string };
+      assert.equal(targetNode.priorityTier, "spotlight");
+
+      const regStar = await app.request("/api/opc/repo-evolution/nodes/register", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          fullName: "openorg/agent-harness-kit",
+          role: "starred",
+          visibility: "public",
+          description: "Agent harness toolkit",
+        }),
+      });
+      assert.equal(regStar.status, 200);
+      const starNode = (await regStar.json()) as { id: string };
+
+      const createLinkRes = await app.request("/api/opc/repo-evolution/links", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          sourceNodeId: starNode.id,
+          targetNodeId: targetNode.id,
+          relationType: "direct_module",
+          rationale: "复用其轻量工具沙箱隔离机制",
+        }),
+      });
+      assert.equal(createLinkRes.status, 200);
+      const createdLink = (await createLinkRes.json()) as { id: string };
+
+      const submitRes = await app.request(`/api/opc/repo-evolution/links/${createdLink.id}/submit-mailbox`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ note: "集成测试审批闭环" }),
+      });
+      assert.equal(submitRes.status, 200);
+      const submitted = (await submitRes.json()) as { packet: { id: string; kind: string; status: string } };
+      assert.equal(submitted.packet.kind, "repo_absorption");
+      assert.equal(submitted.packet.status, "pending");
+
+      // Approve through DecisionGateway HTTP / service
+      const decided = await company.kernel.decisions.resolve(submitted.packet.id, {
+        optionId: "approve",
+        note: "批准吸收",
+        actor: "founder",
+      });
+      assert.equal(decided.status, "approved");
+
+      const promoteRes = await app.request(`/api/opc/repo-evolution/links/${createdLink.id}/promote-opportunity`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ pipeline: "quick" }),
+      });
+      assert.equal(promoteRes.status, 200);
+      const promoted = (await promoteRes.json()) as { opportunityId: string; project: string; link: { status: string } };
+      assert.equal(promoted.project, "magele758/ai-agent-node");
+      assert.equal(promoted.link.status, "absorbing");
+      assert.ok(
+        opportunities.list("magele758/ai-agent-node").opportunities.some((o) => o.id === promoted.opportunityId),
+        "promoted opportunity should exist in OpportunityStore",
+      );
+    } finally {
+      await close();
+      store.db.close();
     }
   });
 });
