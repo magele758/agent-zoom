@@ -399,3 +399,39 @@ test("PG 18 live: opc-backup creates and verifies pg_dump custom archive alongsi
   assert.equal(verified.ok, true);
   assert.equal(verified.checkedPostgres, 1);
 });
+
+test("PG 18 live: ExecutiveBotService mergeLinkedMailHistory ON CONFLICT DO UPDATE resolves qualified snapshot column cleanly", (t) => {
+  const schema = `test_pg_exec_hist_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const db = new PgDatabaseSync({
+    connectionString: PG_URL,
+    schema,
+    createSchema: true,
+    dropSchemaOnClose: true,
+  });
+  t.after(() => db.close());
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS opc_executive_mail_history (
+      user_id TEXT NOT NULL,
+      connection TEXT NOT NULL,
+      mail_id TEXT NOT NULL,
+      snapshot TEXT NOT NULL,
+      PRIMARY KEY (user_id, connection, mail_id)
+    );
+  `);
+  const upsert = db.prepare(`INSERT INTO opc_executive_mail_history(user_id,connection,mail_id,snapshot) VALUES(?,?,?,?)
+    ON CONFLICT(user_id,connection,mail_id) DO UPDATE SET snapshot=excluded.snapshot
+    WHERE opc_executive_mail_history.snapshot<>excluded.snapshot`);
+
+  upsert.run("u1", "conn1", "m1", JSON.stringify({ id: "m1", v: 1 }));
+  // Same snapshot -> no-op without 42702 ambiguous column error
+  upsert.run("u1", "conn1", "m1", JSON.stringify({ id: "m1", v: 1 }));
+  // Changed snapshot -> updates cleanly
+  upsert.run("u1", "conn1", "m1", JSON.stringify({ id: "m1", v: 2 }));
+
+  const row = db
+    .prepare("SELECT snapshot FROM opc_executive_mail_history WHERE user_id=? AND connection=? AND mail_id=?")
+    .get("u1", "conn1", "m1") as { snapshot: string } | undefined;
+  assert.ok(row);
+  assert.equal(JSON.parse(row.snapshot).v, 2);
+});

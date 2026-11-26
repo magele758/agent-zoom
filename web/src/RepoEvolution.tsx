@@ -109,6 +109,28 @@ const POOL_BUCKET_ITEMS: Array<{ id: RepoNodeBucketFilter; label: string; statKe
   { id: "linked", label: "已建立吸收边" },
 ];
 
+const DOMAIN_ICON_MAP: Record<string, string> = {
+  bot: "🤖",
+  brain: "🧠",
+  terminal: "⌨",
+  layout: "❖",
+  database: "⛁",
+  globe: "🌐",
+  film: "🎬",
+  shield: "🛡",
+  bookmark: "🔖",
+  layers: "▤",
+};
+
+function formatDomainIcon(icon?: string | null): string {
+  if (!icon) return "";
+  const key = icon.trim().toLowerCase();
+  if (!key) return "";
+  if (DOMAIN_ICON_MAP[key]) return DOMAIN_ICON_MAP[key];
+  if (/^[a-z0-9_-]+$/i.test(key)) return "◈";
+  return icon.trim();
+}
+
 function describeError(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
@@ -1542,9 +1564,10 @@ export function RepoEvolution({
     const owneds = focusGraph?.ownedNodes ?? [];
     const links = focusGraph?.links ?? [];
 
+    const drawerOpen = inspectorMode !== "none";
     const starCompact = stars.length > 16;
-    const starX = 34;
-    const starW = 320;
+    const starX = drawerOpen ? 20 : 34;
+    const starW = drawerOpen ? 264 : 320;
     const starH = starCompact ? 54 : 64;
     const starGap = starCompact ? 8 : 11;
     const headerY = 38;
@@ -1555,8 +1578,8 @@ export function RepoEvolution({
       starPos.set(n.id, { x: starX, y, w: starW, h: starH, cy: y + starH / 2, node: n });
     });
 
-    const ownedX = 684;
-    const ownedW = 324;
+    const ownedX = drawerOpen ? 450 : 684;
+    const ownedW = drawerOpen ? 264 : 324;
     const ownedH = 72;
     const ownedGap = 14;
     const leftSpan = Math.max(200, stars.length * (starH + starGap));
@@ -1594,15 +1617,18 @@ export function RepoEvolution({
     );
 
     return {
+      starX,
+      ownedX,
+      drawerOpen,
       starPos,
       ownedPos,
       starOutCount,
       ownedInCount,
       renderedLinks,
-      width: 1050,
+      width: drawerOpen ? 736 : 1050,
       height: totalH,
     };
-  }, [focusGraph]);
+  }, [focusGraph, inspectorMode]);
 
   // Focus highlighting sets (hover OR selected node/link -> fan-highlight 1-to-N / reverse-highlight!)
   const focusHighlight = useMemo(() => {
@@ -2273,7 +2299,7 @@ export function RepoEvolution({
                               />
                               <rect x={0} y={0} width={5} height={pos.h} rx={1} fill={domain.color || "#2b4e3c"} />
                               <text x={15} y={24} fontSize={13.5} fontWeight={700} fill="#1f2822">
-                                {domain.icon ? `${domain.icon} ` : ""}
+                                {formatDomainIcon(domain.icon) ? `${formatDomainIcon(domain.icon)} ` : ""}
                                 {truncateText(domain.name, 20)}
                               </text>
                               <rect x={pos.w - 58} y={10} width={48} height={20} rx={2} fill="#f2eee2" stroke="#d5d0c2" />
@@ -2423,11 +2449,15 @@ export function RepoEvolution({
                     {/* ======== 聚焦流向态（1 对 N 扇形高亮） ======== */}
                     {graphMode === "focus" && (
                       <>
-                        <text x={34} y={22} fontSize={12} fontWeight={700} fill="#4d554e">
-                          Star 仓源头 · {focusGraph?.starNodes.length ?? 0} 个（悬停/点击扇形高亮 1 对 N 吸收边）
+                        <text x={focusLayout.starX} y={22} fontSize={12} fontWeight={700} fill="#4d554e">
+                          {focusLayout.drawerOpen
+                            ? `Star 仓源头 · ${focusGraph?.starNodes.length ?? 0} 个（1 对 N 扇形高亮）`
+                            : `Star 仓源头 · ${focusGraph?.starNodes.length ?? 0} 个（悬停/点击扇形高亮 1 对 N 吸收边）`}
                         </text>
-                        <text x={684} y={22} fontSize={12} fontWeight={700} fill="#4d554e">
-                          我的开源库 · {focusGraph?.ownedNodes.length ?? 0} 个（悬停/点击反向高亮滋养源）
+                        <text x={focusLayout.ownedX} y={22} fontSize={12} fontWeight={700} fill="#4d554e">
+                          {focusLayout.drawerOpen
+                            ? `我的开源库 · ${focusGraph?.ownedNodes.length ?? 0} 个`
+                            : `我的开源库 · ${focusGraph?.ownedNodes.length ?? 0} 个（悬停/点击反向高亮滋养源）`}
                         </text>
 
                         {/* 中心 1 对 N 贝塞尔吸收边 */}
@@ -2535,7 +2565,7 @@ export function RepoEvolution({
                                 fill={node.primaryDomainColor || "#8c8f88"}
                               />
                               <text x={13} y={20} fontSize={12.5} fontWeight={700} fill="#1f2822">
-                                {truncateText(node.fullName, 31)}
+                                {truncateText(node.fullName, focusLayout.drawerOpen ? 23 : 31)}
                               </text>
                               {outCount > 0 && (
                                 <g transform={`translate(${pos.w - 50}, 7)`}>
@@ -2614,13 +2644,13 @@ export function RepoEvolution({
                               <text x={13} y={24} fontSize={13.5} fontWeight={700} fill="#1d2620">
                                 {isSpot ? "★ " : ""}
                                 {isPriv ? "🔒 " : ""}
-                                {truncateText(node.name, 25)}
+                                {truncateText(node.name, focusLayout.drawerOpen ? 20 : 25)}
                               </text>
                               <text x={13} y={44} fontSize={11.5} fill="#535a53">
                                 本视图滋养源 {inCount} 个 · {node.primaryLanguage || "多语言"} · {isPriv ? "私有" : "公开"}
                               </text>
                               <text x={13} y={61} fontSize={10.5} fill="#767c74">
-                                {truncateText(node.fullName, 36)}
+                                {truncateText(node.fullName, focusLayout.drawerOpen ? 28 : 36)}
                               </text>
                             </g>
                           );

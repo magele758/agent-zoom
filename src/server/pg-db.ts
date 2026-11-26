@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { MessageChannel, Worker, receiveMessageOnPort, type MessagePort } from "node:worker_threads";
 import pg from "pg";
 
@@ -23,6 +23,57 @@ export interface PgDatabaseSyncOptions {
   schema?: string;
   createSchema?: boolean;
   dropSchemaOnClose?: boolean;
+  /** Optional temp file path in tmpdir so test runner exit can reap deleted-tmpdir schemas. */
+  tempPath?: string;
+}
+
+const openPgDbs = new Set<PgDatabaseSync>();
+const activeDropOnCloseDbs = new Set<PgDatabaseSync>();
+const trackedTempSchemas = new Map<string, { connectionString: string; schema: string; tempDir: string }>();
+let pgCleanupHookInstalled = false;
+
+function runPgExitCleanup(): void {
+  // First, drop any tracked opc_tmp_* schemas whose temp directory has already been removed by test cleanup,
+  // using an already-open worker synchronously (safe inside process 'exit' where async handles cannot start).
+  if (trackedTempSchemas.size > 0 && openPgDbs.size > 0) {
+    const byUrl = new Map<string, PgDatabaseSync>();
+    for (const db of openPgDbs) {
+      if (db.isOpen && !byUrl.has(db.connectionString)) byUrl.set(db.connectionString, db);
+    }
+    for (const [key, entry] of [...trackedTempSchemas.entries()]) {
+      if (!existsSync(entry.tempDir)) {
+        const helper = byUrl.get(entry.connectionString);
+        if (helper && helper.isOpen) {
+          trackedTempSchemas.delete(key);
+          try {
+            helper.exec(`DROP SCHEMA IF EXISTS "${entry.schema.replace(/"/g, '""')}" CASCADE`);
+          } catch {
+            // ignore shutdown race
+          }
+        }
+      }
+    }
+  }
+
+  // Synchronously close all unclosed dropSchemaOnClose (:memory:) instances so opc_mem_* schemas never leak.
+  if (activeDropOnCloseDbs.size > 0) {
+    const pending = [...activeDropOnCloseDbs];
+    activeDropOnCloseDbs.clear();
+    for (const db of pending) {
+      try {
+        db.close();
+      } catch {
+        // ignore shutdown race
+      }
+    }
+  }
+}
+
+function ensurePgCleanupHook(): void {
+  if (pgCleanupHookInstalled) return;
+  pgCleanupHookInstalled = true;
+  process.on("beforeExit", runPgExitCleanup);
+  process.on("exit", runPgExitCleanup);
 }
 
 export interface PgRunResult {
@@ -200,6 +251,21 @@ export class PgDatabaseSync {
     this.port.unref();
 
     this._send({ op: "init" });
+    openPgDbs.add(this);
+    if (dropSchemaOnClose && this.schema !== "public") {
+      activeDropOnCloseDbs.add(this);
+      ensurePgCleanupHook();
+    } else if (options.tempPath && this.schema.startsWith("opc_tmp_")) {
+      const tempDir = dirname(resolve(options.tempPath));
+      if (!getTempPrefixes().includes(tempDir)) {
+        trackedTempSchemas.set(`${this.connectionString}::${this.schema}`, {
+          connectionString: this.connectionString,
+          schema: this.schema,
+          tempDir,
+        });
+        ensurePgCleanupHook();
+      }
+    }
   }
 
   get isTransaction(): boolean {
@@ -222,6 +288,8 @@ export class PgDatabaseSync {
   close(): void {
     if (this._closed) return;
     this._closed = true;
+    openPgDbs.delete(this);
+    activeDropOnCloseDbs.delete(this);
     try {
       this._send({ op: "close" }, true);
     } catch {

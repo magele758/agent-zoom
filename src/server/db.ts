@@ -1,5 +1,5 @@
 import { closeSync, existsSync, mkdirSync, openSync, readSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   PgDatabaseSync,
@@ -323,6 +323,7 @@ export function openDatabase(path: string, options: OpenDatabaseOptions = {}): D
         schema: target.schema,
         createSchema: target.createSchema,
         dropSchemaOnClose: target.dropSchemaOnClose,
+        tempPath: target.schema.startsWith("opc_tmp_") ? resolve(path) : undefined,
       }) as unknown as DatabaseSync;
       db.exec(SCHEMA);
       migrate(db);

@@ -170,6 +170,24 @@ function toContainerPgUrl(pgUrl) {
   }
 }
 
+function withContainerDumpCopy(container, dumpPath, fn) {
+  const remotePath = `/tmp/opc-pg-${process.pid}-${randomBytes(8).toString("hex")}.dump`;
+  execFileSync("docker", ["cp", dumpPath, `${container}:${remotePath}`], {
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  try {
+    return fn(remotePath);
+  } finally {
+    try {
+      execFileSync("docker", ["exec", container, "rm", "-f", remotePath], {
+        stdio: "ignore",
+      });
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+}
+
 function checkPostgresDumpIntegrity(dumpPath, env = process.env) {
   let fd;
   try {
@@ -205,11 +223,12 @@ function checkPostgresDumpIntegrity(dumpPath, env = process.env) {
       });
     } else {
       const container = resolvePgContainer(env);
-      listOut = execFileSync("docker", ["exec", "-i", container, "pg_restore", "--list"], {
-        input: readFileSync(dumpPath),
-        encoding: "utf8",
-        maxBuffer: 32 * 1024 * 1024,
-      });
+      listOut = withContainerDumpCopy(container, dumpPath, (remotePath) =>
+        execFileSync("docker", ["exec", container, "pg_restore", "--list", remotePath], {
+          encoding: "utf8",
+          maxBuffer: 32 * 1024 * 1024,
+        }),
+      );
     }
     const entries = listOut
       .split(/\r?\n/)
@@ -260,11 +279,13 @@ function restorePostgresDump(pgUrl, dumpPath, env = process.env) {
   } else {
     const container = resolvePgContainer(env);
     const containerUrl = toContainerPgUrl(pgUrl);
-    execFileSync(
-      "docker",
-      ["exec", "-i", container, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-acl", "-d", containerUrl],
-      { input: readFileSync(dumpPath), maxBuffer: 64 * 1024 * 1024 },
-    );
+    withContainerDumpCopy(container, dumpPath, (remotePath) => {
+      execFileSync(
+        "docker",
+        ["exec", container, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-acl", "-d", containerUrl, remotePath],
+        { maxBuffer: 64 * 1024 * 1024 },
+      );
+    });
   }
 }
 
