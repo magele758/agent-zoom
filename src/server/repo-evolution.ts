@@ -76,6 +76,32 @@ import type {
   UpdateRepoEvolutionConfigInput,
   UpdateRepoLinkInput,
   UpdateRepoNodeInput,
+  ArchitectureCanvasProjectionRef,
+  ArchitectureClusterRecommendation,
+  ArchitectureCodeMapRef,
+  ArchitectureConsolidationItem,
+  ArchitectureDistillationRun,
+  ArchitectureFirstPrinciple,
+  ArchitectureParadigmNote,
+  ArchitecturePrimitive,
+  ArchitecturePrimitiveExportJson,
+  ArchitecturePrimitiveSpec,
+  ArchitecturePrimitiveStatus,
+  ArchitectureTradeoffMatrix,
+  CompareRepoToPrimitiveInput,
+  CompareRepoToPrimitiveResult,
+  DistillArchitecturePrimitiveInput,
+  DistillArchitecturePrimitiveResult,
+  GenerateCodeMapInput,
+  GenerateCodeMapResponse,
+  GetCodeMapResponse,
+  ProjectPrimitiveToCanvasInput,
+  ProjectPrimitiveToCanvasResult,
+  RepoCodeMap,
+  RepoCodeMapBrief,
+  SubmitConsolidationInput,
+  SubmitConsolidationResult,
+  UpdateArchitecturePrimitiveInput,
 } from "../repo-evolution-types.ts";
 import type { OpportunityStore } from "./autonomy.ts";
 import { repoContent, searchRepo } from "./company-repo-content.ts";
@@ -88,6 +114,37 @@ import {
   localSemanticVector,
   type ProvidersStore,
 } from "./providers.ts";
+import {
+  buildCodeMapFromMemory,
+  buildCodeMapGroundedModuleAnalysis,
+  buildCodeMapLinkLlmPrompt,
+  createGhCodeMapFetcher,
+  findUnfetchedHotspotTargets,
+  scanLocalRepoReadOnly,
+  selectCandidateSourceFiles,
+  summarizeCodeMapBrief,
+  type CodeMapRemoteFetcher,
+} from "./repo-code-map.ts";
+import {
+  buildCanvasProjectionPayload,
+  buildCodeMapRef,
+  compareRepoAgainstPrimitive,
+  createKnowledgeCanvasProjector,
+  discoverArchitectureClusters,
+  distillArchitectureBlueprint,
+  renderArchitecturePrimitiveMarkdown,
+  slugifyPrimitive,
+  type ArchitectureCanvasProjector,
+  type KnowledgeCanvasStoreLike,
+} from "./repo-architecture.ts";
+
+export {
+  createGhCodeMapFetcher,
+  createKnowledgeCanvasProjector,
+  type ArchitectureCanvasProjector,
+  type CodeMapRemoteFetcher,
+  type KnowledgeCanvasStoreLike,
+};
 
 const exec = promisify(execFile);
 
@@ -157,6 +214,9 @@ export interface RepoEvolutionServiceOptions {
   providers?: ProvidersStore;
   opportunities?: OpportunityStore;
   github?: GitHubEvolutionFetcher;
+  codeMapFetcher?: CodeMapRemoteFetcher;
+  localRepoPathResolver?: (node: RepoEvolutionNode) => Promise<string | null> | string | null;
+  projectToCanvas?: ArchitectureCanvasProjector;
   llmCaller?: typeof callConfiguredLLM;
   vectorCaller?: typeof computeSemanticVector;
   now?: () => number;
@@ -3580,16 +3640,33 @@ function parseLlmModuleAnalysis(
           },
         );
       }
+      const sourceSymbols = Array.isArray(r.sourceSymbols)
+        ? r.sourceSymbols.map((x) => String(x).trim()).filter(Boolean).slice(0, 12)
+        : undefined;
+      const targetSymbols = Array.isArray(r.targetSymbols)
+        ? r.targetSymbols.map((x) => String(x).trim()).filter(Boolean).slice(0, 12)
+        : undefined;
+      const steps = Array.isArray(r.steps)
+        ? r.steps.map((x) => String(x).trim()).filter(Boolean).slice(0, 8)
+        : undefined;
+      const acceptanceCriteria = Array.isArray(r.acceptanceCriteria)
+        ? r.acceptanceCriteria.map((x) => String(x).trim()).filter(Boolean).slice(0, 8)
+        : undefined;
+
       items.push({
         id: `mod_${randomUUID().slice(0, 8)}`,
         sourceModulePath,
         targetModulePath,
         absorbableMechanism,
         currentGap: currentGap || `当前 ${target.name} 在 ${targetModulePath} 缺少对应机制。`,
-        adaptationPlan: String(r.adaptationPlan ?? "按最小增量模块接入并补充确定性测试。").trim(),
+        adaptationPlan: String(r.adaptationPlan ?? (steps?.join(" ") || "按最小增量模块接入并补充确定性测试。")).trim(),
         effort,
         risk,
         evidenceLinks,
+        ...(sourceSymbols?.length ? { sourceSymbols } : {}),
+        ...(targetSymbols?.length ? { targetSymbols } : {}),
+        ...(steps?.length ? { steps } : {}),
+        ...(acceptanceCriteria?.length ? { acceptanceCriteria } : {}),
       });
     }
     if (items.length === 0) return null;
@@ -3626,6 +3703,18 @@ const absorptionStatusEnum = z.enum([
 
 const priorityTierEnum = z.enum(["spotlight", "standard", "archived"]);
 
+const codeLayerEnum = z.enum([
+  "entry",
+  "core",
+  "protocol",
+  "storage",
+  "ui",
+  "infra",
+  "config",
+  "test",
+  "other",
+]);
+
 const moduleAnalysisItemSchema = z.object({
   id: z.string().trim().min(1).max(80).optional(),
   sourceModulePath: z.string().trim().min(1).max(300),
@@ -3645,6 +3734,13 @@ const moduleAnalysisItemSchema = z.object({
     )
     .max(12)
     .default([]),
+  sourceSymbols: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
+  targetSymbols: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
+  sourceLayer: codeLayerEnum.optional(),
+  targetLayer: codeLayerEnum.optional(),
+  steps: z.array(z.string().trim().min(1).max(600)).max(10).optional(),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(600)).max(10).optional(),
+  groundedByCodeMap: z.boolean().optional(),
 });
 
 const createDomainSchema = z.object({
@@ -3770,6 +3866,53 @@ const updateConfigSchema = z.object({
   allowPrivateLlmByDefault: z.boolean().optional(),
 });
 
+const generateCodeMapSchema = z.object({
+  force: z.boolean().default(false),
+  focusPaths: z.array(z.string().trim().min(1).max(260)).max(24).default([]),
+  maxFiles: z.number().int().min(6).max(48).optional(),
+});
+
+const distillArchitectureSchema = z.object({
+  clusterId: z.string().trim().min(1).max(120).optional(),
+  primitiveId: z.string().trim().min(1).max(120).optional(),
+  title: z.string().trim().min(1).max(160).optional(),
+  slug: z.string().trim().min(1).max(120).optional(),
+  domainId: z.string().trim().min(1).max(120).nullable().optional(),
+  problemStatement: z.string().trim().max(3000).optional(),
+  ownedNodeIds: z.array(z.string().trim().min(1).max(160)).max(20).optional(),
+  starNodeIds: z.array(z.string().trim().min(1).max(160)).max(20).optional(),
+  forceCodeMap: z.boolean().default(false),
+  allowPrivateOverride: z.boolean().default(false),
+});
+
+const updateArchitecturePrimitiveSchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  problemStatement: z.string().trim().max(4000).optional(),
+  status: z.enum(["draft", "validated", "canonical"]).optional(),
+  domainId: z.string().trim().min(1).max(120).nullable().optional(),
+  firstPrinciples: z.array(z.any()).max(20).optional(),
+  tradeoffMatrix: z.record(z.string(), z.any()).optional(),
+  primitiveSpec: z.record(z.string(), z.any()).optional(),
+  consolidationPlan: z.array(z.any()).max(20).optional(),
+});
+
+const compareRepoToPrimitiveSchema = z.object({
+  nodeId: z.string().trim().min(1).max(160),
+  forceCodeMap: z.boolean().default(false),
+  allowPrivateOverride: z.boolean().default(false),
+});
+
+const projectToCanvasSchema = z.object({
+  canvasId: z.string().trim().min(1).max(120).optional(),
+  canvasName: z.string().trim().min(1).max(160).optional(),
+});
+
+const submitConsolidationSchema = z.object({
+  itemId: z.string().trim().min(1).max(120),
+  note: z.string().trim().max(2000).optional(),
+  recommendedOption: z.enum(["approve", "watch", "reject"]).optional(),
+});
+
 function parseInput<T extends z.ZodTypeAny>(schema: T, raw: unknown): z.output<T> {
   const res = schema.safeParse(raw ?? {});
   if (!res.success) {
@@ -3790,6 +3933,9 @@ export class RepoEvolutionService {
   private providers?: ProvidersStore;
   private opportunities?: OpportunityStore;
   private github: GitHubEvolutionFetcher;
+  private codeMapFetcher: CodeMapRemoteFetcher | null;
+  private localRepoPathResolver?: (node: RepoEvolutionNode) => Promise<string | null> | string | null;
+  private projectToCanvas?: ArchitectureCanvasProjector;
   private llmCaller: typeof callConfiguredLLM;
   private vectorCaller: typeof computeSemanticVector;
   private now: () => number;
@@ -3803,6 +3949,9 @@ export class RepoEvolutionService {
     this.providers = options.providers;
     this.opportunities = options.opportunities;
     this.github = options.github ?? createGhCliFetcher();
+    this.codeMapFetcher = options.codeMapFetcher ?? (options.github ? null : createGhCodeMapFetcher());
+    this.localRepoPathResolver = options.localRepoPathResolver;
+    this.projectToCanvas = options.projectToCanvas;
     this.llmCaller = options.llmCaller ?? callConfiguredLLM;
     this.vectorCaller = options.vectorCaller ?? computeSemanticVector;
     this.now = options.now ?? (() => Date.now());
@@ -3834,6 +3983,10 @@ export class RepoEvolutionService {
 
   attachProvidersStore(providers: ProvidersStore): void {
     this.providers = providers;
+  }
+
+  attachCanvasProjector(projector: ArchitectureCanvasProjector): void {
+    this.projectToCanvas = projector;
   }
 
   async init(): Promise<void> {
@@ -4021,6 +4174,78 @@ export class RepoEvolutionService {
       );
     `);
 
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS repo_code_maps (
+        id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL REFERENCES repo_evolution_nodes(id) ON DELETE CASCADE,
+        repo_full_name TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        default_branch TEXT,
+        source TEXT NOT NULL DEFAULT 'github_remote_memory',
+        total_tree_files INTEGER NOT NULL DEFAULT 0,
+        candidate_source_files INTEGER NOT NULL DEFAULT 0,
+        analyzed_file_count INTEGER NOT NULL DEFAULT 0,
+        edge_count INTEGER NOT NULL DEFAULT 0,
+        cycle_count INTEGER NOT NULL DEFAULT 0,
+        code_map_json JSONB NOT NULL,
+        focus_paths_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        fetch_duration_ms INTEGER NOT NULL DEFAULT 0,
+        generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (node_id, commit_sha)
+      );
+      CREATE INDEX IF NOT EXISTS idx_repo_code_maps_node_updated ON repo_code_maps(node_id, updated_at DESC);
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS architecture_primitives (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        domain_id TEXT REFERENCES repo_domains(id) ON DELETE SET NULL,
+        problem_statement TEXT NOT NULL DEFAULT '',
+        first_principles_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        tradeoff_matrix_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        primitive_spec_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        consolidation_plan_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        source_node_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        code_map_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        paradigm_notes_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'validated', 'canonical')),
+        version INTEGER NOT NULL DEFAULT 1,
+        distillation_source TEXT NOT NULL DEFAULT 'deterministic',
+        privacy_restricted BOOLEAN NOT NULL DEFAULT FALSE,
+        canvas_projection_json JSONB,
+        embedding vector(${REPO_EVOLUTION_VECTOR_DIM}),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_arch_primitives_domain ON architecture_primitives(domain_id);
+      CREATE INDEX IF NOT EXISTS idx_arch_primitives_status ON architecture_primitives(status);
+      CREATE INDEX IF NOT EXISTS idx_arch_primitives_updated ON architecture_primitives(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_arch_primitives_embedding_hnsw
+        ON architecture_primitives USING hnsw (embedding vector_cosine_ops);
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS architecture_distillation_runs (
+        id TEXT PRIMARY KEY,
+        primitive_id TEXT REFERENCES architecture_primitives(id) ON DELETE CASCADE,
+        trigger_kind TEXT NOT NULL DEFAULT 'distill',
+        topic_title TEXT NOT NULL DEFAULT '',
+        node_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        used_llm BOOLEAN NOT NULL DEFAULT FALSE,
+        privacy_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+        code_maps_scanned INTEGER NOT NULL DEFAULT 0,
+        code_maps_cached INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'completed',
+        error_message TEXT,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_arch_distill_runs_primitive ON architecture_distillation_runs(primitive_id, created_at DESC);
+    `);
+
     const cfgRow = await this.pool.query<{ seeded_domains?: boolean }>(
       `INSERT INTO repo_evolution_config (singleton, spotlight_repos_json, automation_mode)
        VALUES (1, '["ai-agent-node"]'::jsonb, 'mailbox_review')
@@ -4164,6 +4389,54 @@ export class RepoEvolutionService {
       });
       return { action: "rejected", linkId, status: "rejected" };
     });
+
+    const handleConsolidationDecision = async (
+      outcomeStatus: "approved" | "watching" | "rejected",
+      args: { packet: DecisionPacket; option: { id: string; payload?: Record<string, unknown> }; note?: string; actor: string },
+    ) => {
+      await this.init();
+      const primitiveId = String(args.option.payload?.primitiveId ?? "").trim();
+      const itemId = String(args.option.payload?.itemId ?? "").trim();
+      if (!primitiveId || !itemId) {
+        throw new ApiError(400, "missing_consolidation_payload", "审批载荷缺少 primitiveId 或 itemId");
+      }
+      const { primitive } = await this.getArchitecturePrimitive(primitiveId);
+      const updatedPlan = primitive.consolidationPlan.map((it) =>
+        it.id === itemId ? { ...it, decisionPacketId: args.packet.id, decisionStatus: outcomeStatus } : it,
+      );
+      const nowIso = new Date(this.now()).toISOString();
+      await this.pool.query(
+        `UPDATE architecture_primitives SET consolidation_plan_json = $1::jsonb, updated_at = $2 WHERE id = $3`,
+        [JSON.stringify(updatedPlan), nowIso, primitive.id],
+      );
+      const item = updatedPlan.find((it) => it.id === itemId);
+      const eventType: RepoEvolutionEventType =
+        outcomeStatus === "approved"
+          ? "decision_approved"
+          : outcomeStatus === "watching"
+            ? "decision_watching"
+            : "decision_rejected";
+      await this.recordEvent({
+        domainId: primitive.domainId,
+        eventType,
+        title: `底座收敛审批（${outcomeStatus}）：${item?.title ?? itemId}`,
+        summary: args.note || `原语「${primitive.title}」的底座收敛提案已批复为 ${outcomeStatus}。`,
+        actor: args.actor,
+        decisionPacketId: args.packet.id,
+        metadata: { primitiveId: primitive.id, itemId, outcomeStatus },
+      });
+      return { action: outcomeStatus, primitiveId: primitive.id, itemId, status: outcomeStatus };
+    };
+
+    decisions.registerHandler("product.arch_consolidation_approve", (args) =>
+      handleConsolidationDecision("approved", args),
+    );
+    decisions.registerHandler("product.arch_consolidation_watch", (args) =>
+      handleConsolidationDecision("watching", args),
+    );
+    decisions.registerHandler("product.arch_consolidation_reject", (args) =>
+      handleConsolidationDecision("rejected", args),
+    );
   }
 
   // ---- Config ----
@@ -5543,10 +5816,16 @@ export class RepoEvolutionService {
     const input = parseInput(analyzeLinkSchema, raw);
     const link = await this.getLink(linkId);
     if (link.moduleAnalysis.length > 0 && !input.force) {
+      const [cachedSrcMap, cachedTgtMap] = await Promise.all([
+        this.getLatestCachedCodeMap(link.sourceNodeId),
+        this.getLatestCachedCodeMap(link.targetNodeId),
+      ]);
       return {
         link,
         usedLlm: link.analysisSource === "llm",
         privacyBlocked: false,
+        sourceCodeMap: cachedSrcMap ? summarizeCodeMapBrief(cachedSrcMap) : null,
+        targetCodeMap: cachedTgtMap ? summarizeCodeMapBrief(cachedTgtMap) : null,
       };
     }
 
@@ -5555,18 +5834,24 @@ export class RepoEvolutionService {
       this.getNode(link.targetNodeId),
     ]);
 
-    const [sourceContent, targetContent] = await Promise.all([
+    // Zero-clone Code Map for both source Star repo and target Owned repo (pure RAM, 0 bytes cloned on disk)
+    const [sourceMapRes, targetMapRes, sourceContent, targetContent] = await Promise.all([
+      this.generateNodeCodeMap(source.id, { force: false }, actor).catch(() => null),
+      this.generateNodeCodeMap(target.id, { force: false }, actor).catch(() => null),
       this.getNodeContent(source.id).catch(() => null),
       this.getNodeContent(target.id).catch(() => null),
     ]);
+
+    const sourceCodeMap = sourceMapRes?.codeMap ?? (await this.getLatestCachedCodeMap(source.id));
+    const targetCodeMap = targetMapRes?.codeMap ?? (await this.getLatestCachedCodeMap(target.id));
 
     const privateRestricted =
       ((source.visibility === "private" && !source.allowLlmAnalysis) ||
         (target.visibility === "private" && !target.allowLlmAnalysis)) &&
       !input.allowPrivateOverride;
 
-    const srcRef = sourceContent?.ref || source.defaultBranch || "main";
-    const tgtRef = targetContent?.ref || target.defaultBranch || "main";
+    const srcRef = sourceCodeMap?.commitSha || sourceContent?.ref || source.defaultBranch || "main";
+    const tgtRef = targetCodeMap?.commitSha || targetContent?.ref || target.defaultBranch || "main";
 
     let modules: RepoModuleAnalysisItem[] | null = null;
     let rationale = link.rationale;
@@ -5576,40 +5861,51 @@ export class RepoEvolutionService {
 
     if (privateRestricted) {
       privacyBlocked = true;
-      notice = "检测到私有仓库未开启外部 LLM 分析授权，已自动使用本地确定性结构分析引擎（代码零外传）。";
+      notice = "检测到私有仓库未开启外部 LLM 分析授权，已自动使用本地零克隆 Code Map 确定性源码分析引擎（代码零外传）。";
     } else {
       const providersCfg: ProvidersConfig | undefined = this.providers?.get();
-      const srcFiles = (sourceContent?.files ?? []).slice(0, 30).map((f) => (f.directory ? `${f.name}/` : f.name));
-      const tgtFiles = (targetContent?.files ?? []).slice(0, 30).map((f) => (f.directory ? `${f.name}/` : f.name));
-      const prompt = [
-        `请对比开源参考仓库与我方目标仓库，产出 2~4 条具体到模块路径的可吸收架构/能力对比方案。`,
-        `【源参考仓库】${source.fullName} (★${source.starsCount}, lang=${source.primaryLanguage ?? "unknown"}, topics=${source.topics.join(",")})`,
-        `简介：${source.description}`,
-        `根目录：${srcFiles.join(", ") || "(未知)"}`,
-        `README 摘录：${(sourceContent?.readme?.text ?? "").slice(0, 2200)}`,
-        ``,
-        `【目标自有仓库】${target.fullName} (tier=${target.priorityTier}, visibility=${target.visibility}, lang=${target.primaryLanguage ?? "unknown"}, topics=${target.topics.join(",")})`,
-        `简介：${target.description}`,
-        `根目录：${tgtFiles.join(", ") || "(未知)"}`,
-        `README 摘录：${(targetContent?.readme?.text ?? "").slice(0, 2200)}`,
-        ``,
-        `严格输出 JSON 对象：{"rationale":"一句话核心价值总结","modules":[{"sourceModulePath":"...","targetModulePath":"...","absorbableMechanism":"...","currentGap":"...","adaptationPlan":"...","effort":"S|M|L","risk":"low|medium|high","evidenceLinks":[{"label":"...","url":"https://github.com/...","path":"..."}]}]}`,
-      ].join("\n");
+      const prompt =
+        sourceCodeMap || targetCodeMap
+          ? buildCodeMapLinkLlmPrompt({
+              source,
+              target,
+              sourceCodeMap,
+              targetCodeMap,
+              sourceContent,
+              targetContent,
+            })
+          : [
+              `请对比开源参考仓库与我方目标仓库，产出 2~4 条具体到模块路径的可吸收架构/能力对比方案。`,
+              `【源参考仓库】${source.fullName} (★${source.starsCount}, lang=${source.primaryLanguage ?? "unknown"}, topics=${source.topics.join(",")})`,
+              `简介：${source.description}`,
+              `根目录：${(sourceContent?.files ?? []).slice(0, 30).map((f) => (f.directory ? `${f.name}/` : f.name)).join(", ") || "(未知)"}`,
+              `README 摘录：${(sourceContent?.readme?.text ?? "").slice(0, 2200)}`,
+              ``,
+              `【目标自有仓库】${target.fullName} (tier=${target.priorityTier}, visibility=${target.visibility}, lang=${target.primaryLanguage ?? "unknown"}, topics=${target.topics.join(",")})`,
+              `简介：${target.description}`,
+              `根目录：${(targetContent?.files ?? []).slice(0, 30).map((f) => (f.directory ? `${f.name}/` : f.name)).join(", ") || "(未知)"}`,
+              `README 摘录：${(targetContent?.readme?.text ?? "").slice(0, 2200)}`,
+              ``,
+              `严格输出 JSON 对象：{"rationale":"一句话核心价值总结","modules":[{"sourceModulePath":"...","targetModulePath":"...","absorbableMechanism":"...","currentGap":"...","adaptationPlan":"...","effort":"S|M|L","risk":"low|medium|high","evidenceLinks":[{"label":"...","url":"https://github.com/...","path":"..."}]}]}`,
+            ].join("\n");
 
       const llmRes = await this.llmCaller(prompt, {
-        system: "你是资深软件架构师，擅长开源仓库模块级拆解与吸收评估。只返回合法 JSON。",
-        maxTokens: 1800,
+        system: "你是资深软件架构师，擅长开源仓库源码级模块拆解与吸收评估。只返回合法 JSON。",
+        maxTokens: 2000,
         config: providersCfg,
       });
 
       if (llmRes.ok) {
         const parsed = parseLlmModuleAnalysis(llmRes.text, source, target, srcRef, tgtRef);
         if (parsed && parsed.items.length > 0) {
-          modules = parsed.items;
+          modules = parsed.items.map((item) => ({
+            ...item,
+            groundedByCodeMap: Boolean(sourceCodeMap || targetCodeMap),
+          }));
           if (parsed.rationale) rationale = parsed.rationale;
           usedLlm = true;
         } else {
-          notice = "远端 LLM 输出未通过结构化校验，已自动回退本地确定性模块分析引擎。";
+          notice = "远端 LLM 输出未通过结构化校验，已自动回退本地零克隆 Code Map 源码分析引擎。";
         }
       } else {
         notice = llmRes.reason;
@@ -5617,15 +5913,33 @@ export class RepoEvolutionService {
     }
 
     if (!modules || modules.length === 0) {
-      modules = buildDeterministicModuleAnalysis({
-        source,
-        target,
-        relationType: link.relationType,
-        sourceContent,
-        targetContent,
-      });
-      if (!rationale.trim()) {
-        rationale = `建议从 ${source.fullName} 吸收 ${modules.length} 个关键模块机制至 ${target.fullName}（${link.relationType}）。`;
+      const grounded =
+        sourceCodeMap && sourceCodeMap.hotspots.length > 0
+          ? buildCodeMapGroundedModuleAnalysis({
+              source,
+              target,
+              relationType: link.relationType,
+              sourceCodeMap,
+              targetCodeMap,
+              sourceContent,
+              targetContent,
+            })
+          : null;
+
+      if (grounded && grounded.items.length > 0) {
+        modules = grounded.items;
+        rationale = grounded.rationale;
+      } else {
+        modules = buildDeterministicModuleAnalysis({
+          source,
+          target,
+          relationType: link.relationType,
+          sourceContent,
+          targetContent,
+        });
+        if (!rationale.trim()) {
+          rationale = `建议从 ${source.fullName} 吸收 ${modules.length} 个关键模块机制至 ${target.fullName}（${link.relationType}）。`;
+        }
       }
     }
 
@@ -5647,18 +5961,27 @@ export class RepoEvolutionService {
       targetNodeId: target.id,
       domainId: source.primaryDomainId,
       eventType: "module_analyzed",
-      title: `完成模块级深度分析：${source.fullName} → ${target.fullName}（${modules.length} 个模块点）`,
+      title: `完成源码级深度分析：${source.fullName} → ${target.fullName}（${modules.length} 个模块点）`,
       summary: modules.map((m) => `${m.sourceModulePath} → ${m.targetModulePath} (${m.effort}/${m.risk})`).join("；"),
       actor,
       metadata: {
         moduleCount: modules.length,
         usedLlm,
         privacyBlocked,
+        sourceCodeMapCommit: sourceCodeMap?.commitSha ?? null,
+        targetCodeMapCommit: targetCodeMap?.commitSha ?? null,
       },
     });
 
     const updated = await this.getLink(link.id);
-    return { link: updated, usedLlm, privacyBlocked, ...(notice ? { notice } : {}) };
+    return {
+      link: updated,
+      usedLlm,
+      privacyBlocked,
+      ...(notice ? { notice } : {}),
+      sourceCodeMap: sourceCodeMap ? summarizeCodeMapBrief(sourceCodeMap) : null,
+      targetCodeMap: targetCodeMap ? summarizeCodeMapBrief(targetCodeMap) : null,
+    };
   }
 
   // ---- Submit to Founder Mailbox (DecisionGateway) ----
@@ -8385,6 +8708,1146 @@ export class RepoEvolutionService {
       truncated: totalTruncated,
     };
   }
+
+  // ============================================================================
+  // Round 3: Zero-Clone Code Map Engine (0 MB local disk clone, PG 18 cached)
+  // ============================================================================
+
+  private async resolveLocalRepoDirectory(node: RepoEvolutionNode): Promise<string | null> {
+    if (this.localRepoPathResolver) {
+      const custom = await this.localRepoPathResolver(node);
+      if (custom && existsSync(custom)) return custom;
+    }
+    if (node.owner.toLowerCase() !== "local") return null;
+
+    // 1. Inspect OPC inventory snapshots (optional table)
+    try {
+      const invRes = await this.pool.query<{ payload: unknown }>(
+        "SELECT payload FROM opc_repo_inventory_snapshots ORDER BY at DESC LIMIT 4",
+      );
+      const targetName = node.name.toLowerCase();
+      for (const row of invRes.rows) {
+        const snap = safeJson<{
+          rows?: Array<{ fullName?: string; paths?: string[] }>;
+          repos?: Array<{ fullName?: string; paths?: string[] }>;
+        }>(row.payload, {});
+        for (const entry of snap.rows ?? snap.repos ?? []) {
+          const fn = String(entry.fullName ?? "");
+          if (fn.startsWith("/") && existsSync(fn)) {
+            const base = fn.split("/").filter(Boolean).pop()?.toLowerCase();
+            if (base === targetName) return fn;
+          }
+          for (const p of Array.isArray(entry.paths) ? entry.paths : []) {
+            if (p && existsSync(p)) {
+              const base = p.split("/").filter(Boolean).pop()?.toLowerCase();
+              if (base === targetName) return p;
+            }
+          }
+        }
+      }
+    } catch {
+      // Optional table
+    }
+
+    // 2. Fallback: parse explicit local path embedded in node.notes (e.g. "（/Users/.../ai-agent-node）")
+    const pathMatches = node.notes.match(/\/[A-Za-z0-9_.\-\/]+/g) ?? [];
+    for (const cand of pathMatches) {
+      const cleaned = cand.replace(/[）,，。;；:：]+$/, "");
+      if (cleaned.length > 4 && existsSync(cleaned)) {
+        return cleaned;
+      }
+    }
+
+    return null;
+  }
+
+  private mapCodeMapRow(row: Record<string, unknown>, cached: boolean): RepoCodeMap {
+    const parsed = safeJson<RepoCodeMap>(row.code_map_json, {
+      id: String(row.id),
+      nodeId: String(row.node_id),
+      repoFullName: String(row.repo_full_name),
+      commitSha: String(row.commit_sha),
+      defaultBranch: row.default_branch ? String(row.default_branch) : null,
+      source: (row.source === "local_readonly_memory" ? "local_readonly_memory" : "github_remote_memory"),
+      zeroLocalClone: true,
+      diskBytesCloned: 0,
+      totalTreeFiles: Number(row.total_tree_files ?? 0),
+      candidateSourceFiles: Number(row.candidate_source_files ?? 0),
+      analyzedFileCount: Number(row.analyzed_file_count ?? 0),
+      edgeCount: Number(row.edge_count ?? 0),
+      cycleCount: Number(row.cycle_count ?? 0),
+      primaryLanguages: [],
+      layers: [],
+      hotspots: [],
+      files: [],
+      edges: [],
+      cycles: [],
+      keyInterfaces: [],
+      topExternalDeps: [],
+      focusPaths: safeJson<string[]>(row.focus_paths_json, []),
+      cached,
+      fetchDurationMs: Number(row.fetch_duration_ms ?? 0),
+      generatedAt: toIso(row.generated_at) ?? new Date(this.now()).toISOString(),
+      updatedAt: toIso(row.updated_at) ?? new Date(this.now()).toISOString(),
+    });
+    return {
+      ...parsed,
+      zeroLocalClone: true,
+      diskBytesCloned: 0,
+      cached,
+      generatedAt: toIso(row.generated_at) ?? parsed.generatedAt,
+      updatedAt: toIso(row.updated_at) ?? parsed.updatedAt,
+    };
+  }
+
+  private async getLatestCachedCodeMap(nodeId: string): Promise<RepoCodeMap | null> {
+    const res = await this.pool.query<Record<string, unknown>>(
+      `SELECT * FROM repo_code_maps WHERE node_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+      [nodeId],
+    );
+    return res.rows[0] ? this.mapCodeMapRow(res.rows[0], true) : null;
+  }
+
+  private async getCachedCodeMapByCommit(nodeId: string, commitSha: string): Promise<RepoCodeMap | null> {
+    const res = await this.pool.query<Record<string, unknown>>(
+      `SELECT * FROM repo_code_maps WHERE node_id = $1 AND commit_sha = $2 LIMIT 1`,
+      [nodeId, commitSha],
+    );
+    return res.rows[0] ? this.mapCodeMapRow(res.rows[0], true) : null;
+  }
+
+  private async saveCodeMap(codeMap: RepoCodeMap): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO repo_code_maps
+        (id, node_id, repo_full_name, commit_sha, default_branch, source,
+         total_tree_files, candidate_source_files, analyzed_file_count, edge_count, cycle_count,
+         code_map_json, focus_paths_json, fetch_duration_ms, generated_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15, $16)
+       ON CONFLICT (node_id, commit_sha) DO UPDATE SET
+         default_branch = EXCLUDED.default_branch,
+         source = EXCLUDED.source,
+         total_tree_files = EXCLUDED.total_tree_files,
+         candidate_source_files = EXCLUDED.candidate_source_files,
+         analyzed_file_count = EXCLUDED.analyzed_file_count,
+         edge_count = EXCLUDED.edge_count,
+         cycle_count = EXCLUDED.cycle_count,
+         code_map_json = EXCLUDED.code_map_json,
+         focus_paths_json = EXCLUDED.focus_paths_json,
+         fetch_duration_ms = EXCLUDED.fetch_duration_ms,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        codeMap.id,
+        codeMap.nodeId,
+        codeMap.repoFullName,
+        codeMap.commitSha,
+        codeMap.defaultBranch,
+        codeMap.source,
+        codeMap.totalTreeFiles,
+        codeMap.candidateSourceFiles,
+        codeMap.analyzedFileCount,
+        codeMap.edgeCount,
+        codeMap.cycleCount,
+        JSON.stringify(codeMap),
+        JSON.stringify(codeMap.focusPaths),
+        codeMap.fetchDurationMs,
+        codeMap.generatedAt,
+        codeMap.updatedAt,
+      ],
+    );
+  }
+
+  private nodeToBrief(node: RepoEvolutionNode): RepoNodeBrief {
+    return {
+      id: node.id,
+      fullName: node.fullName,
+      name: node.name,
+      owner: node.owner,
+      url: node.url,
+      role: node.role,
+      visibility: node.visibility,
+      vitality: node.vitality,
+      priorityTier: node.priorityTier,
+      isFork: node.isFork,
+      primaryLanguage: node.primaryLanguage,
+      starsCount: node.starsCount,
+      primaryDomainId: node.primaryDomainId,
+      primaryDomainName: node.primaryDomainName,
+      primaryDomainColor: node.primaryDomainColor,
+      allowLlmAnalysis: node.allowLlmAnalysis,
+    };
+  }
+
+  async getNodeCodeMap(idOrFullName: string): Promise<GetCodeMapResponse> {
+    await this.init();
+    const node = await this.getNode(idOrFullName);
+    const codeMap = await this.getLatestCachedCodeMap(node.id);
+    return { codeMap, node: this.nodeToBrief(node) };
+  }
+
+  async generateNodeCodeMap(
+    idOrFullName: string,
+    raw: GenerateCodeMapInput = {},
+    actor = "founder",
+  ): Promise<GenerateCodeMapResponse> {
+    await this.init();
+    const input = parseInput(generateCodeMapSchema, raw);
+    const node = await this.getNode(idOrFullName);
+    const started = Date.now();
+    const nowIso = new Date(this.now()).toISOString();
+
+    const focusCovered = (existing: RepoCodeMap): boolean => {
+      if (input.focusPaths.length === 0) return true;
+      const existingSet = new Set(existing.focusPaths.map((p) => p.toLowerCase()));
+      return input.focusPaths.every((p) => existingSet.has(p.toLowerCase()));
+    };
+
+    // Case 1: Local-only private repo (e.g. local/ai-agent-node) — strictly read-only memory scan, ZERO clone, ZERO write
+    if (node.owner.toLowerCase() === "local") {
+      const localDir = await this.resolveLocalRepoDirectory(node);
+      if (!localDir) {
+        throw new ApiError(
+          404,
+          "local_repo_path_not_found",
+          `未在本机找到私有仓 ${node.fullName} 的只读目录，请确认目录已在节点备注或仓清单中登记。`,
+        );
+      }
+      const snap = await scanLocalRepoReadOnly(localDir);
+      if (!input.force) {
+        const hit = await this.getCachedCodeMapByCommit(node.id, snap.commitSha);
+        if (hit && focusCovered(hit)) {
+          return { codeMap: hit, cached: true };
+        }
+      }
+      const { selectedEntries } = selectCandidateSourceFiles(snap.entries, {
+        maxFiles: input.maxFiles,
+        focusPaths: input.focusPaths,
+      });
+      const blobs = new Map<string, string>();
+      for (const entry of selectedEntries) {
+        const txt = snap.readFile(entry.path);
+        if (txt !== null) blobs.set(entry.path, txt);
+      }
+      // Pass 2 in-memory hub hydration: read top un-fetched high-in-degree targets (0 disk writes)
+      const extraTargets = findUnfetchedHotspotTargets(snap.entries, blobs, node.fullName, 10);
+      for (const relPath of extraTargets) {
+        const txt = snap.readFile(relPath);
+        if (txt !== null) blobs.set(relPath, txt);
+      }
+      const codeMap = buildCodeMapFromMemory({
+        nodeId: node.id,
+        repoFullName: node.fullName,
+        repoUrl: node.url,
+        commitSha: snap.commitSha,
+        defaultBranch: snap.defaultBranch ?? node.defaultBranch,
+        source: "local_readonly_memory",
+        treeEntries: snap.entries,
+        blobs,
+        focusPaths: input.focusPaths,
+        fetchDurationMs: Math.max(1, Date.now() - started),
+        nowIso,
+      });
+      await this.saveCodeMap(codeMap);
+      await this.recordEvent({
+        sourceNodeId: node.id,
+        domainId: node.primaryDomainId,
+        eventType: "code_map_generated",
+        title: `零克隆 Code Map（本机只读内存）：${node.fullName}`,
+        summary: `解析 ${codeMap.analyzedFileCount}/${codeMap.candidateSourceFiles} 源码文件，发现 ${codeMap.hotspots.length} 个热点与 ${codeMap.edgeCount} 条依赖边（0 字节克隆）。`,
+        actor,
+        metadata: { commitSha: codeMap.commitSha, source: codeMap.source, analyzedFileCount: codeMap.analyzedFileCount },
+      });
+      return { codeMap, cached: false };
+    }
+
+    // Case 2: Remote GitHub repo — Trees API + GraphQL Batch Blobs into RAM, ZERO local disk clone!
+    if (!this.codeMapFetcher) {
+      const existing = await this.getLatestCachedCodeMap(node.id);
+      if (existing) return { codeMap: existing, cached: true };
+      throw new ApiError(503, "code_map_fetcher_unavailable", "当前模式未挂载远程 Code Map 获取器。");
+    }
+
+    const head = await this.codeMapFetcher.resolveHeadCommit(node.owner, node.name, node.defaultBranch);
+    if (!input.force) {
+      const hit = await this.getCachedCodeMapByCommit(node.id, head.commitSha);
+      if (hit && focusCovered(hit)) {
+        return { codeMap: hit, cached: true };
+      }
+    }
+
+    const tree = await this.codeMapFetcher.fetchRecursiveTree(
+      node.owner,
+      node.name,
+      head.commitSha || head.defaultBranch || node.defaultBranch || "HEAD",
+    );
+    const { selectedEntries } = selectCandidateSourceFiles(tree.entries, {
+      maxFiles: input.maxFiles,
+      focusPaths: input.focusPaths,
+    });
+    const blobs = await this.codeMapFetcher.fetchBlobsBatch(
+      node.owner,
+      node.name,
+      head.commitSha,
+      selectedEntries.map((e) => e.path),
+    );
+    // Pass 2 in-memory hub hydration: fetch top un-fetched high-in-degree targets so core hubs carry real exported symbols
+    const extraTargets = findUnfetchedHotspotTargets(tree.entries, blobs, node.fullName, 10);
+    if (extraTargets.length > 0) {
+      const extraBlobs = await this.codeMapFetcher
+        .fetchBlobsBatch(node.owner, node.name, head.commitSha, extraTargets)
+        .catch(() => new Map<string, string>());
+      for (const [k, v] of extraBlobs.entries()) {
+        blobs.set(k, v);
+      }
+    }
+
+    const codeMap = buildCodeMapFromMemory({
+      nodeId: node.id,
+      repoFullName: node.fullName,
+      repoUrl: node.url,
+      commitSha: head.commitSha,
+      defaultBranch: head.defaultBranch ?? node.defaultBranch,
+      source: "github_remote_memory",
+      treeEntries: tree.entries,
+      blobs,
+      focusPaths: input.focusPaths,
+      fetchDurationMs: Math.max(1, Date.now() - started),
+      nowIso,
+    });
+
+    await this.saveCodeMap(codeMap);
+    await this.recordEvent({
+      sourceNodeId: node.id,
+      domainId: node.primaryDomainId,
+      eventType: "code_map_generated",
+      title: `零克隆 Code Map：${node.fullName}@${codeMap.commitSha.slice(0, 7)}`,
+      summary: `远程无盘解析 ${codeMap.analyzedFileCount}/${codeMap.candidateSourceFiles} 源码文件，检出 ${codeMap.hotspots.length} 个核心热点与 ${codeMap.edgeCount} 条依赖边。`,
+      actor,
+      metadata: {
+        commitSha: codeMap.commitSha,
+        source: codeMap.source,
+        analyzedFileCount: codeMap.analyzedFileCount,
+        edgeCount: codeMap.edgeCount,
+        cycleCount: codeMap.cycleCount,
+      },
+    });
+
+    return {
+      codeMap,
+      cached: false,
+      ...(tree.truncated ? { notice: "该仓库文件树超大（GitHub Tree 已截断），已优先扫描返回树中的核心架构目录。" } : {}),
+    };
+  }
+
+  // ============================================================================
+  // Round 3: First-Principles Architecture Primitives Engine (L0 - L4)
+  // ============================================================================
+
+  private mapDistillationRunRow(row: Record<string, unknown>): ArchitectureDistillationRun {
+    return {
+      id: String(row.id),
+      primitiveId: row.primitive_id ? String(row.primitive_id) : null,
+      triggerKind:
+        row.trigger_kind === "redistill" || row.trigger_kind === "compare_repo" ? row.trigger_kind : "distill",
+      topicTitle: String(row.topic_title ?? ""),
+      nodeIds: safeJson<string[]>(row.node_ids_json, []),
+      usedLlm: Boolean(row.used_llm ?? false),
+      privacyBlocked: Boolean(row.privacy_blocked ?? false),
+      codeMapsScanned: Number(row.code_maps_scanned ?? 0),
+      codeMapsCached: Number(row.code_maps_cached ?? 0),
+      status: row.status === "failed" ? "failed" : "completed",
+      errorMessage: row.error_message ? String(row.error_message) : null,
+      durationMs: Number(row.duration_ms ?? 0),
+      createdAt: toIso(row.created_at) ?? new Date(this.now()).toISOString(),
+    };
+  }
+
+  private mapArchitecturePrimitiveRow(row: Record<string, unknown>): ArchitecturePrimitive {
+    const codeMapRefs = safeJson<ArchitectureCodeMapRef[]>(row.code_map_refs_json, []);
+    const sourceNodeIds = safeJson<string[]>(row.source_node_ids_json, []);
+    const ownedNodeIds = codeMapRefs.filter((r) => r.role === "owned" || r.role === "both").map((r) => r.nodeId);
+    const starNodeIds = codeMapRefs.filter((r) => r.role === "starred").map((r) => r.nodeId);
+
+    const rawPlan = safeJson<ArchitectureConsolidationItem[]>(row.consolidation_plan_json, []);
+    const consolidationPlan = rawPlan.map((item) => {
+      if (item.decisionPacketId && this.decisions) {
+        const live = this.decisions.get(item.decisionPacketId);
+        if (live) {
+          return { ...item, decisionStatus: live.status };
+        }
+      }
+      return item;
+    });
+
+    const rawStatus = String(row.status ?? "draft");
+    const status: ArchitecturePrimitiveStatus =
+      rawStatus === "validated" || rawStatus === "canonical" ? rawStatus : "draft";
+
+    return {
+      id: String(row.id),
+      slug: String(row.slug),
+      title: String(row.title),
+      domainId: row.domain_id ? String(row.domain_id) : null,
+      domainName: row.domain_name ? String(row.domain_name) : null,
+      domainColor: row.domain_color ? String(row.domain_color) : null,
+      problemStatement: String(row.problem_statement ?? ""),
+      firstPrinciples: safeJson<ArchitectureFirstPrinciple[]>(row.first_principles_json, []),
+      tradeoffMatrix: safeJson<ArchitectureTradeoffMatrix>(row.tradeoff_matrix_json, {
+        summary: "",
+        dimensions: [],
+        approaches: [],
+      }),
+      primitiveSpec: safeJson<ArchitecturePrimitiveSpec>(row.primitive_spec_json, {
+        coreThesis: "",
+        entities: [],
+        contractLanguage: "typescript",
+        protocolContractCode: "",
+        invariants: [],
+        failureModesAndGuardrails: [],
+        mermaidDiagram: "",
+        diagramCaption: "",
+      }),
+      consolidationPlan,
+      sourceNodeIds,
+      ownedNodeIds,
+      starNodeIds,
+      codeMapRefs,
+      paradigmNotes: safeJson<ArchitectureParadigmNote[]>(row.paradigm_notes_json, []),
+      status,
+      version: Number(row.version ?? 1),
+      distillationSource: row.distillation_source === "llm" ? "llm" : "deterministic",
+      privacyRestricted: Boolean(row.privacy_restricted ?? false),
+      canvasProjection: safeJson<ArchitectureCanvasProjectionRef | null>(row.canvas_projection_json, null),
+      createdAt: toIso(row.created_at) ?? new Date(this.now()).toISOString(),
+      updatedAt: toIso(row.updated_at) ?? new Date(this.now()).toISOString(),
+    };
+  }
+
+  async listArchitectureClusters(): Promise<ArchitectureClusterRecommendation[]> {
+    await this.init();
+    const [ownedRes, starRes, linksRes, domainsRes, existingRes] = await Promise.all([
+      this.pool.query<Record<string, unknown>>(
+        `SELECT n.*, d.name AS domain_name, d.color AS domain_color
+         FROM repo_evolution_nodes n
+         LEFT JOIN repo_domains d ON d.id = n.primary_domain_id
+         WHERE n.role IN ('owned', 'both') AND n.is_archived = FALSE`,
+      ),
+      this.pool.query<Record<string, unknown>>(
+        `SELECT n.*, d.name AS domain_name, d.color AS domain_color
+         FROM repo_evolution_nodes n
+         LEFT JOIN repo_domains d ON d.id = n.primary_domain_id
+         WHERE n.role IN ('starred', 'both')
+           AND EXISTS (SELECT 1 FROM repo_absorption_links l WHERE l.source_node_id = n.id AND l.status <> 'rejected')`,
+      ),
+      this.pool.query<{ source_node_id: string; target_node_id: string; strength: number; status: string }>(
+        `SELECT source_node_id, target_node_id, strength, status
+         FROM repo_absorption_links
+         WHERE status <> 'rejected'`,
+      ),
+      this.pool.query<Record<string, unknown>>("SELECT * FROM repo_domains ORDER BY sort_order ASC, name ASC"),
+      this.pool.query<{ id: string; slug: string; source_node_ids_json: unknown }>(
+        "SELECT id, slug, source_node_ids_json FROM architecture_primitives",
+      ),
+    ]);
+
+    return discoverArchitectureClusters({
+      ownedNodes: ownedRes.rows.map((r) => this.mapNodeBrief(r)),
+      starNodes: starRes.rows.map((r) => this.mapNodeBrief(r)),
+      links: linksRes.rows.map((l) => ({
+        sourceNodeId: String(l.source_node_id),
+        targetNodeId: String(l.target_node_id),
+        strength: Number(l.strength ?? 0.5),
+        status: String(l.status ?? "suggested"),
+      })),
+      domains: domainsRes.rows.map((d) => this.mapDomain(d)),
+      existingPrimitives: existingRes.rows.map((p) => ({
+        id: String(p.id),
+        slug: String(p.slug),
+        sourceNodeIds: safeJson<string[]>(p.source_node_ids_json, []),
+      })),
+    });
+  }
+
+  async listArchitecturePrimitives(
+    query: { domainId?: string; status?: string; q?: string } = {},
+  ): Promise<{ primitives: ArchitecturePrimitive[]; total: number }> {
+    await this.init();
+    const conds: string[] = [];
+    const params: unknown[] = [];
+
+    if (query.domainId?.trim()) {
+      params.push(query.domainId.trim());
+      conds.push(`p.domain_id = $${params.length}`);
+    }
+    if (query.status && ["draft", "validated", "canonical"].includes(query.status)) {
+      params.push(query.status);
+      conds.push(`p.status = $${params.length}`);
+    }
+    if (query.q?.trim()) {
+      params.push(`%${query.q.trim().toLowerCase()}%`);
+      const idx = params.length;
+      conds.push(`(LOWER(p.title) LIKE $${idx} OR LOWER(p.slug) LIKE $${idx} OR LOWER(p.problem_statement) LIKE $${idx})`);
+    }
+
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+    const res = await this.pool.query<Record<string, unknown>>(
+      `SELECT p.*, d.name AS domain_name, d.color AS domain_color
+       FROM architecture_primitives p
+       LEFT JOIN repo_domains d ON d.id = p.domain_id
+       ${where}
+       ORDER BY
+         CASE p.status WHEN 'canonical' THEN 0 WHEN 'validated' THEN 1 ELSE 2 END ASC,
+         p.updated_at DESC`,
+      params,
+    );
+    const primitives = res.rows.map((r) => this.mapArchitecturePrimitiveRow(r));
+    return { primitives, total: primitives.length };
+  }
+
+  async getArchitecturePrimitive(
+    idOrSlug: string,
+  ): Promise<{ primitive: ArchitecturePrimitive; runs: ArchitectureDistillationRun[] }> {
+    await this.init();
+    const key = idOrSlug.trim();
+    const res = await this.pool.query<Record<string, unknown>>(
+      `SELECT p.*, d.name AS domain_name, d.color AS domain_color
+       FROM architecture_primitives p
+       LEFT JOIN repo_domains d ON d.id = p.domain_id
+       WHERE p.id = $1 OR p.slug = $2
+       LIMIT 1`,
+      [key, key.toLowerCase()],
+    );
+    if (!res.rows[0]) {
+      throw new ApiError(404, "architecture_primitive_not_found", `未找到架构原语：${idOrSlug}`);
+    }
+    const primitive = this.mapArchitecturePrimitiveRow(res.rows[0]);
+    const runsRes = await this.pool.query<Record<string, unknown>>(
+      `SELECT * FROM architecture_distillation_runs WHERE primitive_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      [primitive.id],
+    );
+    return {
+      primitive,
+      runs: runsRes.rows.map((r) => this.mapDistillationRunRow(r)),
+    };
+  }
+
+  async updateArchitecturePrimitive(
+    idOrSlug: string,
+    raw: UpdateArchitecturePrimitiveInput,
+  ): Promise<ArchitecturePrimitive> {
+    await this.init();
+    const input = parseInput(updateArchitecturePrimitiveSchema, raw);
+    const { primitive: existing } = await this.getArchitecturePrimitive(idOrSlug);
+
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    const push = (col: string, val: unknown, cast = "") => {
+      params.push(val);
+      sets.push(`${col} = $${params.length}${cast}`);
+    };
+
+    if (input.title !== undefined) push("title", input.title);
+    if (input.problemStatement !== undefined) push("problem_statement", input.problemStatement);
+    if (input.status !== undefined) push("status", input.status);
+    if (input.domainId !== undefined) push("domain_id", input.domainId);
+    if (input.firstPrinciples !== undefined) push("first_principles_json", JSON.stringify(input.firstPrinciples), "::jsonb");
+    if (input.tradeoffMatrix !== undefined) push("tradeoff_matrix_json", JSON.stringify(input.tradeoffMatrix), "::jsonb");
+    if (input.primitiveSpec !== undefined) push("primitive_spec_json", JSON.stringify(input.primitiveSpec), "::jsonb");
+    if (input.consolidationPlan !== undefined) push("consolidation_plan_json", JSON.stringify(input.consolidationPlan), "::jsonb");
+
+    if (sets.length === 0) return existing;
+
+    const nowIso = new Date(this.now()).toISOString();
+    push("updated_at", nowIso);
+    params.push(existing.id);
+
+    await this.pool.query(
+      `UPDATE architecture_primitives SET ${sets.join(", ")} WHERE id = $${params.length}`,
+      params,
+    );
+    return (await this.getArchitecturePrimitive(existing.id)).primitive;
+  }
+
+  async deleteArchitecturePrimitive(idOrSlug: string): Promise<{ ok: true; id: string }> {
+    await this.init();
+    const { primitive } = await this.getArchitecturePrimitive(idOrSlug);
+    await this.pool.query("DELETE FROM architecture_primitives WHERE id = $1", [primitive.id]);
+    return { ok: true, id: primitive.id };
+  }
+
+  async distillArchitecturePrimitive(
+    raw: DistillArchitecturePrimitiveInput,
+    actor = "founder",
+  ): Promise<DistillArchitecturePrimitiveResult> {
+    await this.init();
+    const input = parseInput(distillArchitectureSchema, raw);
+    const started = Date.now();
+    const nowIso = new Date(this.now()).toISOString();
+
+    let existingPrimitive: ArchitecturePrimitive | null = null;
+    if (input.primitiveId) {
+      existingPrimitive = (await this.getArchitecturePrimitive(input.primitiveId)).primitive;
+    }
+
+    let chosenCluster: ArchitectureClusterRecommendation | null = null;
+    if (input.clusterId) {
+      const clusters = await this.listArchitectureClusters();
+      chosenCluster =
+        clusters.find((c) => c.id === input.clusterId || c.slug === input.clusterId) ?? null;
+      if (!chosenCluster) {
+        throw new ApiError(404, "architecture_cluster_not_found", `未找到推荐架构主题簇：${input.clusterId}`);
+      }
+      if (!existingPrimitive && chosenCluster.existingPrimitiveId) {
+        existingPrimitive = (await this.getArchitecturePrimitive(chosenCluster.existingPrimitiveId)).primitive;
+      }
+    }
+
+    const ownedIdsRaw =
+      input.ownedNodeIds?.length
+        ? input.ownedNodeIds
+        : chosenCluster?.ownedNodes.map((n) => n.id) ?? existingPrimitive?.ownedNodeIds ?? [];
+    const starIdsRaw =
+      input.starNodeIds?.length
+        ? input.starNodeIds
+        : chosenCluster?.starNodes.map((n) => n.id) ?? existingPrimitive?.starNodeIds ?? [];
+
+    if (ownedIdsRaw.length === 0 && starIdsRaw.length === 0) {
+      throw new ApiError(
+        400,
+        "missing_distillation_repos",
+        "请指定 clusterId 或至少选择 1 个自有仓 / Star 仓参与第一性原理蒸馏。",
+      );
+    }
+
+    const resolvedOwned: RepoEvolutionNode[] = [];
+    const resolvedStars: RepoEvolutionNode[] = [];
+    const seenNodeIds = new Set<string>();
+
+    for (const id of ownedIdsRaw) {
+      const n = await this.getNode(id);
+      if (!seenNodeIds.has(n.id)) {
+        seenNodeIds.add(n.id);
+        resolvedOwned.push(n);
+      }
+    }
+    for (const id of starIdsRaw) {
+      const n = await this.getNode(id);
+      if (!seenNodeIds.has(n.id)) {
+        seenNodeIds.add(n.id);
+        resolvedStars.push(n);
+      }
+    }
+
+    const allNodes = [...resolvedOwned, ...resolvedStars];
+    const topicTitle =
+      input.title?.trim() ||
+      chosenCluster?.title ||
+      existingPrimitive?.title ||
+      `${resolvedOwned.slice(0, 2).map((n) => n.name).join(" / ") || resolvedStars[0]?.name} 第一性原理架构原语`;
+
+    const domainId =
+      input.domainId !== undefined
+        ? input.domainId
+        : chosenCluster?.domainId ??
+          existingPrimitive?.domainId ??
+          resolvedOwned.find((n) => n.primaryDomainId)?.primaryDomainId ??
+          resolvedStars.find((n) => n.primaryDomainId)?.primaryDomainId ??
+          null;
+
+    let domainSlug: string | null = null;
+    if (domainId) {
+      const domRes = await this.pool.query<{ slug: string }>("SELECT slug FROM repo_domains WHERE id = $1 LIMIT 1", [
+        domainId,
+      ]);
+      domainSlug = domRes.rows[0]?.slug ?? null;
+    }
+
+    // Batch run zero-clone Code Maps for all participating repos (with concurrency cap 3)
+    const codeMaps = new Map<string, RepoCodeMap>();
+    let codeMapsScanned = 0;
+    let codeMapsCached = 0;
+
+    for (let i = 0; i < allNodes.length; i += 3) {
+      const slice = allNodes.slice(i, i + 3);
+      await Promise.all(
+        slice.map(async (node) => {
+          try {
+            const res = await this.generateNodeCodeMap(node.id, { force: input.forceCodeMap }, actor);
+            codeMaps.set(node.id, res.codeMap);
+            if (res.cached) codeMapsCached++;
+            else codeMapsScanned++;
+          } catch {
+            const cached = await this.getLatestCachedCodeMap(node.id);
+            if (cached) {
+              codeMaps.set(node.id, cached);
+              codeMapsCached++;
+            }
+          }
+        }),
+      );
+    }
+
+    // Strict Privacy Red Line: ANY private repo with allowLlmAnalysis=false blocks ALL external LLM & Embedding egress
+    const privacyBlocked =
+      allNodes.some((n) => n.visibility === "private" && !n.allowLlmAnalysis) && !input.allowPrivateOverride;
+
+    const providersCfg: ProvidersConfig | undefined = this.providers?.get();
+    const { blueprint, usedLlm, notice } = await distillArchitectureBlueprint({
+      title: topicTitle,
+      problemStatement: input.problemStatement,
+      domainSlug,
+      ownedNodes: resolvedOwned,
+      starNodes: resolvedStars,
+      codeMaps,
+      privacyBlocked,
+      llmCaller: this.llmCaller,
+      providersCfg,
+    });
+
+    const codeMapRefs: ArchitectureCodeMapRef[] = allNodes.map((n) => {
+      const cm = codeMaps.get(n.id);
+      if (cm) return buildCodeMapRef(n, cm);
+      return {
+        nodeId: n.id,
+        repoFullName: n.fullName,
+        role: n.role,
+        visibility: n.visibility,
+        primaryLanguage: n.primaryLanguage,
+        starsCount: n.starsCount,
+        commitSha: "unavailable",
+        analyzedFileCount: 0,
+        topHotspots: [],
+      };
+    });
+
+    // Safe embedding (strictly local when privacyBlocked)
+    const embedText = [
+      blueprint.title,
+      blueprint.problemStatement,
+      blueprint.primitiveSpec.coreThesis,
+      ...blueprint.firstPrinciples.map((f) => `${f.title} ${f.constraint}`),
+      ...allNodes.map((n) => n.fullName),
+    ].join(" ");
+    const safeVec = await this.computeSafeVector(
+      embedText,
+      {
+        visibility: privacyBlocked ? "private" : "public",
+        allowLlmAnalysis: !privacyBlocked,
+      },
+      providersCfg,
+    );
+    const pgVec = toPgVectorLiteral(safeVec.vector, safeVec.source);
+
+    const slugBase = input.slug?.trim() || chosenCluster?.slug || existingPrimitive?.slug || slugifyPrimitive(blueprint.title);
+
+    // Check slug collision if creating new primitive
+    if (!existingPrimitive) {
+      const bySlug = await this.pool.query<{ id: string }>(
+        "SELECT id FROM architecture_primitives WHERE slug = $1 LIMIT 1",
+        [slugBase],
+      );
+      if (bySlug.rows[0]) {
+        existingPrimitive = (await this.getArchitecturePrimitive(bySlug.rows[0].id)).primitive;
+      }
+    }
+
+    const primitiveId = existingPrimitive?.id ?? `ap_${randomUUID().replace(/-/g, "").slice(0, 14)}`;
+    const nextVersion = existingPrimitive ? existingPrimitive.version + 1 : 1;
+    const triggerKind = existingPrimitive ? "redistill" : "distill";
+
+    if (existingPrimitive) {
+      // Preserve prior decisionPacketId links for consolidation items if titles/capabilities match
+      const prevByCap = new Map(
+        existingPrimitive.consolidationPlan
+          .filter((c) => c.decisionPacketId)
+          .map((c) => [c.sharedCapabilityName, { id: c.decisionPacketId, status: c.decisionStatus }]),
+      );
+      const mergedPlan = blueprint.consolidationPlan.map((item) => {
+        const prev = prevByCap.get(item.sharedCapabilityName);
+        return prev ? { ...item, decisionPacketId: prev.id, decisionStatus: prev.status } : item;
+      });
+
+      await this.pool.query(
+        `UPDATE architecture_primitives
+         SET title = $1,
+             domain_id = $2,
+             problem_statement = $3,
+             first_principles_json = $4::jsonb,
+             tradeoff_matrix_json = $5::jsonb,
+             primitive_spec_json = $6::jsonb,
+             consolidation_plan_json = $7::jsonb,
+             source_node_ids_json = $8::jsonb,
+             code_map_refs_json = $9::jsonb,
+             version = $10,
+             distillation_source = $11,
+             privacy_restricted = $12,
+             embedding = $13::vector,
+             updated_at = $14
+         WHERE id = $15`,
+        [
+          blueprint.title,
+          domainId,
+          blueprint.problemStatement,
+          JSON.stringify(blueprint.firstPrinciples),
+          JSON.stringify(blueprint.tradeoffMatrix),
+          JSON.stringify(blueprint.primitiveSpec),
+          JSON.stringify(mergedPlan),
+          JSON.stringify(allNodes.map((n) => n.id)),
+          JSON.stringify(codeMapRefs),
+          nextVersion,
+          usedLlm ? "llm" : "deterministic",
+          privacyBlocked,
+          pgVec,
+          nowIso,
+          primitiveId,
+        ],
+      );
+    } else {
+      await this.pool.query(
+        `INSERT INTO architecture_primitives
+          (id, slug, title, domain_id, problem_statement,
+           first_principles_json, tradeoff_matrix_json, primitive_spec_json, consolidation_plan_json,
+           source_node_ids_json, code_map_refs_json, paradigm_notes_json,
+           status, version, distillation_source, privacy_restricted, embedding, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb,
+                 $10::jsonb, $11::jsonb, '[]'::jsonb, 'draft', 1, $12, $13, $14::vector, $15, $15)`,
+        [
+          primitiveId,
+          slugBase,
+          blueprint.title,
+          domainId,
+          blueprint.problemStatement,
+          JSON.stringify(blueprint.firstPrinciples),
+          JSON.stringify(blueprint.tradeoffMatrix),
+          JSON.stringify(blueprint.primitiveSpec),
+          JSON.stringify(blueprint.consolidationPlan),
+          JSON.stringify(allNodes.map((n) => n.id)),
+          JSON.stringify(codeMapRefs),
+          usedLlm ? "llm" : "deterministic",
+          privacyBlocked,
+          pgVec,
+          nowIso,
+        ],
+      );
+    }
+
+    const runId = `adr_${randomUUID().replace(/-/g, "").slice(0, 14)}`;
+    const durationMs = Math.max(1, Date.now() - started);
+    await this.pool.query(
+      `INSERT INTO architecture_distillation_runs
+        (id, primitive_id, trigger_kind, topic_title, node_ids_json, used_llm, privacy_blocked,
+         code_maps_scanned, code_maps_cached, status, duration_ms, created_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, 'completed', $10, $11)`,
+      [
+        runId,
+        primitiveId,
+        triggerKind,
+        blueprint.title,
+        JSON.stringify(allNodes.map((n) => n.id)),
+        usedLlm,
+        privacyBlocked,
+        codeMapsScanned,
+        codeMapsCached,
+        durationMs,
+        nowIso,
+      ],
+    );
+
+    await this.recordEvent({
+      domainId,
+      eventType: "primitive_distilled",
+      title: `蒸馏架构原语：${blueprint.title}（v${nextVersion}）`,
+      summary: `基于 ${resolvedOwned.length} 个自有仓 × ${resolvedStars.length} 个标杆 Star 仓的零克隆 Code Map（新扫 ${codeMapsScanned} / 命中缓存 ${codeMapsCached}），产出 ${blueprint.firstPrinciples.length} 条 L1 约束与 ${blueprint.consolidationPlan.length} 项底座收敛建议。`,
+      actor,
+      metadata: {
+        primitiveId,
+        slug: slugBase,
+        version: nextVersion,
+        usedLlm,
+        privacyBlocked,
+        codeMapsScanned,
+        codeMapsCached,
+      },
+    });
+
+    const { primitive, runs } = await this.getArchitecturePrimitive(primitiveId);
+    const run = runs.find((r) => r.id === runId) ?? runs[0];
+    return {
+      primitive,
+      run,
+      usedLlm,
+      privacyBlocked,
+      ...(notice ? { notice } : {}),
+    };
+  }
+
+  async compareRepoToPrimitive(
+    idOrSlug: string,
+    raw: CompareRepoToPrimitiveInput,
+    actor = "founder",
+  ): Promise<CompareRepoToPrimitiveResult> {
+    await this.init();
+    const input = parseInput(compareRepoToPrimitiveSchema, raw);
+    const started = Date.now();
+    const nowIso = new Date(this.now()).toISOString();
+
+    const { primitive } = await this.getArchitecturePrimitive(idOrSlug);
+    const repoNode = await this.getNode(input.nodeId);
+
+    const codeMapRes = await this.generateNodeCodeMap(repoNode.id, { force: input.forceCodeMap }, actor);
+    const privacyBlocked =
+      (primitive.privacyRestricted || (repoNode.visibility === "private" && !repoNode.allowLlmAnalysis)) &&
+      !input.allowPrivateOverride;
+
+    const providersCfg: ProvidersConfig | undefined = this.providers?.get();
+    const { note, usedLlm, notice } = await compareRepoAgainstPrimitive({
+      primitive,
+      repoNode,
+      codeMap: codeMapRes.codeMap,
+      privacyBlocked,
+      llmCaller: this.llmCaller,
+      providersCfg,
+      nowIso,
+    });
+
+    const nextNotes = [note, ...primitive.paradigmNotes.filter((n) => n.repoNodeId !== repoNode.id)].slice(0, 30);
+    await this.pool.query(
+      `UPDATE architecture_primitives
+       SET paradigm_notes_json = $1::jsonb, updated_at = $2
+       WHERE id = $3`,
+      [JSON.stringify(nextNotes), nowIso, primitive.id],
+    );
+
+    const runId = `adr_${randomUUID().replace(/-/g, "").slice(0, 14)}`;
+    await this.pool.query(
+      `INSERT INTO architecture_distillation_runs
+        (id, primitive_id, trigger_kind, topic_title, node_ids_json, used_llm, privacy_blocked,
+         code_maps_scanned, code_maps_cached, status, duration_ms, created_at)
+       VALUES ($1, $2, 'compare_repo', $3, $4::jsonb, $5, $6, $7, $8, 'completed', $9, $10)`,
+      [
+        runId,
+        primitive.id,
+        `${primitive.title} vs ${repoNode.fullName}`,
+        JSON.stringify([repoNode.id]),
+        usedLlm,
+        privacyBlocked,
+        codeMapRes.cached ? 0 : 1,
+        codeMapRes.cached ? 1 : 0,
+        Math.max(1, Date.now() - started),
+        nowIso,
+      ],
+    );
+
+    await this.recordEvent({
+      sourceNodeId: repoNode.id,
+      domainId: primitive.domainId,
+      eventType: "paradigm_compared",
+      title: `新库范式对照 [${note.verdictLabel}]：${repoNode.fullName} ↔ ${primitive.title}`,
+      summary: note.summary,
+      actor,
+      metadata: {
+        primitiveId: primitive.id,
+        verdict: note.verdict,
+        confidence: note.confidence,
+        commitSha: codeMapRes.codeMap.commitSha,
+      },
+    });
+
+    const updated = (await this.getArchitecturePrimitive(primitive.id)).primitive;
+    return {
+      primitive: updated,
+      note,
+      codeMap: summarizeCodeMapBrief(codeMapRes.codeMap),
+      usedLlm,
+      privacyBlocked,
+      ...(notice ? { notice } : {}),
+    };
+  }
+
+  async exportArchitecturePrimitiveMarkdown(idOrSlug: string): Promise<ArchitecturePrimitiveExportJson> {
+    await this.init();
+    const { primitive } = await this.getArchitecturePrimitive(idOrSlug);
+    const markdown = renderArchitecturePrimitiveMarkdown(primitive);
+    return {
+      primitiveId: primitive.id,
+      slug: primitive.slug,
+      version: primitive.version,
+      filename: `ADR-${primitive.slug}-v${primitive.version}.md`,
+      markdown,
+    };
+  }
+
+  async projectArchitecturePrimitiveToCanvas(
+    idOrSlug: string,
+    raw: ProjectPrimitiveToCanvasInput = {},
+  ): Promise<ProjectPrimitiveToCanvasResult> {
+    await this.init();
+    if (!this.projectToCanvas) {
+      throw new ApiError(
+        503,
+        "canvas_projector_unavailable",
+        "无界知识画布投射钩子（projectToCanvas）尚未挂载，请在服务端装配 KnowledgeCanvasStore。",
+      );
+    }
+    const input = parseInput(projectToCanvasSchema, raw);
+    const { primitive } = await this.getArchitecturePrimitive(idOrSlug);
+    const payload = buildCanvasProjectionPayload(primitive, {
+      canvasId: input.canvasId,
+      canvasName: input.canvasName,
+    });
+    const projected = await this.projectToCanvas(payload);
+    const nowIso = new Date(this.now()).toISOString();
+    const href = projected.href || `#canvas?canvasId=${encodeURIComponent(projected.canvasId)}`;
+    const projectionRef: ArchitectureCanvasProjectionRef = {
+      canvasId: projected.canvasId,
+      canvasName: projected.canvasName,
+      href,
+      nodeCount: projected.nodeCount,
+      edgeCount: projected.edgeCount,
+      projectedAt: nowIso,
+    };
+    await this.pool.query(
+      `UPDATE architecture_primitives SET canvas_projection_json = $1::jsonb, updated_at = $2 WHERE id = $3`,
+      [JSON.stringify(projectionRef), nowIso, primitive.id],
+    );
+    const updated = (await this.getArchitecturePrimitive(primitive.id)).primitive;
+    return {
+      primitive: updated,
+      canvasId: projected.canvasId,
+      canvasName: projected.canvasName,
+      href,
+      nodeCount: projected.nodeCount,
+      edgeCount: projected.edgeCount,
+    };
+  }
+
+  async submitArchitectureConsolidation(
+    idOrSlug: string,
+    raw: SubmitConsolidationInput,
+    actor = "founder",
+  ): Promise<SubmitConsolidationResult> {
+    await this.init();
+    if (!this.decisions) {
+      throw new ApiError(503, "decision_gateway_unavailable", "总裁信箱 DecisionGateway 尚未挂载");
+    }
+    const input = parseInput(submitConsolidationSchema, raw);
+    const { primitive } = await this.getArchitecturePrimitive(idOrSlug);
+    const item = primitive.consolidationPlan.find((it) => it.id === input.itemId);
+    if (!item) {
+      throw new ApiError(404, "consolidation_item_not_found", `未找到底座收敛项：${input.itemId}`);
+    }
+
+    const dedupeKey = `product:arch_consolidation:${primitive.id}:${item.id}`;
+    const existingPending = this.decisions
+      .list({ status: "pending", domain: "product", limit: 200 })
+      .find((p) => p.dedupeKey === dedupeKey);
+
+    const deepLink = `#repo-evolution?tab=architecture&primitive=${encodeURIComponent(primitive.id)}`;
+    const evidenceMd = item.evidence
+      .map((e) => (e.url ? `- [${e.repoFullName}:${e.path}](${e.url})${e.symbols?.length ? `（${e.symbols.join(", ")}）` : ""}` : `- \`${e.repoFullName}:${e.path}\``))
+      .join("\n");
+
+    const payloadBase = {
+      primitiveId: primitive.id,
+      primitiveSlug: primitive.slug,
+      itemId: item.id,
+      sharedCapabilityName: item.sharedCapabilityName,
+      targetOwnedRepos: item.targetOwnedRepos,
+      deepLink,
+    };
+
+    const packet = await this.decisions.propose({
+      dedupeKey,
+      domain: "product",
+      kind: "repo_absorption",
+      riskLevel: "medium",
+      bypassAutoApprove: true,
+      projectOrAssetRef: item.targetOwnedRepos.join(", ") || primitive.slug,
+      title: `底座收敛审批：${item.title}`,
+      backgroundSummary: [
+        `来源架构原语：${primitive.title}（v${primitive.version}）`,
+        `目标自有仓：${item.targetOwnedRepos.join(" / ")}`,
+        `参考标杆仓：${item.referenceStarRepos.join(" / ") || "无"}`,
+        `推荐下沉共享能力：${item.sharedCapabilityName}（工作量 ${item.effort} · 风险 ${item.risk}）`,
+        input.note ? `发起备注：${input.note}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      whyRecommended: `${item.currentDuplicationOrGap} 预期收益：${item.expectedImpact}`,
+      diffOrEvidence: [
+        `### 推荐行动方案`,
+        item.proposedAction,
+        evidenceMd ? `\n### 零克隆 Code Map 源码证据\n${evidenceMd}` : "",
+        `\n架构原语直达：${deepLink}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      rollbackPlan:
+        "本次仅在总裁信箱批准底座收敛提案并记录治理留痕，不自动改写仓库代码；实施时按特性开关灰度接入并可一键回滚。",
+      tags: [
+        "repo_evolution",
+        "architecture_consolidation",
+        `primitive:${primitive.slug}`,
+        ...item.targetOwnedRepos.slice(0, 3).map((r) => `target:${r}`),
+      ],
+      recommendedOptionId: input.recommendedOption ?? "approve",
+      options: [
+        {
+          id: "approve",
+          label: "批准底座收敛（立项推进）",
+          description: "批准该共享底座收敛/能力升级提案并记入进化时间线",
+          outcome: "approved",
+          handlerKey: "product.arch_consolidation_approve",
+          payload: payloadBase,
+        },
+        {
+          id: "watch",
+          label: "暂存观察（后续复议）",
+          description: "保留原语蓝图与收敛方案，暂不立项实施",
+          outcome: "snoozed",
+          handlerKey: "product.arch_consolidation_watch",
+          payload: payloadBase,
+        },
+        {
+          id: "reject",
+          label: "驳回该收敛项",
+          description: "维持各仓独立演进，不推进该收敛建议",
+          outcome: "rejected",
+          handlerKey: "product.arch_consolidation_reject",
+          payload: payloadBase,
+        },
+      ],
+    });
+
+    const nowIso = new Date(this.now()).toISOString();
+    const updatedPlan = primitive.consolidationPlan.map((it) =>
+      it.id === item.id ? { ...it, decisionPacketId: packet.id, decisionStatus: packet.status } : it,
+    );
+    await this.pool.query(
+      `UPDATE architecture_primitives SET consolidation_plan_json = $1::jsonb, updated_at = $2 WHERE id = $3`,
+      [JSON.stringify(updatedPlan), nowIso, primitive.id],
+    );
+
+    if (!existingPending) {
+      await this.recordEvent({
+        domainId: primitive.domainId,
+        eventType: "consolidation_submitted",
+        title: `底座收敛提交总裁信箱：${item.title}`,
+        summary: `已为原语「${primitive.title}」生成中风险审批单 ${packet.id}（bypassAutoApprove=true，目标 ${item.targetOwnedRepos.join(" / ")}）。`,
+        actor,
+        decisionPacketId: packet.id,
+        metadata: { primitiveId: primitive.id, itemId: item.id, dedupeKey, deepLink },
+      });
+    }
+
+    const updatedPrimitive = (await this.getArchitecturePrimitive(primitive.id)).primitive;
+    const updatedItem = updatedPrimitive.consolidationPlan.find((it) => it.id === item.id) ?? item;
+    return {
+      primitive: updatedPrimitive,
+      item: updatedItem,
+      packet,
+      reusedPending: Boolean(existingPending),
+    };
+  }
 }
 
 // ---- Hono Routes ----
@@ -8497,6 +9960,19 @@ export function addRepoEvolutionRoutes(
   app.get(base + "/nodes/:id/content", async (c) =>
     c.json(await service.getNodeContent(c.req.param("id")!)),
   );
+  app.get(base + "/nodes/:id/code-map", async (c) =>
+    c.json(await service.getNodeCodeMap(c.req.param("id")!)),
+  );
+  app.post(base + "/nodes/:id/code-map", async (c) => {
+    const actor = actorName(requireUser(c));
+    let body: GenerateCodeMapInput = {};
+    try {
+      body = await c.req.json();
+    } catch {
+      body = {};
+    }
+    return c.json(await service.generateNodeCodeMap(c.req.param("id")!, body, actor));
+  });
   app.get(base + "/nodes/:id/search", async (c) =>
     c.json(await service.searchNodeContent(c.req.param("id")!, c.req.query("q") ?? "")),
   );
@@ -8630,6 +10106,60 @@ export function addRepoEvolutionRoutes(
         ...body,
       }),
     );
+  });
+
+  // First-Principles Architecture Primitives Studio
+  app.get(base + "/architecture/clusters", async (c) =>
+    c.json({ clusters: await service.listArchitectureClusters() }),
+  );
+  app.get(base + "/architecture/primitives", async (c) =>
+    c.json(
+      await service.listArchitecturePrimitives({
+        domainId: c.req.query("domainId") ?? undefined,
+        status: c.req.query("status") ?? undefined,
+        q: c.req.query("q") ?? undefined,
+      }),
+    ),
+  );
+  app.post(base + "/architecture/distill", async (c) => {
+    const actor = actorName(requireUser(c));
+    const body = (await c.req.json()) as DistillArchitecturePrimitiveInput;
+    return c.json(await service.distillArchitecturePrimitive(body, actor));
+  });
+  app.get(base + "/architecture/primitives/:id/export.md", async (c) => {
+    const exported = await service.exportArchitecturePrimitiveMarkdown(c.req.param("id")!);
+    if (c.req.query("format") === "json") {
+      return c.json(exported);
+    }
+    c.header("Content-Type", "text/markdown; charset=utf-8");
+    c.header("Content-Disposition", `attachment; filename="${exported.filename.replace(/"/g, "")}"`);
+    return c.body(exported.markdown);
+  });
+  app.get(base + "/architecture/primitives/:id", async (c) =>
+    c.json(await service.getArchitecturePrimitive(c.req.param("id")!)),
+  );
+  app.patch(base + "/architecture/primitives/:id", async (c) =>
+    c.json({ primitive: await service.updateArchitecturePrimitive(c.req.param("id")!, await c.req.json()) }),
+  );
+  app.delete(base + "/architecture/primitives/:id", async (c) =>
+    c.json(await service.deleteArchitecturePrimitive(c.req.param("id")!)),
+  );
+  app.post(base + "/architecture/primitives/:id/compare-repo", async (c) => {
+    const actor = actorName(requireUser(c));
+    return c.json(await service.compareRepoToPrimitive(c.req.param("id")!, await c.req.json(), actor));
+  });
+  app.post(base + "/architecture/primitives/:id/project-canvas", async (c) => {
+    let body: ProjectPrimitiveToCanvasInput = {};
+    try {
+      body = await c.req.json();
+    } catch {
+      body = {};
+    }
+    return c.json(await service.projectArchitecturePrimitiveToCanvas(c.req.param("id")!, body));
+  });
+  app.post(base + "/architecture/primitives/:id/submit-consolidation", async (c) => {
+    const actor = actorName(requireUser(c));
+    return c.json(await service.submitArchitectureConsolidation(c.req.param("id")!, await c.req.json(), actor));
   });
 
   // Config

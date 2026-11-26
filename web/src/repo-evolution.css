@@ -1582,8 +1582,12 @@
 
 .re-timeline-dot[data-type="link_discovered"],
 .re-timeline-dot[data-type="link_created"] { background: #b9751d; }
-.re-timeline-dot[data-type="module_analyzed"] { background: #266b70; }
-.re-timeline-dot[data-type="submitted_to_mailbox"] { background: #483d82; }
+.re-timeline-dot[data-type="module_analyzed"],
+.re-timeline-dot[data-type="code_map_generated"] { background: #266b70; }
+.re-timeline-dot[data-type="primitive_distilled"],
+.re-timeline-dot[data-type="paradigm_compared"] { background: #3b5598; }
+.re-timeline-dot[data-type="submitted_to_mailbox"],
+.re-timeline-dot[data-type="consolidation_submitted"] { background: #483d82; }
 .re-timeline-dot[data-type="decision_approved"],
 .re-timeline-dot[data-type="promoted_to_opportunity"],
 .re-timeline-dot[data-type="status_changed"] { background: #2a6b48; }
@@ -1741,6 +1745,1454 @@
     border-bottom: 1px solid #d1cbbd;
   }
   .re-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================================
+   Round 3: Zero-Clone Code Map Drawer & Architecture Primitives Studio (Tab 4)
+   ============================================================================ */
+
+.re-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 99px;
+  font: 600 10.5px/1 var(--digits, "IBM Plex Mono", monospace);
+  background: rgba(43, 78, 60, 0.14);
+  color: #1f442f;
+}
+
+/* ---- 零克隆 Code Map 节点抽屉区块 ---- */
+.re-codemap-box {
+  border-top: 2.5px solid #2b4e3c;
+  background: #fffefb;
+}
+
+.re-zero-clone-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font: 600 10.5px/1.2 var(--digits, "IBM Plex Mono", monospace);
+  color: #164e3f;
+  background: #e3f5ee;
+  border: 1px solid #8cc7b1;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.re-codemap-privacy-note {
+  padding: 6px 9px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  background: #f5f0f8;
+  border: 1px solid #cbbcd4;
+  border-left: 3px solid #6b4e71;
+  color: #462f52;
+}
+
+.re-codemap-empty {
+  padding: 11px 12px;
+  background: #faf7ee;
+  border: 1px dashed #c7c1b2;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #545b54;
+}
+
+.re-codemap-telemetry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.re-codemap-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #2c352d;
+}
+
+.re-codemap-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 9px;
+  background: #f8f5ec;
+  border: 1px solid #dfd9ca;
+}
+
+.re-layer-bar {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: #e6e0d1;
+  gap: 1.5px;
+}
+
+.re-layer-seg {
+  height: 100%;
+  min-width: 4px;
+  transition: width 0.25s ease;
+}
+
+.re-layer-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.re-layer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #424a43;
+}
+
+.re-codemap-hotspots {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.re-hotspot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-hotspot-card {
+  border: 1px solid #d5cfc0;
+  border-left: 3px solid #b9751d;
+  background: #fcfaf4;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.re-hotspot-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.re-hotspot-rec-pill {
+  font-size: 11px;
+  font-weight: 650;
+  color: #7b4c0e;
+  background: #fef4dd;
+  border: 1px solid #e0be7c;
+  padding: 1px 7px;
+  border-radius: 2px;
+}
+
+.re-hotspot-path-row {
+  min-width: 0;
+}
+
+.re-hotspot-path {
+  font: 600 12px/1.35 var(--digits, "IBM Plex Mono", monospace);
+  color: #1f3c2d;
+  word-break: break-all;
+  text-decoration: none;
+}
+
+a.re-hotspot-path:hover {
+  text-decoration: underline;
+  color: #9c3a21;
+}
+
+.re-hotspot-reason {
+  font-size: 11.5px;
+  color: #4f5750;
+  line-height: 1.45;
+}
+
+.re-hotspot-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: #656c64;
+}
+
+.re-symbol-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 6px 0 0;
+  border-top: 1px dashed #d7d2c3;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.re-symbol-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.re-symbol-kind {
+  font: 600 10px/1.2 var(--digits, "IBM Plex Mono", monospace);
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: #e9e4f5;
+  color: #3f3376;
+  border: 1px solid #c9c0e3;
+}
+
+.re-symbol-name {
+  font: 600 11.5px var(--digits, "IBM Plex Mono", monospace);
+  color: #1d2620;
+}
+
+.re-symbol-sig {
+  font: 10.5px var(--digits, "IBM Plex Mono", monospace);
+  color: #646b64;
+  overflow-wrap: anywhere;
+}
+
+.re-cycle-alert {
+  padding: 8px 10px;
+  background: #fbf0eb;
+  border: 1px solid #d9a495;
+  border-left: 3px solid #9c3a21;
+  font-size: 11.5px;
+  color: #7c2714;
+}
+
+.re-cycle-alert ul {
+  margin: 5px 0 0;
+  padding-left: 16px;
+}
+
+.re-cycle-ok {
+  padding: 5px 9px;
+  background: #eef6f0;
+  border: 1px solid #b3d2be;
+  font-size: 11.5px;
+  color: #215134;
+}
+
+.re-codemap-extra {
+  font-size: 11.5px;
+  color: #4a524b;
+  border-top: 1px solid #e3ded0;
+  padding-top: 7px;
+}
+
+.re-codemap-extra summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+/* ---- 连线态双仓 Code Map 证据条与升级模块卡片 ---- */
+.re-link-codemap-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 7px 8px;
+  background: #f3f7f4;
+  border: 1px solid #bed4c6;
+}
+
+.zoom .re-page button.re-link-cm-cell:not(.zo-mobile-menu),
+.re-page button.re-link-cm-cell:not(.zo-mobile-menu) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 2px;
+  font-size: 11px;
+  color: #34443a;
+  background: #fffdf8;
+  border: 1px solid #d5d0c3;
+  padding: 6px 8px;
+  text-align: left;
+  white-space: normal;
+  width: 100%;
+}
+
+.zoom .re-page button.re-link-cm-cell:hover:not(.zo-mobile-menu),
+.re-page button.re-link-cm-cell:hover:not(.zo-mobile-menu) {
+  background: #eef5f0;
+  border-color: #2b4e3c;
+}
+
+.re-symbol-compare-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  background: #f4f1e6;
+  border: 1px solid #ded8c7;
+  font-size: 11px;
+}
+
+.re-symbol-compare-bar code {
+  font: 600 11px var(--digits, "IBM Plex Mono", monospace);
+  background: #fffdf8;
+  border: 1px solid #cfc9ba;
+  padding: 0 5px;
+  border-radius: 2px;
+  color: #203428;
+}
+
+.re-steps-list,
+.re-criteria-list {
+  margin: 3px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #333c35;
+}
+
+.re-criteria-list {
+  list-style: "✓ ";
+  color: #234c34;
+}
+
+/* ---- 视图 4：架构原语台（第一性原理沉淀白皮书工作台） ---- */
+.re-arch-layout {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 332px minmax(0, 1fr);
+  overflow: hidden;
+  background: #fcfaf3;
+}
+
+.re-arch-rail {
+  border-right: 1px solid #cfc9ba;
+  background: #f3f0e6;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+}
+
+.re-arch-rail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-arch-rail-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #5c635c;
+}
+
+.re-arch-rail-empty {
+  padding: 10px;
+  background: #faf7ee;
+  border: 1px dashed #c8c2b3;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #5d645d;
+}
+
+.re-arch-filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 6px;
+}
+
+.re-arch-prim-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zoom .re-page button.re-arch-prim-item:not(.zo-mobile-menu),
+.re-page button.re-arch-prim-item:not(.zo-mobile-menu) {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 9px 10px;
+  text-align: left;
+  white-space: normal;
+  background: #fffdf8;
+  border: 1px solid #d5cfc0;
+  border-left: 3px solid #b7b1a1;
+}
+
+.zoom .re-page button.re-arch-prim-item:hover:not(.zo-mobile-menu),
+.re-page button.re-arch-prim-item:hover:not(.zo-mobile-menu) {
+  background: #faf5e8;
+  border-color: #8f8a7c;
+}
+
+.zoom .re-page button.re-arch-prim-item[aria-current="true"]:not(.zo-mobile-menu),
+.re-page button.re-arch-prim-item[aria-current="true"]:not(.zo-mobile-menu) {
+  background: #fffef9;
+  border-color: #232d27;
+  border-left: 4px solid #2b4e3c;
+  box-shadow: 0 3px 10px rgba(35, 45, 39, 0.08);
+}
+
+.re-arch-prim-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: #5b625b;
+}
+
+.re-arch-prim-domain {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+
+.re-arch-prim-title {
+  font: 700 13.5px/1.35 var(--serif, "Noto Serif SC", "Songti SC", serif);
+  color: #1c251f;
+}
+
+.re-arch-prim-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: #656c65;
+}
+
+.re-arch-status-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 2px;
+  border: 1px solid #c9c3b4;
+  white-space: nowrap;
+}
+
+.re-arch-status-pill.draft {
+  background: #fbf3e6;
+  border-color: #d6ac70;
+  color: #7c4d0f;
+}
+
+.re-arch-status-pill.validated {
+  background: #e8f4ec;
+  border-color: #7ca88c;
+  color: #1f5335;
+}
+
+.re-arch-status-pill.canonical {
+  background: #ece9fa;
+  border-color: #8c80bf;
+  color: #362a6e;
+}
+
+/* 推荐蒸馏簇卡片 */
+.re-cluster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-cluster-card {
+  background: #fffdf8;
+  border: 1px solid #d5cfc0;
+  border-top: 2px solid #483d82;
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.re-cluster-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.re-cluster-rationale {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #4a524b;
+}
+
+.re-cluster-stats {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  color: #636a63;
+}
+
+.re-cluster-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+.re-distill-progress {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  background: #eef4f0;
+  border: 1px solid #a8c4b2;
+  font-size: 11.5px;
+  color: #1e4630;
+}
+
+.re-distill-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(43, 78, 60, 0.25);
+  border-top-color: #2b4e3c;
+  animation: re-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes re-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 右侧白皮书主区 */
+.re-arch-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fcfaf3;
+}
+
+.re-arch-empty-canvas {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.re-arch-paper {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.re-arch-toolbar {
+  flex: 0 0 auto;
+  padding: 9px 18px;
+  background: #f5f2e8;
+  border-bottom: 1px solid #d4cebe;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+
+.re-arch-toolbar-left,
+.re-arch-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.re-seg-mini {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: #e7e1d1;
+  border: 1px solid #cdc6b4;
+  border-radius: 3px;
+}
+
+.zoom .re-page .re-seg-mini button:not(.zo-mobile-menu),
+.re-page .re-seg-mini button:not(.zo-mobile-menu) {
+  border-color: transparent;
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: #4d544d;
+}
+
+.zoom .re-page .re-seg-mini button.re-active:not(.zo-mobile-menu),
+.re-page .re-seg-mini button.re-active:not(.zo-mobile-menu) {
+  background: #232d27;
+  border-color: #232d27;
+  color: #fcfaf3;
+  font-weight: 600;
+}
+
+.re-canvas-link-btn {
+  border-color: #483d82 !important;
+  background: #efecfa !important;
+  color: #362a6e !important;
+  font-size: 11.5px !important;
+  padding: 3px 9px !important;
+}
+
+.re-canvas-link-btn:hover {
+  background: #e2dcf7 !important;
+}
+
+.re-arch-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px clamp(18px, 3.2vw, 44px) 52px;
+}
+
+.re-arch-doc {
+  max-width: 1080px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.re-arch-hero {
+  background: #fffdf8;
+  border: 1px solid #d5cfc0;
+  border-top: 4px solid #2b4e3c;
+  padding: 20px 22px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 16px rgba(35, 45, 39, 0.04);
+}
+
+.re-arch-hero h1 {
+  font-size: clamp(21px, 2.3vw, 28px);
+  font-weight: 700;
+  line-height: 1.25;
+  color: #19221c;
+}
+
+.re-arch-problem {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: #39423b;
+}
+
+.re-arch-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #e6e0d2;
+}
+
+/* 章节头 */
+.re-arch-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.re-arch-sec-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #232d27;
+}
+
+.re-arch-sec-head h2 {
+  font-size: 17.5px;
+  font-weight: 700;
+  color: #1a231d;
+  line-height: 1.3;
+}
+
+.re-arch-sec-head p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: #5b625b;
+}
+
+.re-arch-layer-tag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 28px;
+  padding: 0 7px;
+  font: 700 13px/1 var(--digits, "IBM Plex Mono", monospace);
+  background: #232d27;
+  color: #fcfaf3;
+  border-radius: 2px;
+}
+
+.re-arch-layer-tag.l4 {
+  background: #483d82;
+}
+
+.re-arch-layer-tag.paradigm {
+  background: #9c3a21;
+}
+
+.re-arch-muted {
+  font-size: 12px;
+  color: #6b716a;
+}
+
+/* L0 参与仓库证据条 */
+.re-l0-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.re-l0-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-l0-group h3 {
+  font-size: 13px;
+  font-weight: 700;
+  color: #364038;
+}
+
+.re-l0-chip-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-l0-chip {
+  background: #fffdf8;
+  border: 1px solid #d5cfc0;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.re-l0-chip.owned {
+  border-left: 3px solid #2b4e3c;
+}
+
+.re-l0-chip.starred {
+  border-left: 3px solid #b9751d;
+}
+
+.re-l0-chip-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.zoom .re-page button.re-l0-name-btn:not(.zo-mobile-menu),
+.re-page button.re-l0-name-btn:not(.zo-mobile-menu) {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #1c3427;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: normal;
+}
+
+.zoom .re-page button.re-l0-name-btn:hover:not(.zo-mobile-menu),
+.re-page button.re-l0-name-btn:hover:not(.zo-mobile-menu) {
+  background: transparent;
+  color: #9c3a21;
+  text-decoration: underline;
+}
+
+.re-l0-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: #626962;
+}
+
+.re-l0-hotspots {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 5px;
+  border-top: 1px dashed #dfd9ca;
+}
+
+.re-l0-hotspot-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.re-l0-hotspot-line a {
+  color: #2b4e3c;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.re-l0-hotspot-line a:hover {
+  text-decoration: underline;
+}
+
+.re-l0-hotspot-line small {
+  color: #70766f;
+  white-space: nowrap;
+}
+
+/* 通用证据路径芯片 */
+.re-arch-evidence-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.re-arch-evidence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 2px 7px;
+  background: #f4f1e6;
+  border: 1px solid #d5cfc0;
+  border-radius: 2px;
+  font-size: 11px;
+  max-width: 100%;
+}
+
+.re-arch-evidence-chip a {
+  font-family: var(--digits, "IBM Plex Mono", monospace);
+  color: #214a35;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.re-arch-evidence-chip a:hover {
+  text-decoration: underline;
+}
+
+.re-arch-evidence-syms {
+  display: inline-flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.re-arch-evidence-syms code {
+  font: 600 10px var(--digits, "IBM Plex Mono", monospace);
+  background: #fffdf8;
+  border: 1px solid #cbc5b5;
+  padding: 0 4px;
+  color: #3f3376;
+}
+
+/* L1 根本约束卡片 */
+.re-principles-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.re-principle-card {
+  background: #fffdf8;
+  border: 1px solid #d5cfc0;
+  border-top: 3px solid #2b4e3c;
+  padding: 13px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-principle-card[data-category="security"] { border-top-color: #9c3a21; }
+.re-principle-card[data-category="physics"] { border-top-color: #246874; }
+.re-principle-card[data-category="cost"] { border-top-color: #b9751d; }
+.re-principle-card[data-category="protocol"] { border-top-color: #483d82; }
+.re-principle-card[data-category="reliability"] { border-top-color: #38567a; }
+
+.re-principle-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.re-cat-pill {
+  font-size: 11px;
+  font-weight: 650;
+  padding: 1px 7px;
+  border-radius: 2px;
+  background: #eef4f0;
+  color: #1f4d34;
+  border: 1px solid #a9c7b4;
+}
+
+.re-cat-pill.security { background: #faebe8; color: #8c2b18; border-color: #d69c8f; }
+.re-cat-pill.physics { background: #e8f3f5; color: #19535e; border-color: #9ec8d0; }
+.re-cat-pill.cost { background: #fbf3e5; color: #7e4d0f; border-color: #d9b171; }
+.re-cat-pill.protocol { background: #efecfa; color: #392d73; border-color: #aba0d4; }
+.re-cat-pill.reliability { background: #ebf1f8; color: #274466; border-color: #a4bbd6; }
+
+.re-principle-card h3 {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1c251f;
+}
+
+.re-principle-constraint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #2f3831;
+}
+
+.re-principle-kv-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.re-principle-kv {
+  padding: 7px 9px;
+  background: #f7f4ea;
+  border-left: 2.5px solid #2b4e3c;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #353e37;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.re-principle-kv.warn {
+  background: #fbf3ef;
+  border-left-color: #9c3a21;
+}
+
+/* L2 横向 Trade-off 矩阵表 */
+.re-tradeoff-scroll {
+  overflow-x: auto;
+  border: 1px solid #cfc9ba;
+  background: #fffdf8;
+}
+
+.re-tradeoff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.re-tradeoff-table th {
+  background: #f2eee2;
+  border-bottom: 2px solid #232d27;
+  border-right: 1px solid #dcd6c7;
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+  font-size: 12px;
+  color: #232d27;
+}
+
+.re-th-sub {
+  display: block;
+  margin-top: 2px;
+  font-weight: 400;
+  font-size: 10.5px;
+  color: #646b64;
+}
+
+.re-tradeoff-table td {
+  padding: 10px 10px;
+  border-bottom: 1px solid #e3ded0;
+  border-right: 1px solid #ebe6d9;
+  vertical-align: top;
+  line-height: 1.55;
+  color: #2f3831;
+}
+
+.re-tradeoff-table tr:nth-child(even) td {
+  background: #faf7ef;
+}
+
+.re-approach-name {
+  font: 700 13.5px/1.35 var(--serif, "Noto Serif SC", "Songti SC", serif);
+  color: #1c251f;
+}
+
+.re-cell-gain {
+  color: #1f4f33 !important;
+  background: rgba(233, 244, 236, 0.45);
+}
+
+.re-cell-sacrifice {
+  color: #7c2d19 !important;
+  background: rgba(251, 238, 234, 0.45);
+}
+
+/* L3 最小不可再分抽象原语 */
+.re-thesis-banner {
+  padding: 14px 16px;
+  background: #1d2924;
+  color: #f6f3e8;
+  border-left: 4px solid #d6a449;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-thesis-label {
+  font: 700 10.5px var(--digits, "IBM Plex Mono", monospace);
+  letter-spacing: 0.08em;
+  color: #e6c681;
+}
+
+.re-thesis-banner p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+.re-invariants-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.re-invariant-chip {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  background: rgba(255, 253, 248, 0.1);
+  border: 1px solid rgba(230, 198, 129, 0.38);
+  color: #f4eed9;
+  border-radius: 2px;
+}
+
+.re-subblock-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #232d27;
+  margin-top: 4px !important;
+}
+
+.re-entities-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.re-entity-card {
+  background: #fffdf8;
+  border: 1px solid #d5cfc0;
+  border-left: 3px solid #483d82;
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.re-entity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  color: #1f2822;
+}
+
+.re-entity-head span {
+  font-size: 11px;
+  color: #6b716a;
+}
+
+.re-entity-resp {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #323b34;
+}
+
+.re-entity-boundary {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #525a53;
+  padding: 5px 8px;
+  background: #f6f3e9;
+  border-radius: 2px;
+}
+
+.re-op-chip {
+  font: 600 11px var(--digits, "IBM Plex Mono", monospace);
+  padding: 1px 6px;
+  background: #efecfa;
+  border: 1px solid #c3badf;
+  color: #362a6e;
+  border-radius: 2px;
+}
+
+/* 协议契约代码框 */
+.re-contract-frame {
+  border: 1px solid #2b3530;
+  background: #171f1c;
+  overflow: hidden;
+}
+
+.re-contract-head {
+  padding: 7px 12px;
+  background: #222d28;
+  border-bottom: 1px solid #35433c;
+  color: #ece8da;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.re-code-block {
+  margin: 0;
+  padding: 13px 15px;
+  overflow-x: auto;
+  max-height: 360px;
+  background: #171f1c;
+  color: #e7efe9;
+  font: 12px/1.6 var(--digits, "IBM Plex Mono", monospace);
+  tab-size: 2;
+}
+
+/* Mermaid 架构图卡片 */
+.re-mermaid-card {
+  border: 1px solid #cbc5b5;
+  background: #fffdf8;
+  overflow: hidden;
+}
+
+.re-mermaid-head {
+  padding: 8px 12px;
+  background: #f3efe3;
+  border-bottom: 1px solid #d7d1c2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+
+.re-mermaid-stage {
+  padding: 16px;
+  overflow-x: auto;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(35, 45, 39, 0.07) 1px, transparent 0) 0 0 / 20px 20px,
+    #fcfaf4;
+  display: flex;
+  justify-content: center;
+}
+
+.re-mermaid-svg {
+  display: block;
+  min-width: 480px;
+}
+
+.re-mermaid-caption {
+  padding: 7px 12px;
+  border-top: 1px solid #e4dfd1;
+  background: #faf7ee;
+  font-size: 12px;
+  color: #535b54;
+}
+
+/* 失败模式与安全护栏 */
+.re-guardrail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.re-guardrail-card {
+  background: #fffdf8;
+  border: 1px solid #d7d1c3;
+  border-left: 3px solid #9c3a21;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.re-guardrail-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: #1f2822;
+}
+
+/* L4 自有资产底座收敛清单 */
+.re-consolidation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.re-consolidation-card {
+  background: #fffdf8;
+  border: 1px solid #cfc9ba;
+  border-left: 4px solid #483d82;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.re-consolidation-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.re-consolidation-head h3 {
+  font-size: 15.5px;
+  font-weight: 700;
+  color: #1b241e;
+}
+
+.re-shared-cap-badge {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  background: #efecfa;
+  border: 1px solid #b4a9db;
+  font-size: 11px;
+  color: #4a3f7d;
+}
+
+.re-shared-cap-badge strong {
+  font-size: 12.5px;
+  color: #2c2161;
+}
+
+.re-consolidation-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #f7f4ea;
+  border: 1px solid #e1dbcc;
+}
+
+.re-consolidation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.re-consolidation-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid #e6e0d2;
+}
+
+/* 底部新库范式对照检测面板 */
+.re-paradigm-section {
+  background: #fffdf8;
+  border: 1px solid #cfc9ba;
+  border-top: 3px solid #9c3a21;
+  padding: 16px 18px;
+}
+
+.re-paradigm-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.re-paradigm-search-wrap {
+  position: relative;
+  flex: 1 1 320px;
+}
+
+.re-paradigm-search-wrap input {
+  width: 100%;
+}
+
+.re-paradigm-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.re-paradigm-card {
+  border: 1px solid #d5cfc0;
+  background: #fcfaf4;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-paradigm-card.confirms_paradigm { border-left: 4px solid #2b6b48; }
+.re-paradigm-card.engineering_tweak { border-left: 4px solid #b9751d; }
+.re-paradigm-card.paradigm_shift { border-left: 4px solid #9c3a21; background: #fff9f7; }
+
+.re-paradigm-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.re-verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  font-weight: 700;
+  border-radius: 2px;
+}
+
+.re-verdict-badge.confirms_paradigm {
+  background: #e6f4eb;
+  border: 1px solid #72a988;
+  color: #194d30;
+}
+
+.re-verdict-badge.engineering_tweak {
+  background: #fef3dc;
+  border: 1px solid #d7a656;
+  color: #7c4b0c;
+}
+
+.re-verdict-badge.paradigm_shift {
+  background: #9c3a21;
+  border: 1px solid #7f2d18;
+  color: #fffef9;
+}
+
+.re-paradigm-summary {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #2f3831;
+}
+
+.re-paradigm-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.re-paradigm-col {
+  padding: 8px 10px;
+  background: #f6f3ea;
+  border: 1px solid #dfd9ca;
+  font-size: 12px;
+}
+
+.re-paradigm-col.warn { background: #fbf1ed; border-color: #dfb4a6; }
+.re-paradigm-col.ok { background: #edf6f0; border-color: #b4d4bf; }
+.re-paradigm-col.delta { background: #f0effa; border-color: #c2bce0; }
+
+.re-paradigm-col ul {
+  margin: 5px 0 0;
+  padding-left: 16px;
+  line-height: 1.5;
+}
+
+.re-arch-runs-box {
+  padding: 10px 12px;
+  background: #f5f2e8;
+  border: 1px solid #d5cfc0;
+  font-size: 12px;
+  color: #4f564f;
+}
+
+.re-arch-runs-box summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.re-arch-runs-list {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.re-arch-runs-list li {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.re-modal-wide {
+  width: min(760px, 100%);
+}
+
+@media (max-width: 1060px) {
+  .re-arch-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(220px, 34vh) 1fr;
+  }
+  .re-arch-rail {
+    border-right: 0;
+    border-bottom: 1px solid #cfc9ba;
+  }
+  .re-l0-groups,
+  .re-principles-grid,
+  .re-guardrail-grid {
     grid-template-columns: 1fr;
   }
 }

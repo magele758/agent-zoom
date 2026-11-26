@@ -482,7 +482,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
           <RepoEvolution
             nav={openNav}
             hashQuery={hash.split("?")[1] ?? ""}
-            initialTab={(["graph", "domains", "timeline"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "graph" | "domains" | "timeline" : undefined)}
+            initialTab={(["graph", "domains", "timeline", "architecture"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "graph" | "domains" | "timeline" | "architecture" : undefined)}
             initialLinkId={pageParams.get("link") ?? undefined}
             initialRepo={pageParams.get("repo") ?? undefined}
             initialDomainId={pageParams.get("domain") ?? undefined}
@@ -491,7 +491,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
           />
         )
       : ideasView ? <CompanyIdeas nav={openNav} />
-      : canvasView ? <KnowledgeCanvas nav={openNav} initialCanvasId={pageParams.get("id") ?? undefined} />
+      : canvasView ? <KnowledgeCanvas nav={openNav} initialCanvasId={pageParams.get("id") ?? pageParams.get("canvasId") ?? undefined} />
       : metabolismView ? <MetabolismHub nav={openNav} initialTab={(["briefings", "pm", "commercial", "providers"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "briefings" | "pm" | "commercial" | "providers" : undefined)} />
       : planningView ? <TaskPlanning nav={openNav} initialTab={(["signals", "kanban", "roi", "patrol"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "signals" | "kanban" | "roi" | "patrol" : undefined)} />
       : factoryView ? <DarkFactory nav={openNav} initialRunId={pageParams.get("run") ?? undefined} />

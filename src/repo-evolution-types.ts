@@ -41,6 +41,10 @@ export type RepoEvolutionEventType =
   | "link_discovered"
   | "link_created"
   | "module_analyzed"
+  | "code_map_generated"
+  | "primitive_distilled"
+  | "paradigm_compared"
+  | "consolidation_submitted"
   | "submitted_to_mailbox"
   | "decision_approved"
   | "decision_watching"
@@ -80,6 +84,13 @@ export interface RepoModuleAnalysisItem {
   effort: RepoModuleEffort;
   risk: RepoModuleRisk;
   evidenceLinks: RepoEvidenceLink[];
+  sourceSymbols?: string[];
+  targetSymbols?: string[];
+  sourceLayer?: RepoCodeLayer;
+  targetLayer?: RepoCodeLayer;
+  steps?: string[];
+  acceptanceCriteria?: string[];
+  groundedByCodeMap?: boolean;
 }
 
 export interface RepoReadmeDigest {
@@ -698,6 +709,8 @@ export interface AnalyzeLinkResult {
   usedLlm: boolean;
   privacyBlocked: boolean;
   notice?: string;
+  sourceCodeMap?: RepoCodeMapBrief | null;
+  targetCodeMap?: RepoCodeMapBrief | null;
 }
 
 export interface SubmitLinkToMailboxInput {
@@ -785,6 +798,10 @@ export const REPO_EVOLUTION_EVENT_LABELS: Record<RepoEvolutionEventType, string>
   link_discovered: "发现潜在关联",
   link_created: "建立吸收关联",
   module_analyzed: "模块级深度分析",
+  code_map_generated: "零克隆 Code Map 扫描",
+  primitive_distilled: "蒸馏架构原语蓝图",
+  paradigm_compared: "新库范式对照检测",
+  consolidation_submitted: "底座收敛提交审批",
   submitted_to_mailbox: "提交总裁信箱",
   decision_approved: "总裁批准吸收",
   decision_watching: "总裁暂存观察",
@@ -793,4 +810,529 @@ export const REPO_EVOLUTION_EVENT_LABELS: Record<RepoEvolutionEventType, string>
   promoted_to_opportunity: "转为研发选题",
   sync_completed: "GitHub 同步完成",
   domain_clustered: "领域智能聚类",
+};
+
+// ============================================================================
+// Round 3: Zero-Clone Code Map Engine (0 MB local clone, pure memory parsing)
+// ============================================================================
+
+export type RepoCodeLayer =
+  | "entry"
+  | "core"
+  | "protocol"
+  | "storage"
+  | "ui"
+  | "infra"
+  | "config"
+  | "test"
+  | "other";
+
+export type RepoCodeSymbolKind =
+  | "class"
+  | "function"
+  | "interface"
+  | "type"
+  | "struct"
+  | "trait"
+  | "enum"
+  | "const"
+  | "module";
+
+export type RepoCodeMapSource = "github_remote_memory" | "local_readonly_memory";
+
+export interface RepoCodeExportSymbol {
+  name: string;
+  kind: RepoCodeSymbolKind;
+  signature?: string;
+  line?: number;
+}
+
+export interface RepoCodeMapFileNode {
+  path: string;
+  layer: RepoCodeLayer;
+  language: string;
+  sizeBytes: number;
+  lineCount: number;
+  importsCount: number;
+  importedByCount: number;
+  externalImports: string[];
+  exportedSymbols: RepoCodeExportSymbol[];
+  url: string;
+}
+
+export interface RepoCodeMapHotspot {
+  path: string;
+  layer: RepoCodeLayer;
+  language: string;
+  score: number;
+  importedByCount: number;
+  importsCount: number;
+  lineCount: number;
+  exportedSymbols: RepoCodeExportSymbol[];
+  startReadingReason: string;
+  url: string;
+}
+
+export interface RepoCodeMapEdge {
+  from: string;
+  to: string;
+  specifier: string;
+  symbols?: string[];
+}
+
+export interface RepoCodeMapCycle {
+  paths: string[];
+}
+
+export interface RepoCodeMapKeyInterface {
+  path: string;
+  layer: RepoCodeLayer;
+  name: string;
+  kind: RepoCodeSymbolKind;
+  signature: string;
+  url: string;
+}
+
+export interface RepoCodeMapLayerSummary {
+  layer: RepoCodeLayer;
+  label: string;
+  fileCount: number;
+  analyzedCount: number;
+  share: number;
+  samplePaths: string[];
+}
+
+export interface RepoCodeMapBrief {
+  id: string;
+  nodeId: string;
+  repoFullName: string;
+  commitSha: string;
+  source: RepoCodeMapSource;
+  zeroLocalClone: true;
+  diskBytesCloned: 0;
+  totalTreeFiles: number;
+  analyzedFileCount: number;
+  edgeCount: number;
+  cycleCount: number;
+  hotspotCount: number;
+  cached: boolean;
+  generatedAt: string;
+}
+
+export interface RepoCodeMap {
+  id: string;
+  nodeId: string;
+  repoFullName: string;
+  commitSha: string;
+  defaultBranch: string | null;
+  source: RepoCodeMapSource;
+  zeroLocalClone: true;
+  diskBytesCloned: 0;
+  totalTreeFiles: number;
+  candidateSourceFiles: number;
+  analyzedFileCount: number;
+  edgeCount: number;
+  cycleCount: number;
+  primaryLanguages: Array<{ language: string; count: number }>;
+  layers: RepoCodeMapLayerSummary[];
+  hotspots: RepoCodeMapHotspot[];
+  files: RepoCodeMapFileNode[];
+  edges: RepoCodeMapEdge[];
+  cycles: RepoCodeMapCycle[];
+  keyInterfaces: RepoCodeMapKeyInterface[];
+  topExternalDeps: Array<{ name: string; count: number }>;
+  focusPaths: string[];
+  cached: boolean;
+  fetchDurationMs: number;
+  generatedAt: string;
+  updatedAt: string;
+}
+
+export interface GenerateCodeMapInput {
+  force?: boolean;
+  focusPaths?: string[];
+  maxFiles?: number;
+}
+
+export interface GetCodeMapResponse {
+  codeMap: RepoCodeMap | null;
+  node: RepoNodeBrief;
+}
+
+export interface GenerateCodeMapResponse {
+  codeMap: RepoCodeMap;
+  cached: boolean;
+  notice?: string;
+}
+
+export const REPO_CODE_LAYER_LABELS: Record<RepoCodeLayer, string> = {
+  entry: "入口与引导",
+  core: "核心编排",
+  protocol: "协议与接口",
+  storage: "存储与状态",
+  ui: "交互界面",
+  infra: "基建与运行时",
+  config: "配置与构建",
+  test: "测试与验收",
+  other: "其他模块",
+};
+
+export const REPO_CODE_LAYER_COLORS: Record<RepoCodeLayer, string> = {
+  entry: "#f59e0b",
+  core: "#4f46e5",
+  protocol: "#0891b2",
+  storage: "#059669",
+  ui: "#db2777",
+  infra: "#7c3aed",
+  config: "#64748b",
+  test: "#10b981",
+  other: "#94a3b8",
+};
+
+// ============================================================================
+// Round 3: First-Principles Architecture Primitives Engine (L0 - L4)
+// ============================================================================
+
+export type ArchitecturePrimitiveStatus = "draft" | "validated" | "canonical";
+
+export type ArchitectureConstraintCategory =
+  | "physics"
+  | "engineering"
+  | "security"
+  | "cost"
+  | "protocol"
+  | "reliability";
+
+export type ArchitectureConsolidationKind =
+  | "consolidate_shared_core"
+  | "upgrade_capability"
+  | "deprecate_duplicate"
+  | "protocol_unification";
+
+export type ParadigmComparisonVerdict =
+  | "confirms_paradigm"
+  | "engineering_tweak"
+  | "paradigm_shift";
+
+export interface ArchitectureEvidenceRef {
+  repoFullName: string;
+  nodeId?: string;
+  path: string;
+  symbols?: string[];
+  url?: string;
+  note?: string;
+}
+
+export interface ArchitectureFirstPrinciple {
+  id: string;
+  title: string;
+  category: ArchitectureConstraintCategory;
+  constraint: string;
+  whyIrreducible: string;
+  failureWhenViolated: string;
+  evidence: ArchitectureEvidenceRef[];
+}
+
+export interface ArchitectureTradeoffDimension {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+export interface ArchitectureTradeoffApproach {
+  id: string;
+  name: string;
+  representativeRepos: string[];
+  gains: string;
+  sacrifices: string;
+  bestFor: string;
+  scores: Record<string, string>;
+  evidence: ArchitectureEvidenceRef[];
+}
+
+export interface ArchitectureTradeoffMatrix {
+  summary: string;
+  dimensions: ArchitectureTradeoffDimension[];
+  approaches: ArchitectureTradeoffApproach[];
+}
+
+export interface ArchitecturePrimitiveEntity {
+  name: string;
+  responsibility: string;
+  boundaries: string;
+  keyOperations: string[];
+}
+
+export interface ArchitectureFailureGuardrail {
+  failureMode: string;
+  impact: string;
+  guardrail: string;
+  detectionSignal: string;
+}
+
+export interface ArchitecturePrimitiveSpec {
+  coreThesis: string;
+  entities: ArchitecturePrimitiveEntity[];
+  contractLanguage: "typescript" | "rust" | "python" | "go" | "idl";
+  protocolContractCode: string;
+  invariants: string[];
+  failureModesAndGuardrails: ArchitectureFailureGuardrail[];
+  mermaidDiagram: string;
+  diagramCaption: string;
+}
+
+export interface ArchitectureConsolidationItem {
+  id: string;
+  title: string;
+  kind: ArchitectureConsolidationKind;
+  targetOwnedRepos: string[];
+  targetNodeIds: string[];
+  referenceStarRepos: string[];
+  sharedCapabilityName: string;
+  currentDuplicationOrGap: string;
+  proposedAction: string;
+  expectedImpact: string;
+  effort: RepoModuleEffort;
+  risk: RepoModuleRisk;
+  evidence: ArchitectureEvidenceRef[];
+  decisionPacketId?: string | null;
+  decisionStatus?: string | null;
+}
+
+export interface ArchitectureCodeMapRef {
+  nodeId: string;
+  repoFullName: string;
+  role: RepoNodeRole;
+  visibility: RepoVisibility;
+  primaryLanguage: string | null;
+  starsCount: number;
+  commitSha: string;
+  analyzedFileCount: number;
+  topHotspots: Array<{
+    path: string;
+    importedByCount: number;
+    exportedSymbols: string[];
+    url: string;
+  }>;
+}
+
+export interface ArchitectureParadigmNote {
+  id: string;
+  repoNodeId: string;
+  repoFullName: string;
+  commitSha: string;
+  verdict: ParadigmComparisonVerdict;
+  verdictLabel: string;
+  confidence: number;
+  summary: string;
+  challengedAssumptions: string[];
+  confirmedPrinciples: string[];
+  deltaCapabilities: string[];
+  evidence: ArchitectureEvidenceRef[];
+  usedLlm: boolean;
+  comparedAt: string;
+}
+
+export interface ArchitectureCanvasProjectionRef {
+  canvasId: string;
+  canvasName: string;
+  href: string;
+  nodeCount: number;
+  edgeCount: number;
+  projectedAt: string;
+}
+
+export interface ArchitecturePrimitive {
+  id: string;
+  slug: string;
+  title: string;
+  domainId: string | null;
+  domainName: string | null;
+  domainColor: string | null;
+  problemStatement: string;
+  firstPrinciples: ArchitectureFirstPrinciple[];
+  tradeoffMatrix: ArchitectureTradeoffMatrix;
+  primitiveSpec: ArchitecturePrimitiveSpec;
+  consolidationPlan: ArchitectureConsolidationItem[];
+  sourceNodeIds: string[];
+  ownedNodeIds: string[];
+  starNodeIds: string[];
+  codeMapRefs: ArchitectureCodeMapRef[];
+  paradigmNotes: ArchitectureParadigmNote[];
+  status: ArchitecturePrimitiveStatus;
+  version: number;
+  distillationSource: "llm" | "deterministic";
+  privacyRestricted: boolean;
+  canvasProjection?: ArchitectureCanvasProjectionRef | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArchitectureClusterRecommendation {
+  id: string;
+  slug: string;
+  title: string;
+  rationale: string;
+  domainId: string | null;
+  domainName: string | null;
+  domainColor: string | null;
+  densityScore: number;
+  ownedNodes: RepoNodeBrief[];
+  starNodes: RepoNodeBrief[];
+  sharedHubCount: number;
+  linkCount: number;
+  existingPrimitiveId: string | null;
+  existingPrimitiveSlug: string | null;
+}
+
+export interface ArchitectureDistillationRun {
+  id: string;
+  primitiveId: string | null;
+  triggerKind: "distill" | "redistill" | "compare_repo";
+  topicTitle: string;
+  nodeIds: string[];
+  usedLlm: boolean;
+  privacyBlocked: boolean;
+  codeMapsScanned: number;
+  codeMapsCached: number;
+  status: "completed" | "failed";
+  errorMessage: string | null;
+  durationMs: number;
+  createdAt: string;
+}
+
+export interface DistillArchitecturePrimitiveInput {
+  clusterId?: string;
+  primitiveId?: string;
+  title?: string;
+  slug?: string;
+  domainId?: string | null;
+  problemStatement?: string;
+  ownedNodeIds?: string[];
+  starNodeIds?: string[];
+  forceCodeMap?: boolean;
+  allowPrivateOverride?: boolean;
+}
+
+export interface DistillArchitecturePrimitiveResult {
+  primitive: ArchitecturePrimitive;
+  run: ArchitectureDistillationRun;
+  usedLlm: boolean;
+  privacyBlocked: boolean;
+  notice?: string;
+}
+
+export interface UpdateArchitecturePrimitiveInput {
+  title?: string;
+  problemStatement?: string;
+  status?: ArchitecturePrimitiveStatus;
+  domainId?: string | null;
+  firstPrinciples?: ArchitectureFirstPrinciple[];
+  tradeoffMatrix?: ArchitectureTradeoffMatrix;
+  primitiveSpec?: ArchitecturePrimitiveSpec;
+  consolidationPlan?: ArchitectureConsolidationItem[];
+}
+
+export interface CompareRepoToPrimitiveInput {
+  nodeId: string;
+  forceCodeMap?: boolean;
+  allowPrivateOverride?: boolean;
+}
+
+export interface CompareRepoToPrimitiveResult {
+  primitive: ArchitecturePrimitive;
+  note: ArchitectureParadigmNote;
+  codeMap: RepoCodeMapBrief;
+  usedLlm: boolean;
+  privacyBlocked: boolean;
+  notice?: string;
+}
+
+export interface ProjectPrimitiveToCanvasInput {
+  canvasId?: string;
+  canvasName?: string;
+}
+
+export interface ProjectPrimitiveToCanvasResult {
+  primitive: ArchitecturePrimitive;
+  canvasId: string;
+  canvasName: string;
+  href: string;
+  nodeCount: number;
+  edgeCount: number;
+}
+
+export interface ArchitectureCanvasProjectionNodeDraft {
+  key: string;
+  type: "note" | "briefing" | "task";
+  title: string;
+  markdown: string;
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+  metadata: Record<string, unknown>;
+}
+
+export interface ArchitectureCanvasProjectionEdgeDraft {
+  sourceKey: string;
+  targetKey: string;
+  type: "derives" | "semantic_link" | "blocks";
+  label: string;
+}
+
+export interface ArchitectureCanvasProjectionPayload {
+  primitive: ArchitecturePrimitive;
+  canvasId?: string;
+  canvasName: string;
+  canvasDescription: string;
+  nodes: ArchitectureCanvasProjectionNodeDraft[];
+  edges: ArchitectureCanvasProjectionEdgeDraft[];
+}
+
+export interface SubmitConsolidationInput {
+  itemId: string;
+  note?: string;
+  recommendedOption?: "approve" | "watch" | "reject";
+}
+
+export interface SubmitConsolidationResult {
+  primitive: ArchitecturePrimitive;
+  item: ArchitectureConsolidationItem;
+  packet: DecisionPacket;
+  reusedPending: boolean;
+}
+
+export interface ArchitecturePrimitiveExportJson {
+  primitiveId: string;
+  slug: string;
+  version: number;
+  filename: string;
+  markdown: string;
+}
+
+export const ARCHITECTURE_PRIMITIVE_STATUS_LABELS: Record<ArchitecturePrimitiveStatus, string> = {
+  draft: "草案",
+  validated: "已验证",
+  canonical: "规范 Canonical",
+};
+
+export const ARCHITECTURE_CONSTRAINT_CATEGORY_LABELS: Record<ArchitectureConstraintCategory, string> = {
+  physics: "物理/延迟边界",
+  engineering: "工程复杂性",
+  security: "安全与隔离",
+  cost: "算力与成本",
+  protocol: "协议与契约",
+  reliability: "容错与一致性",
+};
+
+export const ARCHITECTURE_CONSOLIDATION_KIND_LABELS: Record<ArchitectureConsolidationKind, string> = {
+  consolidate_shared_core: "多胞胎底座收敛",
+  upgrade_capability: "核心能力升级",
+  deprecate_duplicate: "淘汰重复实现",
+  protocol_unification: "协议契约统一",
+};
+
+export const PARADIGM_VERDICT_LABELS: Record<ParadigmComparisonVerdict, string> = {
+  confirms_paradigm: "范式印证",
+  engineering_tweak: "工程微调",
+  paradigm_shift: "范式跃迁",
 };
