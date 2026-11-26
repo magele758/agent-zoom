@@ -262,14 +262,19 @@ function plainPreview(text: string, maxLen = 110): string {
 
 function packetEvolutionMeta(pkt: DecisionPacket): {
   deepLink: string | null;
+  deepLinkLabel: string;
   timelineLink: string | null;
   sourceRepo: string | null;
   targetRepo: string | null;
+  primitiveId: string | null;
+  isArchitectureConsolidation: boolean;
 } {
   let deepLink: string | null = null;
   let linkId: string | null = null;
+  let primitiveId: string | null = null;
   let sourceRepo: string | null = null;
   let targetRepo: string | null = null;
+  let sharedCapabilityName: string | null = null;
 
   for (const opt of pkt.options) {
     const payload = opt.payload;
@@ -280,21 +285,37 @@ function packetEvolutionMeta(pkt: DecisionPacket): {
     if (!linkId && typeof payload.linkId === "string" && payload.linkId) {
       linkId = payload.linkId;
     }
+    if (!primitiveId && typeof payload.primitiveId === "string" && payload.primitiveId) {
+      primitiveId = payload.primitiveId;
+    }
     if (!sourceRepo && typeof payload.sourceRepoFullName === "string" && payload.sourceRepoFullName) {
       sourceRepo = payload.sourceRepoFullName;
     }
     if (!targetRepo && typeof payload.targetRepoFullName === "string" && payload.targetRepoFullName) {
       targetRepo = payload.targetRepoFullName;
     }
+    if (!targetRepo && Array.isArray(payload.targetOwnedRepos) && payload.targetOwnedRepos.length > 0) {
+      const repos = payload.targetOwnedRepos.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+      if (repos.length > 0) targetRepo = repos.join(" · ");
+    }
+    if (!sharedCapabilityName && typeof payload.sharedCapabilityName === "string" && payload.sharedCapabilityName) {
+      sharedCapabilityName = payload.sharedCapabilityName;
+    }
   }
 
   for (const tag of pkt.tags ?? []) {
     if (!linkId && tag.startsWith("link:")) linkId = tag.slice(5);
+    if (!primitiveId && tag.startsWith("primitive:")) primitiveId = tag.slice(10);
     if (!sourceRepo && tag.startsWith("source:")) sourceRepo = tag.slice(7);
     if (!targetRepo && tag.startsWith("target:")) targetRepo = tag.slice(7);
   }
 
-  if (!linkId) {
+  if (!primitiveId) {
+    const primMatch = /^product:architecture_consolidation:([^:]+)/.exec(pkt.dedupeKey);
+    if (primMatch?.[1]) primitiveId = primMatch[1];
+  }
+
+  if (!linkId && !primitiveId) {
     const dedupeMatch = /^product:repo_absorption:([^:]+)/.exec(pkt.dedupeKey);
     if (dedupeMatch?.[1]) linkId = dedupeMatch[1];
   }
@@ -302,6 +323,17 @@ function packetEvolutionMeta(pkt: DecisionPacket): {
   if (!deepLink && pkt.diffOrEvidence) {
     const evidenceMatch = /#repo-evolution\?[^\s)\]"']+/.exec(pkt.diffOrEvidence);
     if (evidenceMatch?.[0]) deepLink = evidenceMatch[0];
+  }
+
+  const isArchitectureConsolidation = Boolean(
+    primitiveId ||
+      (deepLink && deepLink.includes("tab=architecture")) ||
+      pkt.tags?.includes("architecture_primitive") ||
+      pkt.tags?.includes("architecture_consolidation"),
+  );
+
+  if (!deepLink && primitiveId) {
+    deepLink = `#repo-evolution?tab=architecture&primitive=${encodeURIComponent(primitiveId)}`;
   }
 
   if (!deepLink && linkId) {
@@ -312,14 +344,30 @@ function packetEvolutionMeta(pkt: DecisionPacket): {
     deepLink = "#repo-evolution";
   }
 
+  if (!targetRepo && sharedCapabilityName) {
+    targetRepo = sharedCapabilityName;
+  }
+
   const timelineLink =
-    deepLink && targetRepo
+    deepLink && targetRepo && !targetRepo.includes(" · ")
       ? `#repo-evolution?tab=timeline&repo=${encodeURIComponent(targetRepo)}`
       : deepLink
         ? "#repo-evolution?tab=timeline"
         : null;
 
-  return { deepLink, timelineLink, sourceRepo, targetRepo };
+  const deepLinkLabel = isArchitectureConsolidation
+    ? "在架构原语台中查看蓝图 ↗"
+    : "在开源进化图谱中查看该边 ↗";
+
+  return {
+    deepLink,
+    deepLinkLabel,
+    timelineLink,
+    sourceRepo,
+    targetRepo,
+    primitiveId,
+    isArchitectureConsolidation,
+  };
 }
 
 function packetTargetLabel(pkt: DecisionPacket): string {
@@ -1740,7 +1788,7 @@ export function FounderMailbox({
                     {evolutionMeta.deepLink && (
                       <div className="mb-letterhead-actions">
                         <a className="mb-link-btn" href={evolutionMeta.deepLink}>
-                          在开源进化图谱中查看该边 ↗
+                          {evolutionMeta.deepLinkLabel}
                         </a>
                         {evolutionMeta.timelineLink && (
                           <a className="mb-link-btn" href={evolutionMeta.timelineLink}>

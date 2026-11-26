@@ -10,20 +10,43 @@ import {
 } from "react";
 import type { IndexedRepo, RepoContent } from "../../src/activity-index-types";
 import {
+  ARCHITECTURE_CONSOLIDATION_KIND_LABELS,
+  ARCHITECTURE_CONSTRAINT_CATEGORY_LABELS,
+  ARCHITECTURE_PRIMITIVE_STATUS_LABELS,
+  PARADIGM_VERDICT_LABELS,
   REPO_ABSORPTION_STATUS_LABELS,
   REPO_AUTOMATION_MODE_LABELS,
+  REPO_CODE_LAYER_COLORS,
+  REPO_CODE_LAYER_LABELS,
   REPO_EVOLUTION_EVENT_LABELS,
   REPO_RELATION_LABELS,
   REPO_VITALITY_LABELS,
   type AnalyzeLinkResult,
+  type ArchitectureClusterRecommendation,
+  type ArchitectureCodeMapRef,
+  type ArchitectureConsolidationItem,
+  type ArchitectureDistillationRun,
+  type ArchitectureEvidenceRef,
+  type ArchitecturePrimitive,
+  type ArchitecturePrimitiveExportJson,
+  type ArchitecturePrimitiveStatus,
   type BatchUpdateRepoNodesInput,
   type BatchUpdateRepoNodesResult,
   type ClusterAndRecallResult,
+  type CompareRepoToPrimitiveResult,
+  type DistillArchitecturePrimitiveResult,
+  type GenerateCodeMapResponse,
+  type GetCodeMapResponse,
   type ImportGithubListsResult,
+  type ProjectPrimitiveToCanvasResult,
   type PromoteLinkToOpportunityResult,
   type RepoAbsorptionEvent,
   type RepoAbsorptionLink,
   type RepoAbsorptionStatus,
+  type RepoCodeLayer,
+  type RepoCodeMap,
+  type RepoCodeMapBrief,
+  type RepoCodeMapHotspot,
   type RepoDomain,
   type RepoDomainCluster,
   type RepoEvolutionAutomationMode,
@@ -49,6 +72,7 @@ import {
   type RepoRelationType,
   type RepoVisibility,
   type RepoVitality,
+  type SubmitConsolidationResult,
   type SubmitLinkToMailboxResult,
 } from "../../src/repo-evolution-types";
 import { request } from "./api";
@@ -60,7 +84,7 @@ const UNASSIGNED_DOMAIN_ID = "__unassigned_owned__";
 const DEFAULT_STARS_PER_OWNED = 12;
 const CORE_RADIUS = 72;
 
-type MainTab = "graph" | "domains" | "timeline";
+type MainTab = "graph" | "domains" | "timeline" | "architecture";
 type HaloTheme = "cosmic" | "washi";
 type InspectorMode = "none" | "domain" | "node" | "link" | "floating";
 
@@ -1458,6 +1482,2970 @@ function RepoNodeContentPreview({ node }: { node: RepoEvolutionNode }) {
   );
 }
 
+// ============================================================================
+// Round 3 Helper Utilities & Subcomponents
+// (Zero-Clone Code Map Panel, Mermaid Architecture Diagram, Architecture Studio)
+// ============================================================================
+
+async function copyTextSafe(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fallback below
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function triggerMarkdownDownload(filename: string, markdown: string) {
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename.endsWith(".md") ? filename : `${filename}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function renderEvidenceChips(evidence: ArchitectureEvidenceRef[], keyPrefix: string) {
+  if (!evidence || evidence.length === 0) return null;
+  return (
+    <div className="re-arch-evidence-row">
+      {evidence.map((ev, idx) => {
+        const href = safeExternalUrl(ev.url);
+        const label = `${ev.repoFullName}:${ev.path}`;
+        return (
+          <span key={`${keyPrefix}-ev-${idx}`} className="re-arch-evidence-chip" title={ev.note || label}>
+            {href ? (
+              <a href={href} target="_blank" rel="noreferrer">
+                📄 {label} ↗
+              </a>
+            ) : (
+              <code>📄 {label}</code>
+            )}
+            {ev.symbols && ev.symbols.length > 0 && (
+              <span className="re-arch-evidence-syms">
+                {ev.symbols.slice(0, 3).map((sym) => (
+                  <code key={sym}>{sym}</code>
+                ))}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---- Structured Zero-Dependency Mermaid SVG Renderer (Flowchart / Graph / Sequence) ----
+
+interface ParsedFlowNode {
+  id: string;
+  label: string;
+  shape: "rect" | "round" | "stadium" | "cylinder" | "diamond" | "circle";
+  subgraphId: string | null;
+}
+
+interface ParsedFlowEdge {
+  from: string;
+  to: string;
+  label: string;
+  style: "solid" | "dashed" | "thick";
+}
+
+interface ParsedFlowSubgraph {
+  id: string;
+  title: string;
+  nodeIds: string[];
+}
+
+interface ParsedFlowchart {
+  kind: "flowchart";
+  direction: "TD" | "LR";
+  nodes: ParsedFlowNode[];
+  edges: ParsedFlowEdge[];
+  subgraphs: ParsedFlowSubgraph[];
+}
+
+interface ParsedSequence {
+  kind: "sequence";
+  participants: Array<{ id: string; label: string }>;
+  messages: Array<{ from: string; to: string; label: string; dashed: boolean }>;
+}
+
+function cleanMermaidLabel(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^["'`]|["'`]$/g, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .trim();
+}
+
+function wrapLinesForSvg(text: string, maxUnitsPerLine = 22, maxLines = 3): string[] {
+  const rawLines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const raw of rawLines) {
+    let cur = "";
+    let curUnits = 0;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      const w = raw.charCodeAt(i) > 0x2e7f ? 1.75 : 1;
+      if (curUnits + w > maxUnitsPerLine && cur.length > 0) {
+        out.push(cur.trim());
+        cur = ch;
+        curUnits = w;
+        if (out.length >= maxLines) break;
+      } else {
+        cur += ch;
+        curUnits += w;
+      }
+    }
+    if (out.length >= maxLines) break;
+    if (cur.trim()) out.push(cur.trim());
+  }
+  if (out.length === 0) return [truncateVisual(text || "Node", maxUnitsPerLine)];
+  if (out.length > maxLines) {
+    const sliced = out.slice(0, maxLines);
+    sliced[maxLines - 1] = truncateVisual(sliced[maxLines - 1], maxUnitsPerLine - 1);
+    return sliced;
+  }
+  return out;
+}
+
+function parseMermaidNodeToken(
+  token: string,
+  nodeMap: Map<string, ParsedFlowNode>,
+  activeSubgraph: ParsedFlowSubgraph | null,
+): string | null {
+  const trimmed = token.trim().replace(/;+$/, "").replace(/:::[A-Za-z0-9_-]+$/, "").trim();
+  if (!trimmed) return null;
+
+  const patterns: Array<{ re: RegExp; shape: ParsedFlowNode["shape"] }> = [
+    { re: /^([A-Za-z0-9_.-]+)\s*\(\[([\s\S]+?)\]\)$/, shape: "stadium" },
+    { re: /^([A-Za-z0-9_.-]+)\s*\[\(([\s\S]+?)\)\]$/, shape: "cylinder" },
+    { re: /^([A-Za-z0-9_.-]+)\s*\(\(([\s\S]+?)\)\)$/, shape: "circle" },
+    { re: /^([A-Za-z0-9_.-]+)\s*\[\[([\s\S]+?)\]\]$/, shape: "rect" },
+    { re: /^([A-Za-z0-9_.-]+)\s*\{([\s\S]+?)\}$/, shape: "diamond" },
+    { re: /^([A-Za-z0-9_.-]+)\s*\[([\s\S]+?)\]$/, shape: "rect" },
+    { re: /^([A-Za-z0-9_.-]+)\s*\(([\s\S]+?)\)$/, shape: "round" },
+    { re: /^([A-Za-z0-9_.-]+)$/, shape: "rect" },
+  ];
+
+  for (const p of patterns) {
+    const m = p.re.exec(trimmed);
+    if (!m) continue;
+    const id = m[1];
+    const label = m[2] !== undefined ? cleanMermaidLabel(m[2]) : id;
+    const existing = nodeMap.get(id);
+    if (existing) {
+      if (m[2] !== undefined) {
+        existing.label = label;
+        existing.shape = p.shape;
+      }
+      if (!existing.subgraphId && activeSubgraph) {
+        existing.subgraphId = activeSubgraph.id;
+        if (!activeSubgraph.nodeIds.includes(id)) activeSubgraph.nodeIds.push(id);
+      }
+    } else {
+      nodeMap.set(id, {
+        id,
+        label,
+        shape: p.shape,
+        subgraphId: activeSubgraph?.id ?? null,
+      });
+      if (activeSubgraph && !activeSubgraph.nodeIds.includes(id)) {
+        activeSubgraph.nodeIds.push(id);
+      }
+    }
+    return id;
+  }
+  return null;
+}
+
+function parseMermaidDiagram(raw: string): ParsedFlowchart | ParsedSequence | null {
+  const cleaned = raw
+    .replace(/^```(?:mermaid)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  if (!cleaned) return null;
+
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((l) => l.replace(/%%.*$/, "").trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return null;
+
+  // Sequence diagram parser
+  if (/^sequenceDiagram\b/i.test(lines[0])) {
+    const partMap = new Map<string, { id: string; label: string }>();
+    const messages: ParsedSequence["messages"] = [];
+    const ensurePart = (id: string, label?: string) => {
+      const key = id.trim();
+      if (!key) return;
+      if (!partMap.has(key)) {
+        partMap.set(key, { id: key, label: cleanMermaidLabel(label || key) });
+      } else if (label) {
+        partMap.get(key)!.label = cleanMermaidLabel(label);
+      }
+    };
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      const pm = /^(?:participant|actor)\s+([A-Za-z0-9_.-]+)(?:\s+as\s+(.+))?$/i.exec(line);
+      if (pm) {
+        ensurePart(pm[1], pm[2]);
+        continue;
+      }
+      const mm = /^([A-Za-z0-9_.-]+)\s*(--?>>?|--?>|--?x)\s*([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(line);
+      if (mm) {
+        ensurePart(mm[1]);
+        ensurePart(mm[3]);
+        messages.push({
+          from: mm[1],
+          to: mm[3],
+          dashed: mm[2].startsWith("--"),
+          label: cleanMermaidLabel(mm[4]),
+        });
+      }
+    }
+    if (partMap.size > 0) {
+      return { kind: "sequence", participants: Array.from(partMap.values()), messages };
+    }
+    return null;
+  }
+
+  // Flowchart / Graph parser
+  let direction: "TD" | "LR" = "TD";
+  let startIdx = 0;
+  const headerMatch = /^(?:flowchart|graph)\s+(TD|TB|BT|LR|RL)\b/i.exec(lines[0]);
+  if (headerMatch) {
+    const dir = headerMatch[1].toUpperCase();
+    direction = dir === "LR" || dir === "RL" ? "LR" : "TD";
+    startIdx = 1;
+  } else if (/^(?:flowchart|graph)\b/i.test(lines[0])) {
+    startIdx = 1;
+  }
+
+  const nodeMap = new Map<string, ParsedFlowNode>();
+  const edges: ParsedFlowEdge[] = [];
+  const subgraphs: ParsedFlowSubgraph[] = [];
+  const subgraphStack: ParsedFlowSubgraph[] = [];
+
+  const arrowPattern =
+    /(\s*(?:-\.\s+[^.\n]+?\s+\.-+>|==\s+[^=\n]+?\s+==+>|---\s+[^-\n>|]+?\s+-->|--\s+[^-\n>|]+?\s+-->|-\.+->|==+>|--+>|---)\s*(?:\|([^|]+)\|)?\s*)/;
+
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i];
+    if (
+      /^(?:classDef|class|style|linkStyle|click|direction)\b/i.test(line)
+    ) {
+      continue;
+    }
+    if (/^subgraph\b/i.test(line)) {
+      const rest = line.replace(/^subgraph\s+/i, "").trim();
+      const subBracket = /^([A-Za-z0-9_.-]+)\s*\[(.+)\]$/.exec(rest);
+      const id = subBracket ? subBracket[1] : `sg_${subgraphs.length + 1}`;
+      const title = subBracket ? cleanMermaidLabel(subBracket[2]) : cleanMermaidLabel(rest || `Layer ${subgraphs.length + 1}`);
+      const sg: ParsedFlowSubgraph = { id, title, nodeIds: [] };
+      subgraphs.push(sg);
+      subgraphStack.push(sg);
+      continue;
+    }
+    if (/^end$/i.test(line)) {
+      subgraphStack.pop();
+      continue;
+    }
+
+    const activeSg = subgraphStack[subgraphStack.length - 1] ?? null;
+
+    // Split chained edges while preserving arrow operator & optional |label|
+    const parts: string[] = [];
+    const ops: Array<{ op: string; label: string }> = [];
+    let cursor = line;
+    while (cursor.length > 0) {
+      const m = arrowPattern.exec(cursor);
+      if (!m || m.index === undefined) {
+        parts.push(cursor.trim());
+        break;
+      }
+      parts.push(cursor.slice(0, m.index).trim());
+      const fullOp = m[1].trim();
+      let edgeLabel = m[2] ? cleanMermaidLabel(m[2]) : "";
+      if (!edgeLabel) {
+        const inlineDash = /^--\s+(.+?)\s+-->$/.exec(fullOp);
+        const inlineDot = /^-\.\s+(.+?)\s+\.->$/.exec(fullOp);
+        const inlineThick = /^==\s+(.+?)\s+==>$/.exec(fullOp);
+        if (inlineDash) edgeLabel = cleanMermaidLabel(inlineDash[1]);
+        else if (inlineDot) edgeLabel = cleanMermaidLabel(inlineDot[1]);
+        else if (inlineThick) edgeLabel = cleanMermaidLabel(inlineThick[1]);
+      }
+      ops.push({ op: fullOp, label: edgeLabel });
+      cursor = cursor.slice(m.index + m[0].length);
+    }
+
+    if (ops.length === 0) {
+      for (const seg of parts[0].split("&")) {
+        parseMermaidNodeToken(seg, nodeMap, activeSg);
+      }
+      continue;
+    }
+
+    const stepGroups: string[][] = parts.map((group) =>
+      group
+        .split("&")
+        .map((tok) => parseMermaidNodeToken(tok, nodeMap, activeSg))
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    for (let k = 0; k < ops.length; k++) {
+      const fromGroup = stepGroups[k] ?? [];
+      const toGroup = stepGroups[k + 1] ?? [];
+      const opStr = ops[k].op;
+      const style: ParsedFlowEdge["style"] = opStr.includes(".")
+        ? "dashed"
+        : opStr.includes("=")
+          ? "thick"
+          : "solid";
+      for (const fromId of fromGroup) {
+        for (const toId of toGroup) {
+          edges.push({ from: fromId, to: toId, label: ops[k].label, style });
+        }
+      }
+    }
+  }
+
+  const nodes = Array.from(nodeMap.values());
+  if (nodes.length === 0) return null;
+  return { kind: "flowchart", direction, nodes, edges, subgraphs };
+}
+
+function MermaidArchitectureDiagram({
+  code,
+  caption,
+}: {
+  code: string;
+  caption?: string;
+}) {
+  const [viewMode, setViewMode] = useState<"diagram" | "source">("diagram");
+  const [copied, setCopied] = useState(false);
+
+  const parsed = useMemo(() => parseMermaidDiagram(code), [code]);
+
+  const handleCopy = async () => {
+    const ok = await copyTextSafe(code);
+    if (ok) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    }
+  };
+
+  const renderedSvg = useMemo(() => {
+    if (!parsed) return null;
+
+    if (parsed.kind === "sequence") {
+      const colW = 176;
+      const padX = 36;
+      const topY = 24;
+      const headH = 42;
+      const rowH = 46;
+      const width = Math.max(540, padX * 2 + parsed.participants.length * colW);
+      const height = Math.max(220, topY + headH + 28 + Math.max(1, parsed.messages.length) * rowH + 36);
+      const xById = new Map<string, number>();
+      parsed.participants.forEach((p, idx) => {
+        xById.set(p.id, padX + colW * idx + colW / 2);
+      });
+
+      return (
+        <svg
+          className="re-mermaid-svg"
+          viewBox={`0 0 ${width} ${height}`}
+          style={{ width: "100%", maxWidth: width, height: "auto" }}
+          role="img"
+          aria-label={caption || "架构时序图"}
+        >
+          <defs>
+            <marker id="re-mmd-seq-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+              <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#2b4e3c" />
+            </marker>
+          </defs>
+          {parsed.participants.map((p) => {
+            const cx = xById.get(p.id) ?? padX;
+            const lines = wrapLinesForSvg(p.label, 18, 2);
+            return (
+              <g key={p.id}>
+                <line x1={cx} y1={topY + headH} x2={cx} y2={height - 20} stroke="#c8c2b2" strokeWidth={1.3} strokeDasharray="4 4" />
+                <rect x={cx - 72} y={topY} width={144} height={headH} rx={4} fill="#fffdf8" stroke="#2b4e3c" strokeWidth={1.5} />
+                <text x={cx} y={topY + (lines.length === 1 ? 25 : 18)} textAnchor="middle" fill="#1e2721" fontSize="12" fontWeight="650">
+                  {lines.map((ln, idx) => (
+                    <tspan key={idx} x={cx} dy={idx === 0 ? 0 : 14}>
+                      {ln}
+                    </tspan>
+                  ))}
+                </text>
+              </g>
+            );
+          })}
+          {parsed.messages.map((m, idx) => {
+            const x1 = xById.get(m.from) ?? padX;
+            const x2 = xById.get(m.to) ?? padX;
+            const y = topY + headH + 30 + idx * rowH;
+            const midX = (x1 + x2) / 2;
+            const isSelf = x1 === x2;
+            return (
+              <g key={`seq-${idx}`}>
+                {isSelf ? (
+                  <path
+                    d={`M ${x1} ${y} C ${x1 + 48} ${y}, ${x1 + 48} ${y + 20}, ${x1 + 4} ${y + 20}`}
+                    fill="none"
+                    stroke="#2b4e3c"
+                    strokeWidth={1.6}
+                    strokeDasharray={m.dashed ? "5 3" : undefined}
+                    markerEnd="url(#re-mmd-seq-arrow)"
+                  />
+                ) : (
+                  <line
+                    x1={x1}
+                    y1={y}
+                    x2={x2 > x1 ? x2 - 4 : x2 + 4}
+                    y2={y}
+                    stroke="#2b4e3c"
+                    strokeWidth={1.6}
+                    strokeDasharray={m.dashed ? "5 3" : undefined}
+                    markerEnd="url(#re-mmd-seq-arrow)"
+                  />
+                )}
+                {m.label && (
+                  <text x={isSelf ? x1 + 52 : midX} y={y - 7} textAnchor={isSelf ? "start" : "middle"} fill="#374038" fontSize="11.5">
+                    {truncateVisual(m.label, 34)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      );
+    }
+
+    // Flowchart topological layered SVG layout
+    const { nodes, edges, subgraphs, direction } = parsed;
+    const nodeIds = nodes.map((n) => n.id);
+    const inDeg = new Map<string, number>();
+    const outAdj = new Map<string, string[]>();
+    for (const id of nodeIds) {
+      inDeg.set(id, 0);
+      outAdj.set(id, []);
+    }
+    for (const e of edges) {
+      if (e.from === e.to) continue;
+      if (!outAdj.has(e.from) || !inDeg.has(e.to)) continue;
+      outAdj.get(e.from)!.push(e.to);
+      inDeg.set(e.to, (inDeg.get(e.to) ?? 0) + 1);
+    }
+
+    // Assign topological ranks safely (cycle-proof via bounded Bellman-Ford / Kahn hybrid)
+    const rankMap = new Map<string, number>();
+    for (const id of nodeIds) rankMap.set(id, 0);
+    const maxRank = Math.max(1, Math.min(nodes.length - 1, 10));
+    for (let pass = 0; pass < Math.min(nodes.length, 14); pass++) {
+      let changed = false;
+      for (const e of edges) {
+        if (e.from === e.to) continue;
+        const rf = rankMap.get(e.from);
+        const rt = rankMap.get(e.to);
+        if (rf !== undefined && rt !== undefined && rt <= rf && rf + 1 <= maxRank) {
+          rankMap.set(e.to, rf + 1);
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+
+    const layers = new Map<number, ParsedFlowNode[]>();
+    for (const node of nodes) {
+      const r = rankMap.get(node.id) ?? 0;
+      const arr = layers.get(r) ?? [];
+      arr.push(node);
+      layers.set(r, arr);
+    }
+    const sortedRanks = Array.from(layers.keys()).sort((a, b) => a - b);
+
+    // Compute exact dimensions for each node so text never clips or overflows
+    const nodeMetrics = new Map<
+      string,
+      { lines: string[]; w: number; h: number; x: number; y: number; cx: number; cy: number }
+    >();
+    for (const node of nodes) {
+      const lines = wrapLinesForSvg(node.label, direction === "LR" ? 18 : 22, 3);
+      const maxLineUnits = Math.max(
+        10,
+        ...lines.map((ln) => {
+          let u = 0;
+          for (let i = 0; i < ln.length; i++) u += ln.charCodeAt(i) > 0x2e7f ? 1.75 : 1;
+          return u;
+        }),
+      );
+      const w = Math.max(126, Math.min(238, Math.round(maxLineUnits * 7.6 + 34)));
+      const h = Math.max(46, lines.length * 17 + 22);
+      nodeMetrics.set(node.id, { lines, w, h, x: 0, y: 0, cx: 0, cy: 0 });
+    }
+
+    const padX = 42;
+    const padY = 44;
+    const gapAlong = direction === "LR" ? 72 : 64;
+    const gapCross = direction === "LR" ? 28 : 30;
+
+    let canvasW = 560;
+    let canvasH = 260;
+
+    if (direction === "LR") {
+      // Ranks go left -> right; nodes within rank stack top -> bottom
+      const colWidths = sortedRanks.map((r) =>
+        Math.max(...(layers.get(r) ?? []).map((n) => nodeMetrics.get(n.id)!.w)),
+      );
+      const colHeights = sortedRanks.map((r) => {
+        const list = layers.get(r) ?? [];
+        return list.reduce((acc, n) => acc + nodeMetrics.get(n.id)!.h, 0) + Math.max(0, list.length - 1) * gapCross;
+      });
+      const maxColH = Math.max(180, ...colHeights);
+      let curX = padX;
+      sortedRanks.forEach((r, idx) => {
+        const list = layers.get(r) ?? [];
+        const colW = colWidths[idx];
+        const colH = colHeights[idx];
+        let curY = padY + Math.round((maxColH - colH) / 2);
+        for (const n of list) {
+          const m = nodeMetrics.get(n.id)!;
+          m.x = curX + Math.round((colW - m.w) / 2);
+          m.y = curY;
+          m.cx = m.x + m.w / 2;
+          m.cy = m.y + m.h / 2;
+          curY += m.h + gapCross;
+        }
+        curX += colW + gapAlong;
+      });
+      canvasW = Math.max(580, curX - gapAlong + padX);
+      canvasH = Math.max(240, maxColH + padY * 2);
+    } else {
+      // TD: Ranks go top -> bottom; nodes within rank sit left -> right
+      const rowHeights = sortedRanks.map((r) =>
+        Math.max(...(layers.get(r) ?? []).map((n) => nodeMetrics.get(n.id)!.h)),
+      );
+      const rowWidths = sortedRanks.map((r) => {
+        const list = layers.get(r) ?? [];
+        return list.reduce((acc, n) => acc + nodeMetrics.get(n.id)!.w, 0) + Math.max(0, list.length - 1) * gapCross;
+      });
+      const maxRowW = Math.max(500, ...rowWidths);
+      let curY = padY;
+      sortedRanks.forEach((r, idx) => {
+        const list = layers.get(r) ?? [];
+        const rowH = rowHeights[idx];
+        const rowW = rowWidths[idx];
+        let curX = padX + Math.round((maxRowW - rowW) / 2);
+        for (const n of list) {
+          const m = nodeMetrics.get(n.id)!;
+          m.x = curX;
+          m.y = curY + Math.round((rowH - m.h) / 2);
+          m.cx = m.x + m.w / 2;
+          m.cy = m.y + m.h / 2;
+          curX += m.w + gapCross;
+        }
+        curY += rowH + gapAlong;
+      });
+      canvasW = Math.max(580, maxRowW + padX * 2);
+      canvasH = Math.max(240, curY - gapAlong + padY);
+    }
+
+    const sgPalette = ["#2b4e3c", "#483d82", "#246874", "#9c3a21", "#b9751d"];
+    const sgColorById = new Map<string, string>();
+    subgraphs.forEach((sg, idx) => sgColorById.set(sg.id, sgPalette[idx % sgPalette.length]));
+
+    const sgBoxes = subgraphs
+      .map((sg) => {
+        const ms = sg.nodeIds
+          .map((id) => nodeMetrics.get(id))
+          .filter((m): m is NonNullable<typeof m> => Boolean(m));
+        if (ms.length === 0) return null;
+        const minX = Math.min(...ms.map((m) => m.x)) - 16;
+        const minY = Math.min(...ms.map((m) => m.y)) - 30;
+        const maxX = Math.max(...ms.map((m) => m.x + m.w)) + 16;
+        const maxY = Math.max(...ms.map((m) => m.y + m.h)) + 14;
+        return {
+          sg,
+          x: Math.max(8, minX),
+          y: Math.max(8, minY),
+          w: Math.max(120, maxX - Math.max(8, minX)),
+          h: Math.max(70, maxY - Math.max(8, minY)),
+          color: sgColorById.get(sg.id) || "#2b4e3c",
+        };
+      })
+      .filter((b): b is NonNullable<typeof b> => Boolean(b));
+
+    return (
+      <svg
+        className="re-mermaid-svg"
+        viewBox={`0 0 ${canvasW} ${canvasH}`}
+        style={{ width: "100%", maxWidth: Math.max(canvasW, 760), height: "auto" }}
+        role="img"
+        aria-label={caption || "第一性原理最小架构图"}
+      >
+        <defs>
+          <marker id="re-mmd-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+            <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#3a4c42" />
+          </marker>
+          <marker id="re-mmd-arrow-thick" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#483d82" />
+          </marker>
+        </defs>
+
+        {/* Subgraph Containers */}
+        {sgBoxes.map((b) => (
+          <g key={`sg-${b.sg.id}`}>
+            <rect
+              x={b.x}
+              y={b.y}
+              width={b.w}
+              height={b.h}
+              rx={5}
+              fill={b.color}
+              fillOpacity={0.05}
+              stroke={b.color}
+              strokeOpacity={0.36}
+              strokeWidth={1.25}
+              strokeDasharray="5 3"
+            />
+            <text x={b.x + 10} y={b.y + 17} fill={b.color} fontSize="11" fontWeight="700">
+              {truncateVisual(b.sg.title, 34)}
+            </text>
+          </g>
+        ))}
+
+        {/* Edges */}
+        {edges.map((e, idx) => {
+          const from = nodeMetrics.get(e.from);
+          const to = nodeMetrics.get(e.to);
+          if (!from || !to) return null;
+
+          let sx = from.cx;
+          let sy = from.cy;
+          let tx = to.cx;
+          let ty = to.cy;
+          let d = "";
+          let lx = (sx + tx) / 2;
+          let ly = (sy + ty) / 2;
+
+          if (direction === "LR") {
+            const forward = to.cx >= from.cx;
+            sx = forward ? from.x + from.w : from.x;
+            sy = from.cy;
+            tx = forward ? to.x - 3 : to.x + to.w + 3;
+            ty = to.cy;
+            const dx = Math.max(28, Math.abs(tx - sx) * 0.48);
+            const c1x = forward ? sx + dx : sx - dx;
+            const c2x = forward ? tx - dx : tx + dx;
+            const bendY = !forward ? (from.cy === to.cy ? -34 : 0) : 0;
+            d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${c1x.toFixed(1)} ${(sy + bendY).toFixed(1)}, ${c2x.toFixed(1)} ${(ty + bendY).toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+            lx = (sx + tx) / 2;
+            ly = (sy + ty) / 2 + bendY * 0.72;
+          } else {
+            const forward = to.cy >= from.cy;
+            sx = from.cx;
+            sy = forward ? from.y + from.h : from.y;
+            tx = to.cx;
+            ty = forward ? to.y - 3 : to.y + to.h + 3;
+            const dy = Math.max(24, Math.abs(ty - sy) * 0.48);
+            const c1y = forward ? sy + dy : sy - dy;
+            const c2y = forward ? ty - dy : ty + dy;
+            const bendX = !forward ? 44 : 0;
+            d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${(sx + bendX).toFixed(1)} ${c1y.toFixed(1)}, ${(tx + bendX).toFixed(1)} ${c2y.toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+            lx = (sx + tx) / 2 + bendX * 0.72;
+            ly = (sy + ty) / 2;
+          }
+
+          const stroke = e.style === "thick" ? "#483d82" : "#4b5d53";
+          const sw = e.style === "thick" ? 2.2 : 1.5;
+          const labelShort = e.label ? truncateVisual(e.label, 20) : "";
+          const labelW = labelShort ? Math.max(40, labelShort.length * 6.8 + 14) : 0;
+
+          return (
+            <g key={`edge-${idx}`}>
+              <path
+                d={d}
+                fill="none"
+                stroke={stroke}
+                strokeWidth={sw}
+                strokeDasharray={e.style === "dashed" ? "5 3" : undefined}
+                markerEnd={e.style === "thick" ? "url(#re-mmd-arrow-thick)" : "url(#re-mmd-arrow)"}
+              />
+              {labelShort && (
+                <g transform={`translate(${lx.toFixed(1)}, ${ly.toFixed(1)})`}>
+                  <rect
+                    x={-labelW / 2}
+                    y={-10}
+                    width={labelW}
+                    height={19}
+                    rx={9}
+                    fill="#fcfaf3"
+                    stroke="#cbc5b6"
+                    strokeWidth={0.9}
+                  />
+                  <text x={0} y={3.5} textAnchor="middle" fill="#3b443e" fontSize="10.5" fontWeight="550">
+                    {labelShort}
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Nodes */}
+        {nodes.map((node, idx) => {
+          const m = nodeMetrics.get(node.id)!;
+          const accent = (node.subgraphId && sgColorById.get(node.subgraphId)) || (idx === 0 ? "#2b4e3c" : "#3a506b");
+          const rx = node.shape === "stadium" || node.shape === "circle" ? Math.min(22, m.h / 2) : node.shape === "round" ? 9 : 4;
+          const textStartY = m.cy - ((m.lines.length - 1) * 16) / 2 + 4;
+          return (
+            <g key={`node-${node.id}`}>
+              {node.shape === "diamond" ? (
+                <polygon
+                  points={`${m.cx},${m.y - 3} ${m.x + m.w + 4},${m.cy} ${m.cx},${m.y + m.h + 3} ${m.x - 4},${m.cy}`}
+                  fill="#fffdf8"
+                  stroke={accent}
+                  strokeWidth={1.6}
+                />
+              ) : (
+                <>
+                  <rect
+                    x={m.x}
+                    y={m.y}
+                    width={m.w}
+                    height={m.h}
+                    rx={rx}
+                    fill="#fffdf8"
+                    stroke={accent}
+                    strokeWidth={1.55}
+                  />
+                  {node.shape === "cylinder" && (
+                    <ellipse
+                      cx={m.cx}
+                      cy={m.y + 6}
+                      rx={m.w / 2 - 2}
+                      ry={5}
+                      fill="#f1ede0"
+                      stroke={accent}
+                      strokeWidth={1.1}
+                    />
+                  )}
+                  <rect
+                    x={m.x}
+                    y={m.y}
+                    width={4}
+                    height={m.h}
+                    rx={2}
+                    fill={accent}
+                    opacity={0.85}
+                  />
+                </>
+              )}
+              <text x={m.cx} y={textStartY} textAnchor="middle" fill="#1d2620" fontSize="12" fontWeight="600">
+                {m.lines.map((ln, lineIdx) => (
+                  <tspan key={lineIdx} x={m.cx} dy={lineIdx === 0 ? 0 : 16}>
+                    {ln}
+                  </tspan>
+                ))}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    );
+  }, [parsed, caption]);
+
+  return (
+    <div className="re-mermaid-card" data-testid="arch-mermaid-diagram">
+      <div className="re-mermaid-head">
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <strong>架构原语拓扑图（Mermaid）</strong>
+          <span className="re-pill">
+            {parsed?.kind === "sequence"
+              ? `时序图 · ${parsed.participants.length} 角色`
+              : parsed?.kind === "flowchart"
+                ? `架构图 · ${parsed.nodes.length} 节点 / ${parsed.edges.length} 边`
+                : "源码视图"}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+          {renderedSvg && (
+            <div className="re-seg-mini" role="group" aria-label="架构图视图切换">
+              <button
+                type="button"
+                className={viewMode === "diagram" ? "re-active" : ""}
+                onClick={() => setViewMode("diagram")}
+              >
+                SVG 视图
+              </button>
+              <button
+                type="button"
+                className={viewMode === "source" ? "re-active" : ""}
+                onClick={() => setViewMode("source")}
+              >
+                Mermaid 源码
+              </button>
+            </div>
+          )}
+          <button type="button" className="re-mini" onClick={() => void handleCopy()}>
+            {copied ? "✓ 已复制" : "复制 Mermaid"}
+          </button>
+        </div>
+      </div>
+
+      {renderedSvg && viewMode === "diagram" ? (
+        <div className="re-mermaid-stage">{renderedSvg}</div>
+      ) : (
+        <pre className="re-code-block" style={{ margin: 0, borderRadius: 0, border: 0 }}>
+          <code>{code}</code>
+        </pre>
+      )}
+
+      {caption && <div className="re-mermaid-caption">{caption}</div>}
+    </div>
+  );
+}
+
+// ---- Zero-Clone Code Map Drawer Panel (Node Inspector) ----
+
+function ZeroCloneCodeMapPanel({
+  node,
+  onCodeMapLoaded,
+  onNotice,
+  onError,
+}: {
+  node: RepoEvolutionNode;
+  onCodeMapLoaded?: (codeMap: RepoCodeMap | null) => void;
+  onNotice: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [codeMap, setCodeMap] = useState<RepoCodeMap | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [expandedHotspots, setExpandedHotspots] = useState<Set<string>>(() => new Set());
+  const [showAllHotspots, setShowAllHotspots] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setCodeMap(null);
+    setShowAllHotspots(false);
+    request<GetCodeMapResponse>(`${API_BASE}/nodes/${encodeURIComponent(node.id)}/code-map`)
+      .then((res) => {
+        if (!active) return;
+        setCodeMap(res.codeMap);
+        onCodeMapLoaded?.(res.codeMap);
+        if (res.codeMap) {
+          setExpandedHotspots(new Set(res.codeMap.hotspots.slice(0, 2).map((h) => h.path)));
+        } else {
+          setExpandedHotspots(new Set());
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setCodeMap(null);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [node.id]);
+
+  const handleScan = async (force: boolean) => {
+    setScanning(true);
+    onError("");
+    try {
+      const res = await request<GenerateCodeMapResponse>(
+        `${API_BASE}/nodes/${encodeURIComponent(node.id)}/code-map`,
+        {
+          method: "POST",
+          body: JSON.stringify({ force }),
+        },
+      );
+      setCodeMap(res.codeMap);
+      onCodeMapLoaded?.(res.codeMap);
+      setExpandedHotspots(new Set(res.codeMap.hotspots.slice(0, 2).map((h) => h.path)));
+      onNotice(
+        res.notice ||
+          (res.cached
+            ? `Code Map 命中同 Commit 缓存（${res.codeMap.commitSha.slice(0, 7)}），0 MB 本地克隆。`
+            : `零克隆 Code Map 扫描完成：纯内存解析 ${res.codeMap.analyzedFileCount} 个核心源码文件，识别 ${res.codeMap.hotspots.length} 个热点文件。`),
+      );
+    } catch (err) {
+      onError(describeError(err, "零克隆 Code Map 扫描失败"));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const toggleHotspot = (filePath: string) => {
+    setExpandedHotspots((prev) => {
+      const next = new Set(prev);
+      if (next.has(filePath)) next.delete(filePath);
+      else next.add(filePath);
+      return next;
+    });
+  };
+
+  const visibleLayers = useMemo(
+    () => (codeMap?.layers ?? []).filter((l) => l.fileCount > 0),
+    [codeMap],
+  );
+  const totalLayerFiles = useMemo(
+    () => visibleLayers.reduce((sum, l) => sum + l.fileCount, 0) || 1,
+    [visibleLayers],
+  );
+  const visibleHotspots: RepoCodeMapHotspot[] = useMemo(() => {
+    if (!codeMap) return [];
+    return showAllHotspots ? codeMap.hotspots : codeMap.hotspots.slice(0, 6);
+  }, [codeMap, showAllHotspots]);
+
+  return (
+    <div className="re-section-box re-codemap-box" data-testid="node-codemap-section">
+      <h3>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span>零克隆 Code Map</span>
+          <span className="re-zero-clone-badge" data-testid="codemap-zero-clone-badge">
+            0 MB 本地克隆 · 纯内存解析
+          </span>
+        </span>
+        <button
+          type="button"
+          className={codeMap ? "re-mini" : "re-mini re-primary"}
+          data-testid="codemap-scan-btn"
+          disabled={scanning || loading}
+          onClick={() => void handleScan(Boolean(codeMap))}
+        >
+          {scanning ? "扫描解析中…" : codeMap ? "↻ 刷新扫描" : "⚡ 一键零克隆扫描"}
+        </button>
+      </h3>
+
+      {node.visibility === "private" && (
+        <div className="re-codemap-privacy-note">
+          🔒 私有仓仅在本地/纯内存执行静态 import/export 解析，绝不落盘 clone，绝不外发 LLM。
+        </div>
+      )}
+
+      {loading && !codeMap && (
+        <div className="re-codemap-empty">正在查询零克隆 Code Map 缓存…</div>
+      )}
+
+      {!loading && !codeMap && (
+        <div className="re-codemap-empty">
+          <p style={{ margin: "0 0 8px" }}>
+            通过 GitHub Trees API + GraphQL Batch Blobs 纯内存解析核心源码 import 依赖与导出符号（0 字节本地盘占用），快速锁定真正值得精读的 Hotspot 核心入口文件。
+          </p>
+          <button
+            type="button"
+            className="re-primary re-mini"
+            disabled={scanning}
+            onClick={() => void handleScan(false)}
+          >
+            {scanning ? "正在零克隆纯内存解析…" : "⚡ 立即生成零克隆 Code Map"}
+          </button>
+        </div>
+      )}
+
+      {codeMap && (
+        <>
+          {/* 缓存与拓扑统计条 */}
+          <div className="re-codemap-telemetry">
+            <span className="re-pill">
+              Commit <code>{codeMap.commitSha.slice(0, 8)}</code>
+            </span>
+            <span className="re-pill">文件 {codeMap.totalTreeFiles}（精析 {codeMap.analyzedFileCount}）</span>
+            <span className="re-pill">Import 边 {codeMap.edgeCount}</span>
+            <span className={`re-pill ${codeMap.cycleCount > 0 ? "suggested" : "active"}`}>
+              循环依赖 {codeMap.cycleCount}
+            </span>
+            <span className="re-pill">
+              {codeMap.source === "local_readonly_memory" ? "本机只读内存" : "GitHub 远程内存"}
+            </span>
+            <span className="re-pill">
+              {codeMap.cached ? "✓ 同 Commit 缓存" : `${codeMap.fetchDurationMs}ms 扫描`}
+            </span>
+          </div>
+
+          {/* 分层占比可视化条 */}
+          {visibleLayers.length > 0 && (
+            <div className="re-codemap-layers" data-testid="codemap-layer-bar">
+              <div className="re-codemap-subhead">
+                <span>架构分层占比</span>
+                <small className="re-mono">{codeMap.primaryLanguages.slice(0, 3).map((l) => `${l.language} (${l.count})`).join(" · ")}</small>
+              </div>
+              <div className="re-layer-bar" role="img" aria-label="代码分层占比条">
+                {visibleLayers.map((layer) => {
+                  const pct = Math.max(2, (layer.fileCount / totalLayerFiles) * 100);
+                  const color = REPO_CODE_LAYER_COLORS[layer.layer] ?? "#64748b";
+                  return (
+                    <div
+                      key={layer.layer}
+                      className="re-layer-seg"
+                      style={{ width: `${pct}%`, background: color }}
+                      title={`${REPO_CODE_LAYER_LABELS[layer.layer] ?? layer.label}: ${layer.fileCount} 文件 (${Math.round(layer.share * 100)}%)`}
+                    />
+                  );
+                })}
+              </div>
+              <div className="re-layer-legend">
+                {visibleLayers.map((layer) => (
+                  <span key={layer.layer} className="re-layer-chip">
+                    <span
+                      className="re-domain-dot"
+                      style={{ background: REPO_CODE_LAYER_COLORS[layer.layer] ?? "#64748b" }}
+                    />
+                    <span>{REPO_CODE_LAYER_LABELS[layer.layer] ?? layer.label}</span>
+                    <strong className="re-mono">{layer.fileCount}</strong>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Hotspot 核心热点文件卡片 */}
+          <div className="re-codemap-hotspots" data-testid="codemap-hotspots">
+            <div className="re-codemap-subhead">
+              <span>🔥 Hotspot 核心热点文件 ({codeMap.hotspots.length})</span>
+              {codeMap.hotspots.length > 6 && (
+                <button
+                  type="button"
+                  className="re-ghost re-mini"
+                  onClick={() => setShowAllHotspots((v) => !v)}
+                >
+                  {showAllHotspots ? "收起" : `展开全部 ${codeMap.hotspots.length}`}
+                </button>
+              )}
+            </div>
+
+            {visibleHotspots.length === 0 ? (
+              <div className="re-codemap-empty">暂未提取到显著入度热点文件。</div>
+            ) : (
+              <div className="re-hotspot-list">
+                {visibleHotspots.map((h) => {
+                  const expanded = expandedHotspots.has(h.path);
+                  const href = safeExternalUrl(h.url);
+                  const layerColor = REPO_CODE_LAYER_COLORS[h.layer] ?? "#64748b";
+                  return (
+                    <article key={h.path} className="re-hotspot-card" data-testid="codemap-hotspot-card">
+                      <div className="re-hotspot-banner">
+                        <span className="re-hotspot-rec-pill">
+                          {h.importedByCount > 0
+                            ? `被 ${h.importedByCount} 个文件引用 · 建议从此开始阅读`
+                            : "核心枢纽入口 · 建议从此开始阅读"}
+                        </span>
+                        <span
+                          className="re-pill"
+                          style={{
+                            borderColor: layerColor,
+                            color: layerColor,
+                            background: "#fffdf8",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {REPO_CODE_LAYER_LABELS[h.layer] ?? h.layer}
+                        </span>
+                      </div>
+
+                      <div className="re-hotspot-path-row">
+                        {href ? (
+                          <a className="re-hotspot-path" href={href} target="_blank" rel="noreferrer">
+                            {h.path} ↗
+                          </a>
+                        ) : (
+                          <code className="re-hotspot-path">{h.path}</code>
+                        )}
+                      </div>
+
+                      {h.startReadingReason && (
+                        <div className="re-hotspot-reason">{h.startReadingReason}</div>
+                      )}
+
+                      <div className="re-hotspot-meta">
+                        <span className="re-mono">
+                          {h.language} · {h.lineCount} 行 · 引用 {h.importsCount} · 入度 {h.importedByCount}
+                        </span>
+                        {h.exportedSymbols.length > 0 && (
+                          <button
+                            type="button"
+                            className="re-ghost re-mini"
+                            onClick={() => toggleHotspot(h.path)}
+                          >
+                            {expanded
+                              ? `收起符号 (${h.exportedSymbols.length}) ▴`
+                              : `导出符号 (${h.exportedSymbols.length}) ▾`}
+                          </button>
+                        )}
+                      </div>
+
+                      {expanded && h.exportedSymbols.length > 0 && (
+                        <ul className="re-symbol-list">
+                          {h.exportedSymbols.slice(0, 14).map((sym, idx) => (
+                            <li key={`${h.path}-${sym.name}-${idx}`} className="re-symbol-item">
+                              <span className="re-symbol-kind">{sym.kind}</span>
+                              <code className="re-symbol-name">
+                                {sym.name}
+                                {sym.line ? `:${sym.line}` : ""}
+                              </code>
+                              {sym.signature && (
+                                <span className="re-symbol-sig" title={sym.signature}>
+                                  {truncateVisual(sym.signature, 46)}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 循环依赖提示 */}
+          {codeMap.cycles.length > 0 ? (
+            <div className="re-cycle-alert" role="note">
+              <strong>⚠ 检测到 {codeMap.cycles.length} 组内部循环依赖</strong>
+              <ul>
+                {codeMap.cycles.slice(0, 5).map((c, idx) => (
+                  <li key={`cyc-${idx}`} className="re-mono">
+                    {c.paths.join(" → ")}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <div className="re-cycle-ok">✓ 静态 Import 图未检测到内部循环依赖</div>
+          )}
+
+          {/* 外部高频依赖 & 关键接口 */}
+          {(codeMap.topExternalDeps.length > 0 || codeMap.keyInterfaces.length > 0) && (
+            <details className="re-codemap-extra">
+              <summary>
+                外部依赖 ({codeMap.topExternalDeps.length}) · 关键接口签名 ({codeMap.keyInterfaces.length})
+              </summary>
+              {codeMap.topExternalDeps.length > 0 && (
+                <div className="re-badge-row" style={{ marginTop: 6 }}>
+                  {codeMap.topExternalDeps.slice(0, 12).map((dep) => (
+                    <span key={dep.name} className="re-pill re-mono">
+                      {dep.name} ×{dep.count}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {codeMap.keyInterfaces.length > 0 && (
+                <ul className="re-symbol-list" style={{ marginTop: 8 }}>
+                  {codeMap.keyInterfaces.slice(0, 8).map((ki, idx) => (
+                    <li key={`ki-${ki.path}-${ki.name}-${idx}`} className="re-symbol-item">
+                      <span className="re-symbol-kind">{ki.kind}</span>
+                      <code className="re-symbol-name">{ki.name}</code>
+                      <span className="re-symbol-sig" title={ki.signature}>
+                        {ki.path}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </details>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- Tab 4: First-Principles Architecture Primitives Studio ----
+
+function ArchitectureStudioTab({
+  radialGraph,
+  domains,
+  allOwnedForCheckboxes,
+  initialPrimitiveId,
+  onPrimitiveCountChange,
+  onOpenNodeCodeMap,
+  onLocateNode,
+  onNotice,
+  onError,
+}: {
+  radialGraph: RepoEvolutionRadialGraph | null;
+  domains: Array<{ id: string; name: string; color: string }>;
+  allOwnedForCheckboxes: Array<{
+    id: string;
+    name: string;
+    owner: string;
+    fullName: string;
+    priorityTier: string;
+    visibility: string;
+    isFork: boolean;
+  }>;
+  initialPrimitiveId?: string;
+  onPrimitiveCountChange?: (count: number) => void;
+  onOpenNodeCodeMap: (nodeId: string) => void;
+  onLocateNode: (nodeId: string) => void;
+  onNotice: (n: { text: string; href?: string; hrefLabel?: string }) => void;
+  onError: (msg: string) => void;
+}) {
+  const [primitives, setPrimitives] = useState<ArchitecturePrimitive[]>([]);
+  const [clusters, setClusters] = useState<ArchitectureClusterRecommendation[]>([]);
+  const [selectedId, setSelectedId] = useState<string>(initialPrimitiveId || "");
+  const [selectedPrimitive, setSelectedPrimitive] = useState<ArchitecturePrimitive | null>(null);
+  const [selectedRuns, setSelectedRuns] = useState<ArchitectureDistillationRun[]>([]);
+
+  const [listLoading, setListLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [filterStatus, setFilterStatus] = useState<ArchitecturePrimitiveStatus | "all">("all");
+
+  // Busy states
+  const [distillingClusterId, setDistillingClusterId] = useState<string>("");
+  const [busyOp, setBusyOp] = useState<string>("");
+  const [copiedContract, setCopiedContract] = useState(false);
+  const [copiedMd, setCopiedMd] = useState(false);
+
+  // Consolidation note drafts per itemId
+  const [consolidationNotes, setConsolidationNotes] = useState<Record<string, string>>({});
+
+  // Custom Cross-Repo Distillation modal state
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customTitle, setCustomTitle] = useState("");
+  const [customDomainId, setCustomDomainId] = useState("");
+  const [customProblem, setCustomProblem] = useState("");
+  const [customOwnedSearch, setCustomOwnedSearch] = useState("");
+  const [customOwnedIds, setCustomOwnedIds] = useState<Set<string>>(() => new Set());
+  const [customStarSearch, setCustomStarSearch] = useState("");
+  const [customStarResults, setCustomStarResults] = useState<RepoEvolutionNode[]>([]);
+  const [customStarIds, setCustomStarIds] = useState<Set<string>>(() => new Set());
+  const [customStarLabels, setCustomStarLabels] = useState<Record<string, string>>({});
+  const [customForceCodeMap, setCustomForceCodeMap] = useState(false);
+
+  // Bottom Paradigm Drift Comparator state
+  const [compareSearch, setCompareSearch] = useState("");
+  const [compareResults, setCompareResults] = useState<RepoEvolutionNode[]>([]);
+  const [compareSelectedNode, setCompareSelectedNode] = useState<{ id: string; fullName: string } | null>(null);
+  const [compareDropdownOpen, setCompareDropdownOpen] = useState(false);
+
+  const loadStudioOverview = useCallback(
+    async (selectOverrideId?: string) => {
+      setListLoading(true);
+      try {
+        const [primRes, clusterRes] = await Promise.all([
+          request<{ primitives: ArchitecturePrimitive[]; total: number }>(`${API_BASE}/architecture/primitives`),
+          request<{ clusters: ArchitectureClusterRecommendation[] }>(`${API_BASE}/architecture/clusters`),
+        ]);
+        setPrimitives(primRes.primitives);
+        setClusters(clusterRes.clusters);
+        onPrimitiveCountChange?.(primRes.primitives.length);
+        setSelectedId((prev) => {
+          const wanted = selectOverrideId || prev || initialPrimitiveId || "";
+          if (wanted && primRes.primitives.some((p) => p.id === wanted)) return wanted;
+          return primRes.primitives[0]?.id ?? "";
+        });
+      } catch (err) {
+        onError(describeError(err, "加载架构原语台数据失败"));
+      } finally {
+        setListLoading(false);
+      }
+    },
+    [initialPrimitiveId, onError, onPrimitiveCountChange],
+  );
+
+  useEffect(() => {
+    void loadStudioOverview();
+  }, [loadStudioOverview]);
+
+  useEffect(() => {
+    if (initialPrimitiveId) {
+      setSelectedId(initialPrimitiveId);
+    }
+  }, [initialPrimitiveId]);
+
+  const loadPrimitiveDetail = useCallback(
+    async (id: string) => {
+      if (!id) {
+        setSelectedPrimitive(null);
+        setSelectedRuns([]);
+        return;
+      }
+      setDetailLoading(true);
+      try {
+        const res = await request<{ primitive: ArchitecturePrimitive; runs: ArchitectureDistillationRun[] }>(
+          `${API_BASE}/architecture/primitives/${encodeURIComponent(id)}`,
+        );
+        setSelectedPrimitive(res.primitive);
+        setSelectedRuns(res.runs ?? []);
+        setPrimitives((prev) => prev.map((p) => (p.id === res.primitive.id ? res.primitive : p)));
+      } catch (err) {
+        onError(describeError(err, "读取架构原语详情失败"));
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [onError],
+  );
+
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedPrimitive(null);
+      setSelectedRuns([]);
+      return;
+    }
+    const cached = primitives.find((p) => p.id === selectedId);
+    if (cached) setSelectedPrimitive(cached);
+    void loadPrimitiveDetail(selectedId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  // Debounced Star repo search for Custom Distill modal
+  useEffect(() => {
+    if (!customOpen) return;
+    const q = customStarSearch.trim();
+    const controller = new AbortController();
+    const t = window.setTimeout(() => {
+      const qs = new URLSearchParams({ role: "starred", pageSize: "20", page: "1", sortBy: "stars" });
+      if (q) qs.set("q", q);
+      request<RepoEvolutionNodesPage>(`${API_BASE}/nodes?${qs.toString()}`, { signal: controller.signal })
+        .then((res) => {
+          if (!controller.signal.aborted) setCustomStarResults(res.items);
+        })
+        .catch(() => {});
+    }, 200);
+    return () => {
+      window.clearTimeout(t);
+      controller.abort();
+    };
+  }, [customOpen, customStarSearch]);
+
+  // Debounced Star repo search for Paradigm Drift Comparator
+  useEffect(() => {
+    const q = compareSearch.trim();
+    if (!q) {
+      setCompareResults([]);
+      return;
+    }
+    const controller = new AbortController();
+    const t = window.setTimeout(() => {
+      const qs = new URLSearchParams({ role: "starred", q, pageSize: "12", page: "1", sortBy: "stars" });
+      request<RepoEvolutionNodesPage>(`${API_BASE}/nodes?${qs.toString()}`, { signal: controller.signal })
+        .then((res) => {
+          if (!controller.signal.aborted) {
+            setCompareResults(res.items);
+            setCompareDropdownOpen(true);
+          }
+        })
+        .catch(() => {});
+    }, 220);
+    return () => {
+      window.clearTimeout(t);
+      controller.abort();
+    };
+  }, [compareSearch]);
+
+  const filteredPrimitives = useMemo(() => {
+    const q = filterQuery.trim().toLowerCase();
+    return primitives.filter((p) => {
+      if (filterStatus !== "all" && p.status !== filterStatus) return false;
+      if (!q) return true;
+      return (
+        p.title.toLowerCase().includes(q) ||
+        p.slug.toLowerCase().includes(q) ||
+        (p.domainName ?? "").toLowerCase().includes(q) ||
+        p.problemStatement.toLowerCase().includes(q)
+      );
+    });
+  }, [primitives, filterQuery, filterStatus]);
+
+  const quickCompareStars = useMemo(() => {
+    const existingIds = new Set(selectedPrimitive?.starNodeIds ?? []);
+    return (radialGraph?.starNodes ?? [])
+      .slice()
+      .sort((a, b) => Number(existingIds.has(a.id)) - Number(existingIds.has(b.id)) || b.starsCount - a.starsCount)
+      .slice(0, 14);
+  }, [radialGraph?.starNodes, selectedPrimitive?.starNodeIds]);
+
+  const filteredOwnedForCustom = useMemo(() => {
+    const q = customOwnedSearch.trim().toLowerCase();
+    return allOwnedForCheckboxes.filter(
+      (o) => !q || o.fullName.toLowerCase().includes(q) || o.name.toLowerCase().includes(q),
+    );
+  }, [allOwnedForCheckboxes, customOwnedSearch]);
+
+  // ---- Studio Actions ----
+
+  const handleDistillCluster = async (cluster: ArchitectureClusterRecommendation, forceCodeMap = false) => {
+    setDistillingClusterId(cluster.id);
+    onError("");
+    try {
+      const res = await request<DistillArchitecturePrimitiveResult>(`${API_BASE}/architecture/distill`, {
+        method: "POST",
+        body: JSON.stringify({
+          clusterId: cluster.id,
+          forceCodeMap,
+        }),
+      });
+      setSelectedPrimitive(res.primitive);
+      setSelectedId(res.primitive.id);
+      onNotice({
+        text:
+          res.notice ||
+          `已完成「${res.primitive.title}」零克隆第一性原理蒸馏（扫描 ${res.run.codeMapsScanned} 仓 · 缓存 ${res.run.codeMapsCached} 仓 · v${res.primitive.version}）。`,
+      });
+      await loadStudioOverview(res.primitive.id);
+    } catch (err) {
+      onError(describeError(err, `蒸馏「${cluster.title}」失败`));
+    } finally {
+      setDistillingClusterId("");
+    }
+  };
+
+  const handleSubmitCustomDistill = async (e: FormEvent) => {
+    e.preventDefault();
+    const title = customTitle.trim();
+    if (!title) return;
+    if (customOwnedIds.size === 0 && customStarIds.size === 0) {
+      onError("请至少勾选 1 个自有仓或 Star 仓进行跨库蒸馏");
+      return;
+    }
+    setBusyOp("custom-distill");
+    onError("");
+    try {
+      const res = await request<DistillArchitecturePrimitiveResult>(`${API_BASE}/architecture/distill`, {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          domainId: customDomainId || undefined,
+          problemStatement: customProblem.trim() || undefined,
+          ownedNodeIds: Array.from(customOwnedIds),
+          starNodeIds: Array.from(customStarIds),
+          forceCodeMap: customForceCodeMap,
+        }),
+      });
+      setCustomOpen(false);
+      setCustomTitle("");
+      setCustomProblem("");
+      setCustomOwnedIds(new Set());
+      setCustomStarIds(new Set());
+      setCustomStarLabels({});
+      setSelectedPrimitive(res.primitive);
+      setSelectedId(res.primitive.id);
+      onNotice({
+        text:
+          res.notice ||
+          `自定义跨库蒸馏完成：「${res.primitive.title}」（v${res.primitive.version}，0 MB 本地克隆）。`,
+      });
+      await loadStudioOverview(res.primitive.id);
+    } catch (err) {
+      onError(describeError(err, "自定义跨库蒸馏失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const handleStatusChange = async (status: ArchitecturePrimitiveStatus) => {
+    if (!selectedPrimitive || selectedPrimitive.status === status) return;
+    setBusyOp(`status:${status}`);
+    onError("");
+    try {
+      const res = await request<{ primitive: ArchitecturePrimitive }>(
+        `${API_BASE}/architecture/primitives/${encodeURIComponent(selectedPrimitive.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ status }),
+        },
+      );
+      setSelectedPrimitive(res.primitive);
+      setPrimitives((prev) => prev.map((p) => (p.id === res.primitive.id ? res.primitive : p)));
+      onNotice({ text: `架构原语状态已切换为「${ARCHITECTURE_PRIMITIVE_STATUS_LABELS[status]}」。` });
+    } catch (err) {
+      onError(describeError(err, "切换原语状态失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const handleRedistillCurrent = async () => {
+    if (!selectedPrimitive) return;
+    setBusyOp("redistill");
+    onError("");
+    try {
+      const res = await request<DistillArchitecturePrimitiveResult>(`${API_BASE}/architecture/distill`, {
+        method: "POST",
+        body: JSON.stringify({
+          primitiveId: selectedPrimitive.id,
+          title: selectedPrimitive.title,
+          domainId: selectedPrimitive.domainId,
+          problemStatement: selectedPrimitive.problemStatement,
+          ownedNodeIds: selectedPrimitive.ownedNodeIds,
+          starNodeIds: selectedPrimitive.starNodeIds,
+          forceCodeMap: true,
+        }),
+      });
+      setSelectedPrimitive(res.primitive);
+      onNotice({
+        text:
+          res.notice ||
+          `已重新零克隆蒸馏「${res.primitive.title}」至 v${res.primitive.version}（扫描 ${res.run.codeMapsScanned} 仓）。`,
+      });
+      await loadStudioOverview(res.primitive.id);
+      await loadPrimitiveDetail(res.primitive.id);
+    } catch (err) {
+      onError(describeError(err, "重新蒸馏失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const handleDeleteCurrent = async () => {
+    if (!selectedPrimitive) return;
+    if (!window.confirm(`确认删除架构原语「${selectedPrimitive.title}」？此操作不可撤销。`)) return;
+    setBusyOp("delete");
+    onError("");
+    try {
+      await request<{ ok: boolean }>(
+        `${API_BASE}/architecture/primitives/${encodeURIComponent(selectedPrimitive.id)}`,
+        { method: "DELETE" },
+      );
+      const remaining = primitives.filter((p) => p.id !== selectedPrimitive.id);
+      setPrimitives(remaining);
+      onPrimitiveCountChange?.(remaining.length);
+      const nextId = remaining[0]?.id ?? "";
+      setSelectedId(nextId);
+      setSelectedPrimitive(remaining[0] ?? null);
+      onNotice({ text: `已删除架构原语「${selectedPrimitive.title}」。` });
+      void loadStudioOverview(nextId);
+    } catch (err) {
+      onError(describeError(err, "删除架构原语失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const handleProjectCanvas = async () => {
+    if (!selectedPrimitive) return;
+    setBusyOp("project-canvas");
+    onError("");
+    try {
+      const res = await request<ProjectPrimitiveToCanvasResult>(
+        `${API_BASE}/architecture/primitives/${encodeURIComponent(selectedPrimitive.id)}/project-canvas`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            canvasId: selectedPrimitive.canvasProjection?.canvasId,
+            canvasName: `架构原语 · ${selectedPrimitive.title}`,
+          }),
+        },
+      );
+      setSelectedPrimitive(res.primitive);
+      setPrimitives((prev) => prev.map((p) => (p.id === res.primitive.id ? res.primitive : p)));
+      const canvasHref = res.href || `#canvas?id=${encodeURIComponent(res.canvasId)}`;
+      onNotice({
+        text: `已将 L1–L4 架构原语投射到无界知识画布「${res.canvasName}」（${res.nodeCount} 节点 / ${res.edgeCount} 连线）。`,
+        href: canvasHref,
+        hrefLabel: "直达知识画布 ↗",
+      });
+    } catch (err) {
+      onError(describeError(err, "投射到无界知识画布失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const handleExportAdr = async (mode: "download" | "copy") => {
+    if (!selectedPrimitive) return;
+    setBusyOp(`export-${mode}`);
+    onError("");
+    try {
+      const res = await request<ArchitecturePrimitiveExportJson>(
+        `${API_BASE}/architecture/primitives/${encodeURIComponent(selectedPrimitive.id)}/export.md?format=json`,
+      );
+      if (mode === "download") {
+        triggerMarkdownDownload(res.filename || `${selectedPrimitive.slug}-adr-v${selectedPrimitive.version}.md`, res.markdown);
+        onNotice({ text: `已下载 ADR 架构规范：${res.filename}` });
+      } else {
+        const ok = await copyTextSafe(res.markdown);
+        if (ok) {
+          setCopiedMd(true);
+          window.setTimeout(() => setCopiedMd(false), 2000);
+          onNotice({ text: `已复制「${selectedPrimitive.title}」完整 ADR Markdown 到剪贴板。` });
+        } else {
+          onError("浏览器拒绝访问剪贴板，请改用「导出 ADR .md」下载文件。");
+        }
+      }
+    } catch (err) {
+      onError(describeError(err, "导出 ADR Markdown 失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const handleSubmitConsolidation = async (item: ArchitectureConsolidationItem) => {
+    if (!selectedPrimitive) return;
+    setBusyOp(`consolidate:${item.id}`);
+    onError("");
+    try {
+      const note = consolidationNotes[item.id]?.trim();
+      const res = await request<SubmitConsolidationResult>(
+        `${API_BASE}/architecture/primitives/${encodeURIComponent(selectedPrimitive.id)}/submit-consolidation`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            itemId: item.id,
+            note: note || undefined,
+          }),
+        },
+      );
+      setSelectedPrimitive(res.primitive);
+      setPrimitives((prev) => prev.map((p) => (p.id === res.primitive.id ? res.primitive : p)));
+      setConsolidationNotes((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+      onNotice({
+        text: res.reusedPending
+          ? `底座收敛项「${item.title}」已有待批评估单在总裁信箱中（已自动复用）。`
+          : `已将底座收敛提案「${item.title}」提交总裁信箱，等待你拍板决策。`,
+        href: `#mailbox?decision=${encodeURIComponent(res.packet.id)}`,
+        hrefLabel: "前往总裁信箱审批 ↗",
+      });
+    } catch (err) {
+      onError(describeError(err, "提交底座收敛评估单失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const handleCompareRepo = async () => {
+    if (!selectedPrimitive || !compareSelectedNode) return;
+    setBusyOp("compare-repo");
+    onError("");
+    try {
+      const res = await request<CompareRepoToPrimitiveResult>(
+        `${API_BASE}/architecture/primitives/${encodeURIComponent(selectedPrimitive.id)}/compare-repo`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            nodeId: compareSelectedNode.id,
+          }),
+        },
+      );
+      setSelectedPrimitive(res.primitive);
+      setPrimitives((prev) => prev.map((p) => (p.id === res.primitive.id ? res.primitive : p)));
+      onNotice({
+        text:
+          res.notice ||
+          `范式对照完成：${res.note.repoFullName} → ${PARADIGM_VERDICT_LABELS[res.note.verdict]}（置信度 ${Math.round(res.note.confidence * 100)}%）。`,
+      });
+      void loadPrimitiveDetail(selectedPrimitive.id);
+    } catch (err) {
+      onError(describeError(err, "执行新库范式对照检测失败"));
+    } finally {
+      setBusyOp("");
+    }
+  };
+
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const ownedCodeMapRefs: ArchitectureCodeMapRef[] = useMemo(
+    () => (selectedPrimitive?.codeMapRefs ?? []).filter((r) => r.role === "owned" || r.role === "both"),
+    [selectedPrimitive],
+  );
+  const starCodeMapRefs: ArchitectureCodeMapRef[] = useMemo(
+    () => (selectedPrimitive?.codeMapRefs ?? []).filter((r) => r.role === "starred"),
+    [selectedPrimitive],
+  );
+
+  return (
+    <div className="re-arch-layout" data-testid="architecture-studio-tab">
+      {/* 左侧边栏（两段式：已沉淀架构原语库 + 高密度推荐蒸馏簇） */}
+      <aside className="re-arch-rail" aria-label="架构原语库与推荐蒸馏簇">
+        {/* 段 1：已沉淀架构原语库 */}
+        <section className="re-arch-rail-block">
+          <div className="re-rail-head">
+            <h3>已沉淀架构原语库 ({primitives.length})</h3>
+            <button
+              type="button"
+              className="re-mini re-primary"
+              data-testid="arch-custom-distill-btn"
+              onClick={() => setCustomOpen(true)}
+            >
+              + 自定义蒸馏
+            </button>
+          </div>
+
+          <div className="re-arch-filter-row">
+            <input
+              type="search"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              placeholder="筛选原语标题 / 领域…"
+              aria-label="筛选架构原语"
+            />
+            <select
+              aria-label="原语状态筛选"
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value as ArchitecturePrimitiveStatus | "all")}
+            >
+              <option value="all">全部状态</option>
+              <option value="draft">草案</option>
+              <option value="validated">已验证</option>
+              <option value="canonical">规范 Canonical</option>
+            </select>
+          </div>
+
+          {listLoading && primitives.length === 0 ? (
+            <p style={{ margin: "6px 0", fontSize: 12, color: "#656b64" }}>正在加载架构原语库…</p>
+          ) : filteredPrimitives.length === 0 ? (
+            <div className="re-arch-rail-empty">
+              {primitives.length === 0
+                ? "尚未沉淀架构原语。可从下方「高密度推荐蒸馏簇」一键零克隆蒸馏首份蓝图。"
+                : "当前筛选条件下无匹配原语。"}
+            </div>
+          ) : (
+            <ul className="re-arch-prim-list">
+              {filteredPrimitives.map((p) => {
+                const isSelected = selectedPrimitive?.id === p.id || selectedId === p.id;
+                return (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      className="re-arch-prim-item"
+                      data-testid="arch-primitive-item"
+                      aria-current={isSelected ? "true" : undefined}
+                      onClick={() => setSelectedId(p.id)}
+                    >
+                      <div className="re-arch-prim-head">
+                        <span className="re-arch-prim-domain">
+                          <span
+                            className="re-domain-dot"
+                            style={{ background: p.domainColor || "#2b4e3c" }}
+                          />
+                          <span>{p.domainName || "跨领域原语"}</span>
+                        </span>
+                        <span className={`re-arch-status-pill ${p.status}`}>
+                          {ARCHITECTURE_PRIMITIVE_STATUS_LABELS[p.status]}
+                        </span>
+                      </div>
+                      <strong className="re-arch-prim-title">{p.title}</strong>
+                      <div className="re-arch-prim-meta">
+                        <span className="re-mono">
+                          {p.ownedNodeIds.length} 自有 × {p.starNodeIds.length} Star
+                        </span>
+                        <span className="re-mono">
+                          v{p.version}
+                          {p.privacyRestricted ? " · 🔒" : ""}
+                        </span>
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        {/* 段 2：高密度推荐蒸馏簇 */}
+        <section className="re-arch-rail-block">
+          <div className="re-rail-head">
+            <h3>高密度推荐蒸馏簇 ({clusters.length})</h3>
+            <button
+              type="button"
+              className="re-mini"
+              disabled={listLoading}
+              onClick={() => void loadStudioOverview()}
+            >
+              ↻ 刷新
+            </button>
+          </div>
+          <p className="re-arch-rail-hint">
+            自动从图谱 1 对 N Star 枢纽与多胞胎自有仓聚类发现，一键执行 0 MB 零克隆跨库解剖。
+          </p>
+
+          {clusters.length === 0 ? (
+            <div className="re-arch-rail-empty">
+              暂无推荐簇。可先在图谱建立更多 1 对 N 吸收边，或点击上方「+ 自定义蒸馏」。
+            </div>
+          ) : (
+            <div className="re-cluster-list">
+              {clusters.map((c) => {
+                const isDistilling = distillingClusterId === c.id;
+                const alreadyExists = Boolean(c.existingPrimitiveId);
+                return (
+                  <article key={c.id} className="re-cluster-card" data-testid="arch-cluster-card">
+                    <div className="re-cluster-head">
+                      <span className="re-arch-prim-domain">
+                        <span
+                          className="re-domain-dot"
+                          style={{ background: c.domainColor || "#483d82" }}
+                        />
+                        <strong>{c.title}</strong>
+                      </span>
+                      <span className="re-pill re-mono">密度 {Math.round(c.densityScore * 100)}</span>
+                    </div>
+                    <p className="re-cluster-rationale">{c.rationale}</p>
+                    <div className="re-cluster-stats re-mono">
+                      <span>{c.ownedNodes.length} 自有仓</span>
+                      <span>·</span>
+                      <span>{c.starNodes.length} Star 枢纽</span>
+                      <span>·</span>
+                      <span>{c.linkCount} 吸收边</span>
+                    </div>
+                    <div className="re-badge-row">
+                      {c.ownedNodes.slice(0, 3).map((n) => (
+                        <span key={n.id} className="re-pill active">
+                          自有: {n.name}
+                        </span>
+                      ))}
+                      {c.starNodes.slice(0, 3).map((n) => (
+                        <span key={n.id} className="re-pill">
+                          ★ {n.name}
+                        </span>
+                      ))}
+                    </div>
+                    {isDistilling && (
+                      <div className="re-distill-progress" role="status">
+                        <span className="re-distill-spinner" />
+                        <span>零克隆拉取源码树 + 提炼 L0–L4 第一性原理原语…</span>
+                      </div>
+                    )}
+                    <div className="re-cluster-actions">
+                      {alreadyExists ? (
+                        <>
+                          <button
+                            type="button"
+                            className="re-mini re-primary"
+                            onClick={() => setSelectedId(c.existingPrimitiveId!)}
+                          >
+                            查看已沉淀蓝图
+                          </button>
+                          <button
+                            type="button"
+                            className="re-mini"
+                            disabled={Boolean(distillingClusterId || busyOp)}
+                            onClick={() => void handleDistillCluster(c, true)}
+                          >
+                            {isDistilling ? "重蒸馏中…" : "重新蒸馏"}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="re-mini re-indigo"
+                          data-testid="arch-distill-cluster-btn"
+                          disabled={Boolean(distillingClusterId || busyOp)}
+                          onClick={() => void handleDistillCluster(c, false)}
+                        >
+                          {isDistilling ? "零克隆蒸馏中…" : "⚡ 一键零克隆蒸馏"}
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </aside>
+
+      {/* 右侧白皮书式架构蓝图主区 */}
+      <main className="re-arch-main" aria-label="架构原语白皮书主区">
+        {!selectedPrimitive ? (
+          <div className="re-arch-empty-canvas">
+            <div className="re-empty-card">
+              <h2>第一性原理架构原语台</h2>
+              <p>
+                将多胞胎自有仓与标杆 Star 仓进行 <strong>0 MB 零克隆源码级解剖</strong>，跨越框架表象，沉淀 L1 根本约束、L2 横向权衡矩阵、L3 最小不可再分抽象原语（契约代码 + 架构图 + 护栏）与 L4 自有资产底座收敛清单。
+              </p>
+              <div className="re-empty-actions">
+                <button
+                  type="button"
+                  className="re-primary"
+                  onClick={() => setCustomOpen(true)}
+                >
+                  + 自定义跨库蒸馏
+                </button>
+                {clusters[0] && (
+                  <button
+                    type="button"
+                    className="re-indigo"
+                    disabled={Boolean(distillingClusterId)}
+                    onClick={() => void handleDistillCluster(clusters[0], false)}
+                  >
+                    ⚡ 蒸馏首个推荐簇：{clusters[0].title}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="re-arch-paper" data-testid="arch-whitepaper">
+            {/* 顶栏操作条 */}
+            <header className="re-arch-toolbar">
+              <div className="re-arch-toolbar-left">
+                <div className="re-seg-mini" role="group" aria-label="架构原语状态切换" data-testid="arch-status-switcher">
+                  {(["draft", "validated", "canonical"] as ArchitecturePrimitiveStatus[]).map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      className={selectedPrimitive.status === st ? "re-active" : ""}
+                      disabled={Boolean(busyOp)}
+                      onClick={() => void handleStatusChange(st)}
+                    >
+                      {ARCHITECTURE_PRIMITIVE_STATUS_LABELS[st]}
+                    </button>
+                  ))}
+                </div>
+                <span className="re-pill re-mono">v{selectedPrimitive.version}</span>
+                <span className="re-pill">
+                  {selectedPrimitive.distillationSource === "llm" ? "LLM + Code Map 证据" : "确定性 Code Map 蒸馏"}
+                </span>
+                {selectedPrimitive.privacyRestricted && (
+                  <span className="re-pill private">🔒 私有仓零外发模式</span>
+                )}
+              </div>
+
+              <div className="re-arch-toolbar-right">
+                {selectedPrimitive.canvasProjection ? (
+                  <>
+                    <a
+                      className="re-link-btn re-canvas-link-btn"
+                      data-testid="arch-open-canvas-link"
+                      href={
+                        selectedPrimitive.canvasProjection.href ||
+                        `#canvas?id=${encodeURIComponent(selectedPrimitive.canvasProjection.canvasId)}`
+                      }
+                    >
+                      🎨 打开无界画布 ({selectedPrimitive.canvasProjection.nodeCount} 节点) ↗
+                    </a>
+                    <button
+                      type="button"
+                      className="re-mini"
+                      data-testid="arch-project-canvas-btn"
+                      disabled={Boolean(busyOp)}
+                      onClick={() => void handleProjectCanvas()}
+                    >
+                      {busyOp === "project-canvas" ? "同步中…" : "↻ 重投画布"}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="re-mini re-indigo"
+                    data-testid="arch-project-canvas-btn"
+                    disabled={Boolean(busyOp)}
+                    onClick={() => void handleProjectCanvas()}
+                  >
+                    {busyOp === "project-canvas" ? "投射画布中…" : "🎨 投射到无界知识画布"}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="re-mini"
+                  data-testid="arch-export-md-btn"
+                  disabled={Boolean(busyOp)}
+                  onClick={() => void handleExportAdr("download")}
+                >
+                  {busyOp === "export-download" ? "导出中…" : "⬇ 导出 ADR .md"}
+                </button>
+                <button
+                  type="button"
+                  className="re-mini"
+                  disabled={Boolean(busyOp)}
+                  onClick={() => void handleExportAdr("copy")}
+                >
+                  {copiedMd ? "✓ 已复制 MD" : "复制 ADR"}
+                </button>
+                <button
+                  type="button"
+                  className="re-mini"
+                  disabled={Boolean(busyOp)}
+                  onClick={() => void handleRedistillCurrent()}
+                >
+                  {busyOp === "redistill" ? "重蒸馏中…" : "↻ 重新蒸馏"}
+                </button>
+                <button
+                  type="button"
+                  className="re-mini re-danger"
+                  disabled={Boolean(busyOp)}
+                  onClick={() => void handleDeleteCurrent()}
+                >
+                  删除
+                </button>
+              </div>
+            </header>
+
+            <div className="re-arch-scroll">
+              <article className="re-arch-doc">
+                {detailLoading && (
+                  <div style={{ fontSize: 12, color: "#5e645d" }}>正在同步最新蓝图与蒸馏日志…</div>
+                )}
+
+                {/* 白皮书封面头 */}
+                <div className="re-arch-hero">
+                  <div className="re-badge-row">
+                    {selectedPrimitive.domainName && (
+                      <span className="re-pill" style={{ borderColor: selectedPrimitive.domainColor || "#2b4e3c" }}>
+                        <span
+                          className="re-domain-dot"
+                          style={{ background: selectedPrimitive.domainColor || "#2b4e3c" }}
+                        />
+                        {selectedPrimitive.domainName}
+                      </span>
+                    )}
+                    <span className="re-zero-clone-badge">0 MB 本地克隆 · 源码证据驱动</span>
+                    <span className="re-pill re-mono">{selectedPrimitive.slug}</span>
+                    <span className="re-pill">更新于 {formatTimeFull(selectedPrimitive.updatedAt)}</span>
+                  </div>
+
+                  <h1>{selectedPrimitive.title}</h1>
+                  <p className="re-arch-problem">{selectedPrimitive.problemStatement}</p>
+
+                  {/* 章节锚点导航 */}
+                  <nav className="re-arch-toc" aria-label="架构原语章节导航">
+                    <button type="button" className="re-mini" onClick={() => scrollToSection("arch-sec-l0")}>
+                      L0 证据仓 ({selectedPrimitive.codeMapRefs.length})
+                    </button>
+                    <button type="button" className="re-mini" onClick={() => scrollToSection("arch-sec-l1")}>
+                      L1 根本约束 ({selectedPrimitive.firstPrinciples.length})
+                    </button>
+                    <button type="button" className="re-mini" onClick={() => scrollToSection("arch-sec-l2")}>
+                      L2 Trade-off 矩阵 ({selectedPrimitive.tradeoffMatrix.approaches.length})
+                    </button>
+                    <button type="button" className="re-mini" onClick={() => scrollToSection("arch-sec-l3")}>
+                      L3 最小抽象原语
+                    </button>
+                    <button type="button" className="re-mini" onClick={() => scrollToSection("arch-sec-l4")}>
+                      L4 底座收敛 ({selectedPrimitive.consolidationPlan.length})
+                    </button>
+                    <button type="button" className="re-mini" onClick={() => scrollToSection("arch-sec-paradigm")}>
+                      范式对照检测 ({selectedPrimitive.paradigmNotes.length})
+                    </button>
+                  </nav>
+                </div>
+
+                {/* ============ L0：参与解剖仓库与 Code Map 证据条 ============ */}
+                <section id="arch-sec-l0" className="re-arch-section" data-testid="arch-section-l0">
+                  <div className="re-arch-sec-head">
+                    <span className="re-arch-layer-tag">L0</span>
+                    <div>
+                      <h2>参与解剖仓库与零克隆 Code Map 证据</h2>
+                      <p>点击任意仓库芯片可直接打开其零克隆 Code Map 抽屉，或点击「光环」跳回同心图谱定位。</p>
+                    </div>
+                  </div>
+
+                  <div className="re-l0-groups">
+                    <div className="re-l0-group">
+                      <h3>我的自有资产仓 ({ownedCodeMapRefs.length})</h3>
+                      <div className="re-l0-chip-grid">
+                        {ownedCodeMapRefs.map((ref) => (
+                          <div key={ref.nodeId} className="re-l0-chip owned" data-testid="arch-l0-repo-chip">
+                            <div className="re-l0-chip-top">
+                              <button
+                                type="button"
+                                className="re-l0-name-btn"
+                                title="打开该仓的零克隆 Code Map 详情"
+                                onClick={() => onOpenNodeCodeMap(ref.nodeId)}
+                              >
+                                {ref.visibility === "private" ? "🔒 " : ""}
+                                <strong>{ref.repoFullName}</strong>
+                              </button>
+                              <div style={{ display: "flex", gap: 4 }}>
+                                <button
+                                  type="button"
+                                  className="re-mini"
+                                  title="打开零克隆 Code Map"
+                                  onClick={() => onOpenNodeCodeMap(ref.nodeId)}
+                                >
+                                  Code Map
+                                </button>
+                                <button
+                                  type="button"
+                                  className="re-mini"
+                                  title="在同心光环图谱中定位"
+                                  onClick={() => onLocateNode(ref.nodeId)}
+                                >
+                                  ⌖ 光环
+                                </button>
+                              </div>
+                            </div>
+                            <div className="re-l0-meta re-mono">
+                              <span>{ref.primaryLanguage || "多语言"}</span>
+                              <span>·</span>
+                              <span>Commit {ref.commitSha.slice(0, 7)}</span>
+                              <span>·</span>
+                              <span>解析 {ref.analyzedFileCount} 文件</span>
+                            </div>
+                            {ref.topHotspots.length > 0 && (
+                              <div className="re-l0-hotspots">
+                                {ref.topHotspots.slice(0, 3).map((h) => {
+                                  const href = safeExternalUrl(h.url);
+                                  return (
+                                    <div key={h.path} className="re-l0-hotspot-line">
+                                      {href ? (
+                                        <a href={href} target="_blank" rel="noreferrer" className="re-mono">
+                                          {h.path} ↗
+                                        </a>
+                                      ) : (
+                                        <code className="re-mono">{h.path}</code>
+                                      )}
+                                      <small>入度 {h.importedByCount}</small>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {ownedCodeMapRefs.length === 0 && (
+                          <span className="re-arch-muted">暂无自有仓 Code Map 证据记录。</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="re-l0-group">
+                      <h3>标杆 Star 仓 ({starCodeMapRefs.length})</h3>
+                      <div className="re-l0-chip-grid">
+                        {starCodeMapRefs.map((ref) => (
+                          <div key={ref.nodeId} className="re-l0-chip starred" data-testid="arch-l0-repo-chip">
+                            <div className="re-l0-chip-top">
+                              <button
+                                type="button"
+                                className="re-l0-name-btn"
+                                title="打开该仓的零克隆 Code Map 详情"
+                                onClick={() => onOpenNodeCodeMap(ref.nodeId)}
+                              >
+                                ★ <strong>{ref.repoFullName}</strong>
+                              </button>
+                              <div style={{ display: "flex", gap: 4 }}>
+                                <button
+                                  type="button"
+                                  className="re-mini"
+                                  title="打开零克隆 Code Map"
+                                  onClick={() => onOpenNodeCodeMap(ref.nodeId)}
+                                >
+                                  Code Map
+                                </button>
+                                <button
+                                  type="button"
+                                  className="re-mini"
+                                  title="在同心光环图谱中定位"
+                                  onClick={() => onLocateNode(ref.nodeId)}
+                                >
+                                  ⌖ 光环
+                                </button>
+                              </div>
+                            </div>
+                            <div className="re-l0-meta re-mono">
+                              <span>★ {formatStars(ref.starsCount)}</span>
+                              <span>·</span>
+                              <span>{ref.primaryLanguage || "多语言"}</span>
+                              <span>·</span>
+                              <span>{ref.commitSha.slice(0, 7)}</span>
+                              <span>·</span>
+                              <span>{ref.analyzedFileCount} 文件</span>
+                            </div>
+                            {ref.topHotspots.length > 0 && (
+                              <div className="re-l0-hotspots">
+                                {ref.topHotspots.slice(0, 3).map((h) => {
+                                  const href = safeExternalUrl(h.url);
+                                  return (
+                                    <div key={h.path} className="re-l0-hotspot-line">
+                                      {href ? (
+                                        <a href={href} target="_blank" rel="noreferrer" className="re-mono">
+                                          {h.path} ↗
+                                        </a>
+                                      ) : (
+                                        <code className="re-mono">{h.path}</code>
+                                      )}
+                                      <small>入度 {h.importedByCount}</small>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {starCodeMapRefs.length === 0 && (
+                          <span className="re-arch-muted">暂无 Star 仓 Code Map 证据记录。</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* ============ L1：根本约束（First-Principles Constraints） ============ */}
+                <section id="arch-sec-l1" className="re-arch-section" data-testid="arch-section-l1">
+                  <div className="re-arch-sec-head">
+                    <span className="re-arch-layer-tag">L1</span>
+                    <div>
+                      <h2>根本约束（First-Principles Constraints）</h2>
+                      <p>剥离语言与框架语法糖之后，由物理延迟、工程复杂性、安全隔离与成本边界决定的不可绕过约束。</p>
+                    </div>
+                  </div>
+
+                  <div className="re-principles-grid">
+                    {selectedPrimitive.firstPrinciples.map((fp, idx) => (
+                      <article key={fp.id || `fp-${idx}`} className="re-principle-card" data-category={fp.category}>
+                        <div className="re-principle-head">
+                          <span className={`re-cat-pill ${fp.category}`}>
+                            {ARCHITECTURE_CONSTRAINT_CATEGORY_LABELS[fp.category] ?? fp.category}
+                          </span>
+                          <span className="re-mono" style={{ fontSize: 11, color: "#686e67" }}>
+                            FP-{String(idx + 1).padStart(2, "0")}
+                          </span>
+                        </div>
+                        <h3>{fp.title}</h3>
+                        <p className="re-principle-constraint">{fp.constraint}</p>
+                        <div className="re-principle-kv-grid">
+                          <div className="re-principle-kv">
+                            <strong>为何不可绕过</strong>
+                            <span>{fp.whyIrreducible}</span>
+                          </div>
+                          <div className="re-principle-kv warn">
+                            <strong>违背后的失效模式</strong>
+                            <span>{fp.failureWhenViolated}</span>
+                          </div>
+                        </div>
+                        {renderEvidenceChips(fp.evidence, `fp-${fp.id || idx}`)}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                {/* ============ L2：横向方案对比与 Trade-off 矩阵 ============ */}
+                <section id="arch-sec-l2" className="re-arch-section" data-testid="arch-section-l2">
+                  <div className="re-arch-sec-head">
+                    <span className="re-arch-layer-tag">L2</span>
+                    <div>
+                      <h2>横向方案对比与 Trade-off 矩阵</h2>
+                      <p>揭示不同开源路线分别牺牲了什么、换取了什么，附真实源码路径证据。</p>
+                    </div>
+                  </div>
+
+                  {selectedPrimitive.tradeoffMatrix.summary && (
+                    <div className="re-rationale-callout" style={{ marginBottom: 12 }}>
+                      <strong>核心路线分岔洞察：</strong>
+                      {selectedPrimitive.tradeoffMatrix.summary}
+                    </div>
+                  )}
+
+                  <div className="re-tradeoff-scroll">
+                    <table className="re-tradeoff-table" data-testid="arch-tradeoff-table">
+                      <thead>
+                        <tr>
+                          <th style={{ minWidth: 185 }}>架构路线与代表仓</th>
+                          {selectedPrimitive.tradeoffMatrix.dimensions.map((dim) => (
+                            <th key={dim.key} style={{ minWidth: 126 }} title={dim.description}>
+                              <div>{dim.label}</div>
+                              {dim.description && <small className="re-th-sub">{dim.description}</small>}
+                            </th>
+                          ))}
+                          <th style={{ minWidth: 170 }}>换取收益 (Gains)</th>
+                          <th style={{ minWidth: 170 }}>付出牺牲 (Sacrifices)</th>
+                          <th style={{ minWidth: 155 }}>适用场景 & 源码证据</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedPrimitive.tradeoffMatrix.approaches.map((app) => (
+                          <tr key={app.id}>
+                            <td>
+                              <strong className="re-approach-name">{app.name}</strong>
+                              <div className="re-badge-row" style={{ marginTop: 5 }}>
+                                {app.representativeRepos.map((repo) => (
+                                  <span key={repo} className="re-pill re-mono">
+                                    {repo}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            {selectedPrimitive.tradeoffMatrix.dimensions.map((dim) => (
+                              <td key={dim.key}>{app.scores?.[dim.key] || "—"}</td>
+                            ))}
+                            <td className="re-cell-gain">{app.gains}</td>
+                            <td className="re-cell-sacrifice">{app.sacrifices}</td>
+                            <td>
+                              <div style={{ marginBottom: 6 }}>{app.bestFor}</div>
+                              {renderEvidenceChips(app.evidence, `app-${app.id}`)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                {/* ============ L3：最小不可再分抽象原语（Primitive Spec） ============ */}
+                <section id="arch-sec-l3" className="re-arch-section" data-testid="arch-section-l3">
+                  <div className="re-arch-sec-head">
+                    <span className="re-arch-layer-tag">L3</span>
+                    <div>
+                      <h2>最小不可再分抽象原语（Primitive Spec）</h2>
+                      <p>如果今天从零构建自有底座，剥离一切偶然复杂度后的最小核心实体、协议契约、拓扑图与安全护栏。</p>
+                    </div>
+                  </div>
+
+                  {/* 核心命题与不变量 */}
+                  <div className="re-thesis-banner">
+                    <div className="re-thesis-label">CORE THESIS · 最小原语核心命题</div>
+                    <p>{selectedPrimitive.primitiveSpec.coreThesis}</p>
+                    {selectedPrimitive.primitiveSpec.invariants.length > 0 && (
+                      <div className="re-invariants-row">
+                        {selectedPrimitive.primitiveSpec.invariants.map((inv, idx) => (
+                          <span key={`inv-${idx}`} className="re-invariant-chip">
+                            ❖ {inv}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 核心实体与职责卡片 */}
+                  <h3 className="re-subblock-title">核心实体与边界职责</h3>
+                  <div className="re-entities-grid">
+                    {selectedPrimitive.primitiveSpec.entities.map((ent, idx) => (
+                      <article key={`${ent.name}-${idx}`} className="re-entity-card">
+                        <div className="re-entity-head">
+                          <strong>{ent.name}</strong>
+                          <span className="re-mono">E{idx + 1}</span>
+                        </div>
+                        <p className="re-entity-resp">{ent.responsibility}</p>
+                        <div className="re-entity-boundary">
+                          <strong>职责边界：</strong>
+                          {ent.boundaries}
+                        </div>
+                        {ent.keyOperations.length > 0 && (
+                          <div className="re-badge-row" style={{ marginTop: 4 }}>
+                            {ent.keyOperations.map((op) => (
+                              <code key={op} className="re-op-chip">
+                                {op}
+                              </code>
+                            ))}
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+
+                  {/* 最小协议/接口契约代码块 */}
+                  <div className="re-contract-frame">
+                    <div className="re-contract-head">
+                      <span>
+                        <strong>最小协议 / 接口契约</strong>
+                        <span className="re-pill re-mono" style={{ marginLeft: 8 }}>
+                          {selectedPrimitive.primitiveSpec.contractLanguage.toUpperCase()}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        className="re-mini"
+                        onClick={() => {
+                          void copyTextSafe(selectedPrimitive.primitiveSpec.protocolContractCode).then((ok) => {
+                            if (ok) {
+                              setCopiedContract(true);
+                              window.setTimeout(() => setCopiedContract(false), 1800);
+                            }
+                          });
+                        }}
+                      >
+                        {copiedContract ? "✓ 已复制契约" : "复制契约代码"}
+                      </button>
+                    </div>
+                    <pre className="re-code-block" style={{ margin: 0, borderRadius: 0, border: 0 }}>
+                      <code>{selectedPrimitive.primitiveSpec.protocolContractCode}</code>
+                    </pre>
+                  </div>
+
+                  {/* Mermaid 架构图清晰可视化区域 */}
+                  {selectedPrimitive.primitiveSpec.mermaidDiagram && (
+                    <MermaidArchitectureDiagram
+                      code={selectedPrimitive.primitiveSpec.mermaidDiagram}
+                      caption={selectedPrimitive.primitiveSpec.diagramCaption}
+                    />
+                  )}
+
+                  {/* 失败模式与安全护栏清单 */}
+                  {selectedPrimitive.primitiveSpec.failureModesAndGuardrails.length > 0 && (
+                    <>
+                      <h3 className="re-subblock-title">失败模式与安全护栏清单</h3>
+                      <div className="re-guardrail-grid">
+                        {selectedPrimitive.primitiveSpec.failureModesAndGuardrails.map((g, idx) => (
+                          <article key={`gr-${idx}`} className="re-guardrail-card">
+                            <div className="re-guardrail-title">
+                              <span className="re-pill rejected">失效 #{idx + 1}</span>
+                              <strong>{g.failureMode}</strong>
+                            </div>
+                            <p className="re-module-kv">
+                              <strong>影响面：</strong>
+                              {g.impact}
+                            </p>
+                            <p className="re-module-kv">
+                              <strong>安全护栏：</strong>
+                              {g.guardrail}
+                            </p>
+                            <p className="re-module-kv">
+                              <strong>检测信号：</strong>
+                              <code className="re-mono">{g.detectionSignal}</code>
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </section>
+
+                {/* ============ L4：自有资产底座收敛与升级清单 ============ */}
+                <section id="arch-sec-l4" className="re-arch-section" data-testid="arch-section-l4">
+                  <div className="re-arch-sec-head">
+                    <span className="re-arch-layer-tag l4">L4</span>
+                    <div>
+                      <h2>自有资产底座收敛与能力升级清单</h2>
+                      <p>识别重复造轮子的多胞胎自有仓组合，明确应下沉的共享能力底座，每项可一键提交总裁信箱审批立项。</p>
+                    </div>
+                  </div>
+
+                  <div className="re-consolidation-list">
+                    {selectedPrimitive.consolidationPlan.map((item) => {
+                      const submitting = busyOp === `consolidate:${item.id}`;
+                      return (
+                        <article
+                          key={item.id}
+                          className="re-consolidation-card"
+                          data-testid="arch-consolidation-card"
+                        >
+                          <div className="re-consolidation-head">
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              <div className="re-badge-row">
+                                <span className="re-pill in_review">
+                                  {ARCHITECTURE_CONSOLIDATION_KIND_LABELS[item.kind] ?? item.kind}
+                                </span>
+                                <span className="re-pill">工作量 {item.effort}</span>
+                                <span
+                                  className={`re-pill ${
+                                    item.risk === "high"
+                                      ? "rejected"
+                                      : item.risk === "medium"
+                                        ? "suggested"
+                                        : "active"
+                                  }`}
+                                >
+                                  {item.risk === "high" ? "高风险" : item.risk === "medium" ? "中风险" : "低风险"}
+                                </span>
+                              </div>
+                              <h3>{item.title}</h3>
+                            </div>
+                            <div className="re-shared-cap-badge">
+                              <span>推荐下沉共享底座</span>
+                              <strong>📦 {item.sharedCapabilityName}</strong>
+                            </div>
+                          </div>
+
+                          {/* 多胞胎自有仓组合 + 参考 Star 仓 */}
+                          <div className="re-consolidation-repos">
+                            <div className="re-badge-row">
+                              <span style={{ fontSize: 11.5, fontWeight: 650, color: "#2b4e3c" }}>
+                                涉及自有仓组合：
+                              </span>
+                              {item.targetOwnedRepos.map((repo, rIdx) => {
+                                const nid = item.targetNodeIds[rIdx];
+                                return nid ? (
+                                  <button
+                                    key={`${item.id}-own-${repo}`}
+                                    type="button"
+                                    className="re-mini"
+                                    onClick={() => onOpenNodeCodeMap(nid)}
+                                  >
+                                    🧬 {repo}
+                                  </button>
+                                ) : (
+                                  <span key={`${item.id}-own-${repo}`} className="re-pill active">
+                                    🧬 {repo}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                            {item.referenceStarRepos.length > 0 && (
+                              <div className="re-badge-row">
+                                <span style={{ fontSize: 11.5, fontWeight: 650, color: "#5e645d" }}>
+                                  参考标杆 Star：
+                                </span>
+                                {item.referenceStarRepos.map((repo) => (
+                                  <span key={`${item.id}-star-${repo}`} className="re-pill">
+                                    ★ {repo}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="re-consolidation-body">
+                            <p className="re-module-kv">
+                              <strong>重复造轮子 / 现状差距：</strong>
+                              {item.currentDuplicationOrGap}
+                            </p>
+                            <p className="re-module-kv">
+                              <strong>收敛与升级落地动作：</strong>
+                              {item.proposedAction}
+                            </p>
+                            <p className="re-module-kv">
+                              <strong>预期收益：</strong>
+                              {item.expectedImpact}
+                            </p>
+                          </div>
+
+                          {renderEvidenceChips(item.evidence, `cons-${item.id}`)}
+
+                          <div className="re-consolidation-foot">
+                            {item.decisionPacketId ? (
+                              <div className="re-mailbox-card" style={{ width: "100%" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                  <span>
+                                    <strong>📮 已提交总裁信箱审批</strong> · 审批单 <code>{item.decisionPacketId}</code>
+                                    {item.decisionStatus ? ` (${item.decisionStatus})` : ""}
+                                  </span>
+                                  <a
+                                    className="re-link-btn"
+                                    href={`#mailbox?decision=${encodeURIComponent(item.decisionPacketId)}`}
+                                  >
+                                    在总裁信箱打开审批单 ↗
+                                  </a>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <input
+                                  type="text"
+                                  value={consolidationNotes[item.id] ?? ""}
+                                  onChange={(e) =>
+                                    setConsolidationNotes((prev) => ({ ...prev, [item.id]: e.target.value }))
+                                  }
+                                  placeholder="可选：提交总裁信箱时附带备注或优先级说明…"
+                                  style={{ flex: "1 1 220px" }}
+                                />
+                                <button
+                                  type="button"
+                                  className="re-indigo"
+                                  data-testid="arch-submit-consolidation-btn"
+                                  disabled={Boolean(busyOp)}
+                                  onClick={() => void handleSubmitConsolidation(item)}
+                                >
+                                  {submitting ? "提交审批中…" : "📮 提交总裁信箱评估"}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {/* ============ 底部：新库范式对照检测面板 ============ */}
+                <section
+                  id="arch-sec-paradigm"
+                  className="re-arch-section re-paradigm-section"
+                  data-testid="arch-paradigm-panel"
+                >
+                  <div className="re-arch-sec-head">
+                    <span className="re-arch-layer-tag paradigm">Δ</span>
+                    <div>
+                      <h2>新库范式对照检测（Paradigm Drift Detector）</h2>
+                      <p>
+                        选择或搜索任意一个 Star 仓，系统零克隆扫描其 Code Map 并对照本架构原语的 L1–L3 假设，判别是「范式印证」「工程微调」还是打破底层假设的「范式跃迁」。
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="re-paradigm-picker">
+                    <div className="re-paradigm-search-wrap">
+                      <input
+                        type="search"
+                        data-testid="arch-compare-search-input"
+                        value={compareSearch}
+                        onFocus={() => setCompareDropdownOpen(true)}
+                        onBlur={() => window.setTimeout(() => setCompareDropdownOpen(false), 180)}
+                        onChange={(e) => {
+                          setCompareSearch(e.target.value);
+                          setCompareDropdownOpen(true);
+                        }}
+                        placeholder="搜索任意 Star 仓名（支持 2,000+ Star 全库检索）或从下方快速选择…"
+                      />
+                      {compareDropdownOpen && (compareSearch.trim() ? compareResults : quickCompareStars).length > 0 && (
+                        <ul className="re-search-dropdown" style={{ left: 0, right: "auto", width: "100%" }}>
+                          {(compareSearch.trim() ? compareResults : quickCompareStars).map((repo) => (
+                            <li key={repo.id}>
+                              <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setCompareSelectedNode({ id: repo.id, fullName: repo.fullName });
+                                  setCompareSearch(repo.fullName);
+                                  setCompareDropdownOpen(false);
+                                }}
+                              >
+                                <span>
+                                  <strong>{repo.fullName}</strong>
+                                  <small style={{ display: "block", color: "#656b64" }}>
+                                    {repo.primaryLanguage || "—"} · ★ {formatStars(repo.starsCount)}
+                                    {repo.description ? ` · ${truncateVisual(repo.description, 44)}` : ""}
+                                  </small>
+                                </span>
+                                <span className="re-pill">选择</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="re-primary"
+                      data-testid="arch-compare-repo-btn"
+                      disabled={!compareSelectedNode || Boolean(busyOp)}
+                      onClick={() => void handleCompareRepo()}
+                    >
+                      {busyOp === "compare-repo" ? "零克隆对照检测中…" : "⚡ 对照原语检测范式漂移"}
+                    </button>
+                  </div>
+
+                  {quickCompareStars.length > 0 && (
+                    <div className="re-badge-row" style={{ marginTop: 8 }}>
+                      <span style={{ fontSize: 11.5, color: "#60665f" }}>快捷推荐待检仓：</span>
+                      {quickCompareStars.slice(0, 6).map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          className={`re-mini ${compareSelectedNode?.id === s.id ? "re-active" : ""}`}
+                          onClick={() => {
+                            setCompareSelectedNode({ id: s.id, fullName: s.fullName });
+                            setCompareSearch(s.fullName);
+                          }}
+                        >
+                          ★ {s.fullName}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 历史对照记录列表 */}
+                  <div className="re-paradigm-notes-list">
+                    {selectedPrimitive.paradigmNotes.length === 0 ? (
+                      <div className="re-codemap-empty" style={{ marginTop: 10 }}>
+                        尚未执行新库范式对照检测。选择上方任意 Star 仓即可检验它是否挑战了本原语的第一性原理。
+                      </div>
+                    ) : (
+                      selectedPrimitive.paradigmNotes.map((note) => (
+                        <article
+                          key={note.id}
+                          className={`re-paradigm-card ${note.verdict}`}
+                          data-testid="arch-paradigm-note-card"
+                        >
+                          <div className="re-paradigm-card-head">
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              <span className={`re-verdict-badge ${note.verdict}`}>
+                                {note.verdict === "paradigm_shift"
+                                  ? "⚡ "
+                                  : note.verdict === "engineering_tweak"
+                                    ? "⚙ "
+                                    : "✓ "}
+                                {PARADIGM_VERDICT_LABELS[note.verdict] || note.verdictLabel}
+                              </span>
+                              <button
+                                type="button"
+                                className="re-l0-name-btn"
+                                onClick={() => onOpenNodeCodeMap(note.repoNodeId)}
+                              >
+                                <strong>{note.repoFullName}</strong>
+                              </button>
+                              <span className="re-pill re-mono">Commit {note.commitSha.slice(0, 7)}</span>
+                              <span className="re-pill re-mono">置信度 {Math.round(note.confidence * 100)}%</span>
+                            </div>
+                            <span style={{ fontSize: 11.5, color: "#646b64" }}>
+                              {note.usedLlm ? "LLM 深度对照" : "Code Map 结构对照"} · {formatTimeFull(note.comparedAt)}
+                            </span>
+                          </div>
+
+                          <p className="re-paradigm-summary">{note.summary}</p>
+
+                          <div className="re-paradigm-cols">
+                            {note.challengedAssumptions.length > 0 && (
+                              <div className="re-paradigm-col warn">
+                                <strong>被挑战的核心假设</strong>
+                                <ul>
+                                  {note.challengedAssumptions.map((x, idx) => (
+                                    <li key={`ca-${idx}`}>{x}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {note.confirmedPrinciples.length > 0 && (
+                              <div className="re-paradigm-col ok">
+                                <strong>被印证的第一性原理</strong>
+                                <ul>
+                                  {note.confirmedPrinciples.map((x, idx) => (
+                                    <li key={`cp-${idx}`}>{x}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {note.deltaCapabilities.length > 0 && (
+                              <div className="re-paradigm-col delta">
+                                <strong>增量能力与工程差异</strong>
+                                <ul>
+                                  {note.deltaCapabilities.map((x, idx) => (
+                                    <li key={`dc-${idx}`}>{x}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+
+                          {renderEvidenceChips(note.evidence, `pn-${note.id}`)}
+                        </article>
+                      ))
+                    )}
+                  </div>
+                </section>
+
+                {/* 蒸馏运行历史日志（折叠） */}
+                {selectedRuns.length > 0 && (
+                  <details className="re-arch-runs-box">
+                    <summary>蒸馏与对照运行审计日志 ({selectedRuns.length})</summary>
+                    <ul className="re-arch-runs-list">
+                      {selectedRuns.map((run) => (
+                        <li key={run.id} className="re-mono">
+                          <span>{formatTimeFull(run.createdAt)}</span>
+                          <span>·</span>
+                          <span>
+                            {run.triggerKind === "compare_repo"
+                              ? "范式对照"
+                              : run.triggerKind === "redistill"
+                                ? "重新蒸馏"
+                                : "首次蒸馏"}
+                          </span>
+                          <span>·</span>
+                          <span>
+                            扫描 {run.codeMapsScanned} / 缓存 {run.codeMapsCached}
+                          </span>
+                          <span>·</span>
+                          <span>{run.usedLlm ? "LLM" : "确定性引擎"}</span>
+                          <span>·</span>
+                          <span>{(run.durationMs / 1000).toFixed(1)}s</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </article>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* 自定义跨库蒸馏弹窗 */}
+      {customOpen && (
+        <div className="re-modal-backdrop" onClick={() => setCustomOpen(false)}>
+          <form
+            className="re-modal re-modal-wide"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => void handleSubmitCustomDistill(e)}
+          >
+            <div className="re-modal-head">
+              <h2>自定义跨库第一性原理蒸馏</h2>
+              <button type="button" className="re-ghost re-mini" onClick={() => setCustomOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="re-modal-body">
+              <div className="re-form-grid">
+                <label className="re-field">
+                  <span>架构主题名称（必填）</span>
+                  <input
+                    type="text"
+                    required
+                    value={customTitle}
+                    onChange={(e) => setCustomTitle(e.target.value)}
+                    placeholder="如：受控浏览器感知与动作执行网关"
+                  />
+                </label>
+                <label className="re-field">
+                  <span>归属技术领域（选填）</span>
+                  <select value={customDomainId} onChange={(e) => setCustomDomainId(e.target.value)}>
+                    <option value="">自动推断 / 跨领域</option>
+                    {domains.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <label className="re-field">
+                <span>要解决的核心架构问题（选填）</span>
+                <textarea
+                  rows={2}
+                  value={customProblem}
+                  onChange={(e) => setCustomProblem(e.target.value)}
+                  placeholder="说明希望跨库抽象的核心痛点、约束或底座收敛目标…"
+                />
+              </label>
+
+              <div className="re-form-grid">
+                <div className="re-field">
+                  <span>勾选参与的自有仓 ({customOwnedIds.size})</span>
+                  <input
+                    type="search"
+                    value={customOwnedSearch}
+                    onChange={(e) => setCustomOwnedSearch(e.target.value)}
+                    placeholder="筛选我的开源库…"
+                  />
+                  <div className="re-checkbox-list" style={{ maxHeight: 190 }}>
+                    {filteredOwnedForCustom.map((o) => {
+                      const checked = customOwnedIds.has(o.id);
+                      return (
+                        <label key={o.id} className="re-checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setCustomOwnedIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(o.id)) next.delete(o.id);
+                                else next.add(o.id);
+                                return next;
+                              });
+                            }}
+                          />
+                          <span>
+                            {o.priorityTier === "spotlight" ? "★ " : ""}
+                            {o.visibility === "private" ? "🔒 " : ""}
+                            <strong>{o.name}</strong>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="re-field">
+                  <span>勾选标杆 Star 仓 ({customStarIds.size})</span>
+                  <input
+                    type="search"
+                    value={customStarSearch}
+                    onChange={(e) => setCustomStarSearch(e.target.value)}
+                    placeholder="搜索 2,000+ Star 仓名…"
+                  />
+                  {customStarIds.size > 0 && (
+                    <div className="re-badge-row">
+                      {Array.from(customStarIds).map((sid) => (
+                        <span key={sid} className="re-pill active">
+                          ★ {customStarLabels[sid] || sid}
+                          <button
+                            type="button"
+                            className="re-ghost re-mini"
+                            style={{ padding: "0 2px" }}
+                            onClick={() =>
+                              setCustomStarIds((prev) => {
+                                const next = new Set(prev);
+                                next.delete(sid);
+                                return next;
+                              })
+                            }
+                          >
+                            ✕
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="re-checkbox-list" style={{ maxHeight: 190 }}>
+                    {customStarResults.map((s) => {
+                      const checked = customStarIds.has(s.id);
+                      return (
+                        <label key={s.id} className="re-checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setCustomStarIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(s.id)) next.delete(s.id);
+                                else next.add(s.id);
+                                return next;
+                              });
+                              setCustomStarLabels((prev) => ({ ...prev, [s.id]: s.fullName }));
+                            }}
+                          />
+                          <span>
+                            <strong>{s.fullName}</strong>{" "}
+                            <small style={{ color: "#686e67" }}>★{formatStars(s.starsCount)}</small>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <label className="re-check-toggle" style={{ alignSelf: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={customForceCodeMap}
+                  onChange={(e) => setCustomForceCodeMap(e.target.checked)}
+                />
+                <span>强制重新执行零克隆 Code Map 扫描（忽略同 Commit 缓存）</span>
+              </label>
+            </div>
+            <div className="re-modal-foot">
+              <button type="button" onClick={() => setCustomOpen(false)}>
+                取消
+              </button>
+              <button
+                type="submit"
+                className="re-indigo"
+                disabled={busyOp === "custom-distill" || !customTitle.trim() || (customOwnedIds.size === 0 && customStarIds.size === 0)}
+              >
+                {busyOp === "custom-distill" ? "零克隆跨库蒸馏中…" : "⚡ 开始零克隆跨库蒸馏"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RepoEvolution({
   nav,
   hashQuery = "",
@@ -1477,7 +4465,17 @@ export function RepoEvolution({
   initialNodeId?: string;
   initialBucket?: string;
 }) {
-  const [activeTab, setActiveTab] = useState<MainTab>(initialTab ?? "graph");
+  const [activeTab, setActiveTab] = useState<MainTab>(() => {
+    const qTab = new URLSearchParams(hashQuery).get("tab");
+    if (qTab === "graph" || qTab === "domains" || qTab === "timeline" || qTab === "architecture") {
+      return qTab;
+    }
+    return initialTab ?? "graph";
+  });
+  const [deepLinkPrimitiveId, setDeepLinkPrimitiveId] = useState<string>(
+    () => new URLSearchParams(hashQuery).get("primitive") || "",
+  );
+  const [primitiveCount, setPrimitiveCount] = useState<number>(0);
 
   // Halo visual theme (default: cosmic star-halo, toggleable to washi paper astrolabe)
   const [haloTheme, setHaloTheme] = useState<HaloTheme>(() => {
@@ -1552,6 +4550,10 @@ export function RepoEvolution({
   const [showNodeReadme, setShowNodeReadme] = useState(false);
 
   // Link inspector edit state
+  const [linkCodeMaps, setLinkCodeMaps] = useState<{
+    source: RepoCodeMapBrief | null;
+    target: RepoCodeMapBrief | null;
+  } | null>(null);
   const [linkEditing, setLinkEditing] = useState(false);
   const [linkEditRelation, setLinkEditRelation] = useState<RepoRelationType>("direct_module");
   const [linkEditStatus, setLinkEditStatus] = useState<RepoAbsorptionStatus>("suggested");
@@ -1824,6 +4826,7 @@ export function RepoEvolution({
     setLinkEditing(false);
     setAddingModule(false);
     setMailboxNote("");
+    setLinkCodeMaps(null);
     if (typeof linkOrId !== "string") {
       setSelectedLink(linkOrId as RepoAbsorptionLink);
       setLinkEditRelation(linkOrId.relationType);
@@ -1841,6 +4844,37 @@ export function RepoEvolution({
       setLinkEditStrength(Math.round(fresh.strength * 100));
       setLinkEditRationale(fresh.rationale ?? "");
       setError("");
+
+      // Non-blocking background check of cached zero-clone Code Maps for both endpoints
+      void Promise.all([
+        request<GetCodeMapResponse>(`${API_BASE}/nodes/${encodeURIComponent(fresh.sourceNodeId)}/code-map`).catch(() => null),
+        request<GetCodeMapResponse>(`${API_BASE}/nodes/${encodeURIComponent(fresh.targetNodeId)}/code-map`).catch(() => null),
+      ]).then(([srcRes, tgtRes]) => {
+        const toBrief = (cm: RepoCodeMap | null | undefined): RepoCodeMapBrief | null =>
+          cm
+            ? {
+                id: cm.id,
+                nodeId: cm.nodeId,
+                repoFullName: cm.repoFullName,
+                commitSha: cm.commitSha,
+                source: cm.source,
+                zeroLocalClone: true,
+                diskBytesCloned: 0,
+                totalTreeFiles: cm.totalTreeFiles,
+                analyzedFileCount: cm.analyzedFileCount,
+                edgeCount: cm.edgeCount,
+                cycleCount: cm.cycleCount,
+                hotspotCount: cm.hotspots.length,
+                cached: cm.cached,
+                generatedAt: cm.generatedAt,
+              }
+            : null;
+        setLinkCodeMaps({
+          source: toBrief(srcRes?.codeMap),
+          target: toBrief(tgtRes?.codeMap),
+        });
+      });
+
       return fresh;
     } catch (err) {
       setError(describeError(err, "读取吸收边详情失败"));
@@ -2137,18 +5171,32 @@ export function RepoEvolution({
     void loadMacroGraph();
   }, [loadMacroGraph]);
 
+  // Preload Architecture Primitives count for topbar badge
+  useEffect(() => {
+    request<{ primitives: ArchitecturePrimitive[]; total: number }>(`${API_BASE}/architecture/primitives`)
+      .then((res) => setPrimitiveCount(res.total ?? res.primitives.length))
+      .catch(() => {});
+  }, []);
+
   // Hash deep-link sync
   useEffect(() => {
     const params = new URLSearchParams(hashQuery);
     const tabParam = params.get("tab") as MainTab | null;
+    const primitiveParam = params.get("primitive") || "";
     const linkParam = params.get("link") || initialLinkId || "";
     const repoParam = params.get("repo") || initialRepo || "";
     const domainParam = params.get("domain") || initialDomainId || "";
     const nodeParam = params.get("node") || initialNodeId || "";
     const bucketParam = params.get("bucket") || initialBucket || "";
 
-    if (tabParam && ["graph", "domains", "timeline"].includes(tabParam)) {
+    if (tabParam && ["graph", "domains", "timeline", "architecture"].includes(tabParam)) {
       setActiveTab(tabParam);
+    }
+
+    if (primitiveParam) {
+      setActiveTab("architecture");
+      setDeepLinkPrimitiveId(primitiveParam);
+      return;
     }
 
     if (linkParam) {
@@ -2691,18 +5739,24 @@ export function RepoEvolution({
         body: JSON.stringify({ force: opts.force ?? true, allowPrivateOverride: opts.allowPrivateOverride }),
       });
       setSelectedLink(res.link);
+      if (res.sourceCodeMap !== undefined || res.targetCodeMap !== undefined) {
+        setLinkCodeMaps({
+          source: res.sourceCodeMap ?? null,
+          target: res.targetCodeMap ?? null,
+        });
+      }
       setNotice({
         text:
           res.notice ||
           (res.privacyBlocked
-            ? "目标为私有仓且未开启 LLM 隐私授权，已使用本地确定性结构分析。"
+            ? "目标为私有仓且未开启 LLM 隐私授权，已使用 0 MB 零克隆 Code Map 本地确定性源码对照分析。"
             : res.usedLlm
-              ? `LLM 模块级深度分析完成：共提炼 ${res.link.moduleAnalysis.length} 个可吸收模块点。`
-              : `确定性结构化模块分析完成：共提炼 ${res.link.moduleAnalysis.length} 个可吸收模块点。`),
+              ? `零克隆源码级吸收研究完成（LLM + Code Map）：共提炼 ${res.link.moduleAnalysis.length} 个源码级可吸收模块方案。`
+              : `零克隆 Code Map 结构化源码对照完成：共提炼 ${res.link.moduleAnalysis.length} 个源码级可吸收模块方案。`),
       });
       void refreshGraphs();
     } catch (err) {
-      setError(describeError(err, "执行模块级深度分析失败"));
+      setError(describeError(err, "执行零克隆源码级吸收研究失败"));
     } finally {
       setBusyAction("");
     }
@@ -3449,7 +6503,7 @@ export function RepoEvolution({
           </button>
         </div>
 
-        {/* 3 主视图切换 Tab */}
+        {/* 4 主视图切换 Tab */}
         <div className="re-tabs-row">
           <div className="re-main-tabs" role="tablist" aria-label="开源进化工作台视图">
             <button
@@ -3475,6 +6529,19 @@ export function RepoEvolution({
               onClick={() => setActiveTab("timeline")}
             >
               进化时间线
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-testid="re-tab-architecture"
+              aria-selected={activeTab === "architecture"}
+              onClick={() => {
+                setActiveTab("architecture");
+                setInspectorMode("none");
+              }}
+            >
+              架构原语台
+              {primitiveCount > 0 && <span className="re-tab-count">{primitiveCount}</span>}
             </button>
           </div>
 
@@ -5505,6 +8572,21 @@ export function RepoEvolution({
           </div>
         )}
 
+        {/* ================= 视图 4：架构原语台（第一性原理沉淀） ================= */}
+        {activeTab === "architecture" && (
+          <ArchitectureStudioTab
+            radialGraph={radialGraph}
+            domains={radialDomains}
+            allOwnedForCheckboxes={allOwnedForCheckboxes}
+            initialPrimitiveId={deepLinkPrimitiveId}
+            onPrimitiveCountChange={setPrimitiveCount}
+            onOpenNodeCodeMap={(nodeId) => void openNodeInspector(nodeId)}
+            onLocateNode={(nodeId) => void locateNodeInRadial(nodeId)}
+            onNotice={(n) => setNotice(n)}
+            onError={(msg) => setError(msg)}
+          />
+        )}
+
         {/* ================= 右侧 Inspector 抽屉（领域态 / 节点态 / 连线态 / 散落星云态） ================= */}
         {inspectorMode !== "none" && (
           <aside className="re-inspector" aria-label="详情与深度分析抽屉" data-testid="repo-evolution-inspector">
@@ -5514,10 +8596,10 @@ export function RepoEvolution({
                   {inspectorMode === "domain"
                     ? "第一层领域 · 扇区检视器"
                     : inspectorMode === "node"
-                      ? "仓库节点检视器"
+                      ? "仓库节点检视器 · 零克隆 Code Map"
                       : inspectorMode === "floating"
                         ? "外围星云 · 游离散落池"
-                        : "吸收边 · 模块级深度分析"}
+                        : "吸收边 · 零克隆源码级吸收研究"}
                 </span>
                 <h2>
                   {inspectorMode === "domain"
@@ -6012,6 +9094,13 @@ export function RepoEvolution({
                       </label>
                     )}
 
+                    {/* 零克隆 Code Map（0 MB 本地克隆 · 纯内存解析） */}
+                    <ZeroCloneCodeMapPanel
+                      node={node}
+                      onNotice={(text) => setNotice({ text })}
+                      onError={(msg) => setError(msg)}
+                    />
+
                     {/* 领域归属修改（手工订正立刻反映到光环位置！） */}
                     <div className="re-section-box">
                       <h3>领域归属（修改后立即更新光环位置）</h3>
@@ -6248,23 +9337,59 @@ export function RepoEvolution({
                       </div>
                     )}
 
+                    {/* 双仓零克隆 Code Map 证据对照条 */}
+                    <div className="re-link-codemap-strip" data-testid="link-codemap-strip">
+                      <button
+                        type="button"
+                        className="re-link-cm-cell"
+                        title="点击查看源 Star 仓零克隆 Code Map"
+                        onClick={() => void openNodeInspector(selectedLink.sourceNodeId)}
+                      >
+                        <span style={{ fontWeight: 650, color: "#1d4230" }}>
+                          源仓 Code Map {linkCodeMaps?.source ? "✓" : "待扫描"}
+                        </span>
+                        <span className="re-mono" style={{ fontSize: 10.5, color: "#556159" }}>
+                          {linkCodeMaps?.source
+                            ? `${linkCodeMaps.source.commitSha.slice(0, 7)} · ${linkCodeMaps.source.hotspotCount} 热点 · ${linkCodeMaps.source.analyzedFileCount} 文件`
+                            : "点击研究将自动纯内存扫描 (0 MB)"}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="re-link-cm-cell"
+                        title="点击查看目标自有仓零克隆 Code Map"
+                        onClick={() => void openNodeInspector(selectedLink.targetNodeId)}
+                      >
+                        <span style={{ fontWeight: 650, color: "#362a6e" }}>
+                          目标仓 Code Map {linkCodeMaps?.target ? "✓" : "待扫描"}
+                        </span>
+                        <span className="re-mono" style={{ fontSize: 10.5, color: "#556159" }}>
+                          {linkCodeMaps?.target
+                            ? `${linkCodeMaps.target.commitSha.slice(0, 7)} · ${linkCodeMaps.target.hotspotCount} 热点 · ${linkCodeMaps.target.analyzedFileCount} 文件`
+                            : "点击研究将自动纯内存扫描 (0 MB)"}
+                        </span>
+                      </button>
+                    </div>
+
                     {/* 核心操作按钮 */}
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingTop: 4 }}>
                       <button
                         type="button"
                         className="re-primary"
+                        data-testid="link-analyze-btn"
                         disabled={Boolean(busyAction)}
                         onClick={() => void handleAnalyzeLink(selectedLink.id)}
                       >
-                        {busyAction === "analyze" ? "深度分析中…" : "模块级深度分析"}
+                        {busyAction === "analyze" ? "双仓零克隆解析中…" : "⚡ 零克隆源码级吸收研究"}
                       </button>
                       <button
                         type="button"
                         className="re-indigo"
+                        data-testid="link-submit-mailbox-btn"
                         disabled={Boolean(busyAction)}
                         onClick={() => void handleSubmitToMailbox(selectedLink.id)}
                       >
-                        {busyAction === "submit-mailbox" ? "提交中…" : "提交总裁信箱评估"}
+                        {busyAction === "submit-mailbox" ? "提交中…" : "📮 提交总裁信箱评估"}
                       </button>
                       <button type="button" className="re-mini" onClick={() => setLinkEditing((v) => !v)}>
                         {linkEditing ? "收起编辑" : "编辑边"}
@@ -6386,10 +9511,10 @@ export function RepoEvolution({
                     </form>
                   )}
 
-                  {/* 结构化模块级分析卡片列表 */}
+                  {/* 结构化源码级模块吸收分析卡片列表 */}
                   <div className="re-section-box">
                     <h3>
-                      <span>结构化模块级吸收分析 ({selectedLink.moduleAnalysis.length})</span>
+                      <span>源码级模块吸收方案 ({selectedLink.moduleAnalysis.length})</span>
                       <button
                         type="button"
                         className="re-mini"
@@ -6399,14 +9524,16 @@ export function RepoEvolution({
                       </button>
                     </h3>
                     {selectedLink.analysisSource && (
-                      <div style={{ fontSize: 11.5, color: "#616861" }}>
-                        分析来源：
-                        {selectedLink.analysisSource === "llm"
-                          ? "LLM 深度代码结构对比"
-                          : selectedLink.analysisSource === "deterministic"
-                            ? "本地确定性结构化分析"
-                            : "手动维护"}
-                        {selectedLink.analyzedAt ? ` · ${formatTimeFull(selectedLink.analyzedAt)}` : ""}
+                      <div style={{ fontSize: 11.5, color: "#616861", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                        <span>
+                          分析来源：
+                          {selectedLink.analysisSource === "llm"
+                            ? "LLM + 零克隆 Code Map 源码对比"
+                            : selectedLink.analysisSource === "deterministic"
+                              ? "零克隆 Code Map 确定性源码对照"
+                              : "手动维护"}
+                          {selectedLink.analyzedAt ? ` · ${formatTimeFull(selectedLink.analyzedAt)}` : ""}
+                        </span>
                       </div>
                     )}
 
@@ -6467,12 +9594,12 @@ export function RepoEvolution({
 
                     {selectedLink.moduleAnalysis.length === 0 ? (
                       <div style={{ padding: "12px 10px", background: "#faf7ee", border: "1px dashed #c7c1b2", fontSize: 12.5, color: "#5e645d" }}>
-                        尚未生成模块级深度分析。点击上方「模块级深度分析」将对比双方文件树与 README，产出具体的源模块 → 目标模块吸收建议与代码证据。
+                        尚未生成源码级吸收研究。点击上方「⚡ 零克隆源码级吸收研究」将纯内存解析双方 Code Map Hotspot 文件与导出符号（0 MB 本地克隆），产出源 Hotspot → 目标承载模块的精确改造步骤与验收标准。
                       </div>
                     ) : (
                       <div className="re-module-list">
                         {selectedLink.moduleAnalysis.map((mod) => (
-                          <article key={mod.id} className="re-module-card">
+                          <article key={mod.id} className="re-module-card" data-testid="link-module-card">
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
                               <div className="re-module-path">
                                 <span>{mod.sourceModulePath}</span>
@@ -6490,6 +9617,33 @@ export function RepoEvolution({
                             </div>
 
                             <div className="re-badge-row">
+                              {mod.groundedByCodeMap && (
+                                <span className="re-zero-clone-badge">✓ 零克隆源码证据</span>
+                              )}
+                              {mod.sourceLayer && (
+                                <span
+                                  className="re-pill"
+                                  style={{
+                                    borderColor: REPO_CODE_LAYER_COLORS[mod.sourceLayer],
+                                    color: REPO_CODE_LAYER_COLORS[mod.sourceLayer],
+                                    background: "#fffdf8",
+                                  }}
+                                >
+                                  源:{REPO_CODE_LAYER_LABELS[mod.sourceLayer]}
+                                </span>
+                              )}
+                              {mod.targetLayer && (
+                                <span
+                                  className="re-pill"
+                                  style={{
+                                    borderColor: REPO_CODE_LAYER_COLORS[mod.targetLayer],
+                                    color: REPO_CODE_LAYER_COLORS[mod.targetLayer],
+                                    background: "#fffdf8",
+                                  }}
+                                >
+                                  目标:{REPO_CODE_LAYER_LABELS[mod.targetLayer]}
+                                </span>
+                              )}
                               <span className="re-pill">工作量 {mod.effort}</span>
                               <span
                                 className={`re-pill ${
@@ -6500,8 +9654,26 @@ export function RepoEvolution({
                               </span>
                             </div>
 
+                            {/* 导出符号对照条 */}
+                            {((mod.sourceSymbols && mod.sourceSymbols.length > 0) ||
+                              (mod.targetSymbols && mod.targetSymbols.length > 0)) && (
+                              <div className="re-symbol-compare-bar" data-testid="link-symbol-compare">
+                                <strong style={{ color: "#4d554e" }}>符号对照：</strong>
+                                {(mod.sourceSymbols ?? []).slice(0, 4).map((sym) => (
+                                  <code key={`src-${sym}`}>{sym}</code>
+                                ))}
+                                <span className="re-module-arrow" style={{ margin: "0 2px" }}>→</span>
+                                {(mod.targetSymbols && mod.targetSymbols.length > 0
+                                  ? mod.targetSymbols.slice(0, 4)
+                                  : ["新增/扩展承载符号"]
+                                ).map((sym) => (
+                                  <code key={`tgt-${sym}`}>{sym}</code>
+                                ))}
+                              </div>
+                            )}
+
                             <p className="re-module-kv">
-                              <strong>可吸收机制：</strong>
+                              <strong>核心机制：</strong>
                               {mod.absorbableMechanism}
                             </p>
                             <p className="re-module-kv">
@@ -6512,6 +9684,28 @@ export function RepoEvolution({
                               <strong>适配方案：</strong>
                               {mod.adaptationPlan}
                             </p>
+
+                            {mod.steps && mod.steps.length > 0 && (
+                              <div className="re-module-kv">
+                                <strong>分步改造步骤：</strong>
+                                <ol className="re-steps-list">
+                                  {mod.steps.map((step, sIdx) => (
+                                    <li key={`${mod.id}-step-${sIdx}`}>{step}</li>
+                                  ))}
+                                </ol>
+                              </div>
+                            )}
+
+                            {mod.acceptanceCriteria && mod.acceptanceCriteria.length > 0 && (
+                              <div className="re-module-kv">
+                                <strong>验收标准：</strong>
+                                <ul className="re-criteria-list">
+                                  {mod.acceptanceCriteria.map((ac, aIdx) => (
+                                    <li key={`${mod.id}-ac-${aIdx}`}>{ac}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
 
                             {mod.evidenceLinks.length > 0 && (
                               <div className="re-evidence-links">
@@ -6531,6 +9725,19 @@ export function RepoEvolution({
                             )}
                           </article>
                         ))}
+                      </div>
+                    )}
+
+                    {selectedLink.moduleAnalysis.length > 0 && !selectedLink.decisionPacketId && (
+                      <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 4 }}>
+                        <button
+                          type="button"
+                          className="re-indigo"
+                          disabled={Boolean(busyAction)}
+                          onClick={() => void handleSubmitToMailbox(selectedLink.id)}
+                        >
+                          {busyAction === "submit-mailbox" ? "提交中…" : "📮 一键提交总裁信箱评估"}
+                        </button>
                       </div>
                     )}
                   </div>
