@@ -407,6 +407,65 @@ describe("repo-evolution pure logic", () => {
     assert.ok(negatedConcepts.has("chrome-mv3-extension"));
     assert.equal(negatedConcepts.has("asr-subtitle-dubbing"), false, "negated 'without dubbing/ASR' must not trigger ASR concept");
     assert.equal(negatedConcepts.has("tts-voice-synthesis"), false, "negated 'without TTS' must not trigger TTS concept");
+
+    // Org-chart prefix in notes must NOT trigger agent-control-plane on unrelated learning repos
+    const learnAgentConcepts = extractRepoConcepts({
+      name: "learn-agent",
+      description: "认知诊断与主动学习 Agent，支持间隔重复与先测理解",
+      notes: "OPC OS L1 · 常驻数字员工 · 能力契约：诊断理解与按依赖教学",
+      topics: [],
+    });
+    assert.ok(learnAgentConcepts.has("adaptive-tutor-learning"));
+    assert.equal(
+      learnAgentConcepts.has("agent-control-plane"),
+      false,
+      "OPC OS L1 org-chart banner in notes must not falsely trigger agent-control-plane",
+    );
+
+    // ASCII phrase word boundaries: 'interactive learning' must NOT match 'active learning'
+    const medicalPixelsConcepts = extractRepoConcepts({
+      name: "pixels",
+      description: "Large scale processing of HLS Medical images, OHIF Viewer and interactive learning.",
+      topics: ["dicom", "medical-imaging"],
+    });
+    assert.equal(medicalPixelsConcepts.has("adaptive-tutor-learning"), false);
+
+    // Music-gen / vertical consumer skills / bilingual LLM / warp-drive / Nomad Vault boundary guards
+    const yueMusicConcepts = extractRepoConcepts({
+      name: "YuE",
+      description: "Open full-song music generation foundation model for song generation and zero-shot covers.",
+      topics: ["music-generation", "voice-cloning"],
+    });
+    assert.equal(yueMusicConcepts.has("tts-voice-synthesis"), false, "music-gen repo must not trigger TTS");
+
+    const shotcraftConcepts = extractRepoConcepts({
+      name: "video-shotcraft",
+      description: "AI video skill for Claude Code & Codex — cinematic product promos with Remotion.",
+      topics: ["claude-code", "remotion"],
+    });
+    assert.ok(shotcraftConcepts.has("programmable-video-aigc"));
+    assert.equal(shotcraftConcepts.has("coding-agent-harness"), false, "video promo skill must not trigger coding-agent-harness");
+
+    const chatGlmConcepts = extractRepoConcepts({
+      name: "ChatGLM3",
+      description: "ChatGLM3 series: Open Bilingual Chat LLMs | 开源双语对话语言模型",
+      topics: [],
+    });
+    assert.equal(chatGlmConcepts.has("web-page-translation"), false, "bilingual LLM must not trigger web translation");
+
+    const warpDriveConcepts = extractRepoConcepts({
+      name: "warp-drive",
+      description: "WarpDrive is the lightweight data library for ambitious web apps.",
+      topics: ["ember", "warp-drive"],
+    });
+    assert.equal(warpDriveConcepts.has("native-terminal-cockpit"), false, "warp-drive data library must not trigger terminal concept");
+
+    const nomadConcepts = extractRepoConcepts({
+      name: "nomad",
+      description: "Flexible workload orchestrator with native Consul and Vault integrations.",
+      topics: [],
+    });
+    assert.equal(nomadConcepts.has("blind-credential-security"), false, "Vault integration mention must not trigger credential vault");
   });
 });
 
@@ -1192,6 +1251,225 @@ describe("repo-evolution PostgreSQL 18 + pgvector end-to-end", async () => {
     } finally {
       await pool3.end?.();
       await pgHandle.adminPool.query(`DROP SCHEMA IF EXISTS ${schema3} CASCADE`);
+    }
+  });
+
+  it("enforces topic grounding, primary-domain alignment, and vertical-skill guards in end-to-end recall", async () => {
+    const schema4 = `test_repo_evo_prec_${randomUUID().replace(/-/g, "").slice(0, 10)}`;
+    await pgHandle.adminPool.query(`CREATE SCHEMA ${schema4}`);
+    const pool4 = await createRepoEvolutionPool(PG_URL, { schema: schema4, max: 4 });
+
+    try {
+      const gh4 = makeMockGithubFetcher();
+      gh4.ownedRepos.length = 0;
+      gh4.starredRepos.length = 0;
+      gh4.starLists.length = 0;
+
+      gh4.ownedRepos.push(
+        {
+          fullName: "magele758/chromegate-gateway",
+          url: "https://github.com/magele758/chromegate-gateway",
+          visibility: "public",
+          description: "Chrome MV3 extension & native host gateway that lets Cursor, Claude Code, or Codex call your logged-in Chrome.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 5,
+          forksCount: 0,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          defaultBranch: "main",
+          primaryLanguage: "JavaScript",
+          topics: ["chrome-extension", "manifest-v3"],
+        },
+        {
+          fullName: "magele758/obsidian-palace",
+          url: "https://github.com/magele758/obsidian-palace",
+          visibility: "public",
+          description: "Obsidian second-brain knowledge base and markdown graph builder.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 4,
+          forksCount: 0,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          defaultBranch: "main",
+          primaryLanguage: "TypeScript",
+          topics: ["obsidian", "knowledge-graph"],
+        },
+        {
+          fullName: "magele758/opc-commerce-kit",
+          url: "https://github.com/magele758/opc-commerce-kit",
+          visibility: "public",
+          description: "MoR webhook normalizer, Ed25519 offline license SDK, and FinOps billing ledger.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 3,
+          forksCount: 0,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          defaultBranch: "main",
+          primaryLanguage: "TypeScript",
+          topics: ["stripe", "licensing", "finops"],
+        },
+        {
+          fullName: "magele758/my-claude-code",
+          url: "https://github.com/magele758/my-claude-code",
+          visibility: "public",
+          description: "Custom Claude Code coding agent harness and hooks runtime.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 2,
+          forksCount: 0,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          defaultBranch: "main",
+          primaryLanguage: "TypeScript",
+          topics: ["claude-code", "coding-agent"],
+        },
+      );
+
+      gh4.starredRepos.push(
+        // Should NOT link to chromegate-gateway (only shares non-primary coding-agent-harness mention)
+        {
+          fullName: "musistudio/claude-code-router",
+          url: "https://github.com/musistudio/claude-code-router",
+          visibility: "public",
+          description: "Route Claude Code requests across different LLM models and coding agent providers.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 15000,
+          forksCount: 900,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          starredAt: "2026-11-20T08:00:00.000Z",
+          defaultBranch: "main",
+          primaryLanguage: "TypeScript",
+          topics: ["claude-code", "coding-agent"],
+        },
+        // Should NOT link to obsidian-palace (only trailing topic tag 'obsidian', not in name/desc)
+        {
+          fullName: "handsomestWei/patent-disclosure-skill",
+          url: "https://github.com/handsomestWei/patent-disclosure-skill",
+          visibility: "public",
+          description: "中国专利交底书自动挖掘与撰写助手，辅助工程师提炼专利点。",
+          isArchived: false,
+          isFork: false,
+          starsCount: 600,
+          forksCount: 40,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          starredAt: "2026-11-19T08:00:00.000Z",
+          defaultBranch: "main",
+          primaryLanguage: "Python",
+          topics: ["patent", "obsidian", "agent-skills"],
+        },
+        // Should NOT classify into coding-agents or link to my-claude-code (vertical job-search skill)
+        {
+          fullName: "career-ops-hq/career-ops",
+          url: "https://github.com/career-ops-hq/career-ops",
+          visibility: "public",
+          description: "Open-source AI job search agent and job finder: score jobs against your CV and tailor resumes. Runs in Claude Code or Codex.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 1800,
+          forksCount: 120,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          starredAt: "2026-11-18T08:00:00.000Z",
+          defaultBranch: "main",
+          primaryLanguage: "TypeScript",
+          topics: ["claude-code", "job-search", "resume", "agent-skills"],
+        },
+        // Should NOT cross-sector link to opc-commerce-kit solely from tail-end 'billing & admin built in'
+        {
+          fullName: "jaikydota/BullFlow",
+          url: "https://github.com/jaikydota/BullFlow",
+          visibility: "public",
+          description: "Open-source enterprise RAG solution: knowledge base and marketing content publishing. Multi-tenant, billing & admin built in.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 2400,
+          forksCount: 200,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          starredAt: "2026-11-17T08:00:00.000Z",
+          defaultBranch: "main",
+          primaryLanguage: "TypeScript",
+          topics: ["rag", "knowledge-base", "milvus"],
+        },
+        // True positive: real Chrome MV3 extension SHOULD link to chromegate-gateway
+        {
+          fullName: "bergside/design-md-chrome",
+          url: "https://github.com/bergside/design-md-chrome",
+          visibility: "public",
+          description: "Chrome extension with Manifest V3 side panel to extract design tokens from any webpage.",
+          isArchived: false,
+          isFork: false,
+          starsCount: 950,
+          forksCount: 55,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          starredAt: "2026-11-16T08:00:00.000Z",
+          defaultBranch: "main",
+          primaryLanguage: "JavaScript",
+          topics: ["chrome-extension", "manifest-v3"],
+        },
+      );
+
+      const svc4 = new RepoEvolutionService({
+        pool: pool4,
+        github: gh4.fetcher,
+        now: () => FIXED_NOW,
+      });
+      await svc4.init();
+      await svc4.runSyncNow({ mode: "full" });
+      await svc4.clusterAndRecall({
+        recalibrateTaxonomy: true,
+        enrichOwnedProfiles: false,
+        reclassifyAi: true,
+        clearSuggestedLinks: true,
+      });
+
+      const chromeGw = await svc4.getNode("magele758/chromegate-gateway");
+      const chromeGwLinks = await svc4.listLinks({ targetNodeId: chromeGw.id });
+      assert.equal(
+        chromeGwLinks.some((l) => l.sourceRepoFullName === "musistudio/claude-code-router"),
+        false,
+        "chromegate-gateway must NOT link to coding-agent router via incidental README mention",
+      );
+      assert.equal(
+        chromeGwLinks.some((l) => l.sourceRepoFullName === "bergside/design-md-chrome"),
+        true,
+        "chromegate-gateway MUST link to real Chrome MV3 extension",
+      );
+
+      const obsidianPalace = await svc4.getNode("magele758/obsidian-palace");
+      const obsidianLinks = await svc4.listLinks({ targetNodeId: obsidianPalace.id });
+      assert.equal(
+        obsidianLinks.some((l) => l.sourceRepoFullName === "handsomestWei/patent-disclosure-skill"),
+        false,
+        "topic-only obsidian tag must NOT link patent-disclosure-skill to obsidian-palace",
+      );
+
+      const careerOps = await svc4.getNode("career-ops-hq/career-ops");
+      assert.notEqual(
+        careerOps.primaryDomainName,
+        "编程 Agent 与工程范式",
+        "vertical job-search skill must NOT classify into coding-agents",
+      );
+      const careerLinks = await svc4.listLinks({ sourceNodeId: careerOps.id });
+      assert.equal(careerLinks.length, 0);
+
+      const commerceKit = await svc4.getNode("magele758/opc-commerce-kit");
+      const commerceLinks = await svc4.listLinks({ targetNodeId: commerceKit.id });
+      assert.equal(
+        commerceLinks.some((l) => l.sourceRepoFullName === "jaikydota/BullFlow"),
+        false,
+        "RAG repo with tail-end 'billing & admin built in' must NOT cross-sector link to opc-commerce-kit",
+      );
+    } finally {
+      await pool4.end?.();
+      await pgHandle.adminPool.query(`DROP SCHEMA IF EXISTS ${schema4} CASCADE`);
     }
   });
 });
