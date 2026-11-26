@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
@@ -38,6 +40,8 @@ import type {
   RepoEvolutionNode,
   RepoEvolutionNodesPage,
   RepoEvolutionNodesQuery,
+  RepoEvolutionRadialGraph,
+  RepoEvolutionRadialStats,
   RepoEvolutionStats,
   RepoEvolutionSyncJob,
   RepoEvolutionSyncMode,
@@ -56,6 +60,11 @@ import type {
   RepoOwnedSummaryNode,
   RepoPoolBucket,
   RepoPriorityTier,
+  RepoRadialDomainNode,
+  RepoRadialGraphQuery,
+  RepoRadialLink,
+  RepoRadialOwnedNode,
+  RepoRadialStarNode,
   RepoReadmeDigest,
   RepoRelationType,
   RepoVisibility,
@@ -161,226 +170,1331 @@ interface SeedDomainSpec {
   icon: string;
   sortOrder: number;
   seedKeywords: string[];
+  strongTerms: string[];
+  supportTerms: string[];
+  antiTerms: string[];
 }
 
 export const BUILTIN_REPO_DOMAINS: readonly SeedDomainSpec[] = [
   {
     slug: "ai-agents",
     name: "AI Agent 与编排框架",
-    description: "智能体运行时、MCP 工具协议、多 Agent 协同、任务编排与上下文工程",
+    description: "多 Agent 协同编排、MCP 工具协议、Agent Loop 运行时、多渠道 IM 接入与主动学习智能体",
     color: "#4f46e5",
     icon: "bot",
     sortOrder: 10,
     seedKeywords: [
-      "agent",
-      "ai-agent",
-      "llm",
-      "mcp",
-      "tool-use",
-      "workflow",
       "multi-agent",
-      "swarm",
-      "claude",
-      "codex",
-      "harness",
-      "memory",
+      "mcp",
+      "mcp-server",
+      "model-context-protocol",
+      "agent-loop",
       "orchestrator",
-      "autonomous",
-      "prompt",
-      "skill",
-      "openai",
-      "langchain",
       "langgraph",
+      "langchain",
+      "voltagent",
+      "autogen",
+      "crewai",
+      "openclaw",
+      "a2a",
+      "swarm",
+      "tool-calling",
+      "dify",
+      "n8n",
+      "flowgram",
+      "spaced-repetition",
+      "tutor",
+    ],
+    strongTerms: [
+      "multi-agent",
+      "multiagent",
+      "mcp",
+      "mcp-server",
+      "model-context-protocol",
+      "model context protocol",
+      "agent-loop",
+      "agent loop",
+      "orchestrator",
+      "orchestration",
+      "langgraph",
+      "langchain",
+      "langflow",
+      "voltagent",
+      "autogen",
+      "crewai",
+      "mastra",
+      "openclaw",
+      "a2a",
+      "agent2agent",
+      "agent-swarm",
+      "swarm",
+      "tool-calling",
+      "tool-use",
+      "function-calling",
+      "subagent",
+      "dify",
+      "n8n",
+      "flowgram",
+      "lobehub",
+      "hermes-agent",
+      "deepagents",
+      "pydantic-ai",
+      "smolagents",
+      "copilotkit",
+      "ag-ui",
+      "paperclip",
+      "pilotdeck",
+      "multica",
+      "agent-os",
+      "opc os",
+      "coze",
+      "fastgpt",
+      "feishu",
+      "dingtalk",
+      "wecom",
+      "qqbot",
+      "spaced-repetition",
+      "sm-2",
+      "tutor",
+      "tutoring",
+      "一人公司",
+      "组织数字孪生",
+      "决策脑枢",
+      "多 agent 产研",
+      "多智能体",
+      "数字员工",
+      "经营中控",
+      "编排",
+      "学习向",
+      "主动学习",
+    ],
+    supportTerms: [
+      "ai-agent",
+      "ai-agents",
+      "agentic-workflow",
+      "agent-framework",
+      "agent-runtime",
+      "autonomous-agent",
+      "approval-gate",
+      "human-in-the-loop",
+      "socket.io",
+      "cron",
+      "dispatcher",
+      "adk",
+      "google-adk",
+      "workforce",
+      "digital-employee",
+      "flashcard",
+    ],
+    antiTerms: [
+      "claude-code",
+      "codex",
+      "opencode",
+      "gemini-cli",
+      "coding-agent",
+      "swe-agent",
+      "playwright",
+      "puppeteer",
+      "chrome-extension",
+      "browser-use",
+      "trading",
+      "stock",
+      "quant",
+      "backtest",
+      "tts",
+      "asr",
+      "whisper",
+      "audiobook",
+      "video-editor",
+      "markitdown",
+      "ragflow",
+      "graphrag",
+      "milvus",
+      "qdrant",
+      "obsidian",
+      "vllm",
+      "llama-cpp",
+      "gguf",
+      "firecracker",
+      "microvm",
+      "godot",
+    ],
+  },
+  {
+    slug: "coding-agents",
+    name: "编程 Agent 与工程范式",
+    description: "Claude Code / Codex / OpenCode / Cline 生态、Agent Skills、Harness 工程与多编码 Agent 交付工厂",
+    color: "#7c3aed",
+    icon: "code",
+    sortOrder: 20,
+    seedKeywords: [
+      "claude-code",
+      "codex",
+      "opencode",
+      "cline",
+      "openhands",
+      "swe-agent",
+      "coding-agent",
+      "agent-skills",
+      "claude-skills",
+      "agent-harness",
+      "vibe-coding",
+      "vibe-kanban",
+      "code-review",
+      "spec-driven",
+      "claude-hooks",
+      "cc-switch",
+      "aider",
+      "cursor",
+    ],
+    strongTerms: [
+      "claude-code",
+      "claude code",
+      "codex",
+      "opencode",
+      "cline",
+      "aider",
+      "cursor",
+      "windsurf",
+      "openhands",
+      "swe-agent",
+      "swe-bench",
+      "coding-agent",
+      "coding agent",
+      "code-agent",
+      "agent-skills",
+      "claude-skills",
+      "agent-harness",
+      "deepseek-harness",
+      "claude-hooks",
+      "vibe-coding",
+      "vibe-kanban",
+      "vibekanban",
+      "code-review",
+      "pr-review",
+      "spec-driven",
+      "claude-md",
+      "agents-md",
+      "roo-code",
+      "kilo-code",
+      "gemini-cli",
+      "cc-switch",
+      "gstack",
+      "orca",
+      "claude-code-router",
+      "ai-coding",
+      "pair-programming",
+      "coding-assistant",
+      "acceptance-criteria",
+      "研发范式",
+      "编码交付",
+      "编程助手",
+      "验收先行",
+    ],
+    supportTerms: [
+      "harness",
+      "code-generation",
+      "refactor",
+      "refactoring",
+      "devin",
+      "copilot",
+      "codebase",
+      "evals",
+      "worktree",
+      "subagents",
+      "ide-extension",
+      "vscode-extension",
+    ],
+    antiTerms: [
+      "trading",
+      "stock",
+      "quant",
+      "chrome-extension",
+      "video-editor",
+      "tts",
+      "audiobook",
+      "pgvector",
+      "milvus",
+      "firecracker",
+      "microvm",
+      "godot",
+      "bazi",
     ],
   },
   {
     slug: "rag-knowledge",
-    name: "知识图谱与 RAG 检索",
-    description: "向量检索、pgvector、知识库索引、语义召回、图谱记忆与重排引擎",
+    name: "知识图谱、记忆与 RAG",
+    description: "Context Graph 图结构上下文、知识图谱、GraphRAG、持久化 Agent 记忆、向量检索重排与 Obsidian 知识库",
     color: "#0891b2",
     icon: "brain",
-    sortOrder: 20,
+    sortOrder: 30,
     seedKeywords: [
       "rag",
-      "vector",
-      "embedding",
-      "pgvector",
-      "search",
-      "retrieval",
+      "graphrag",
       "knowledge-graph",
-      "graph",
-      "indexing",
-      "semantic",
+      "context-graph",
+      "kv-cache",
+      "agent-memory",
+      "pgvector",
+      "vector-database",
+      "embedding",
       "rerank",
-      "chunking",
+      "hybrid-search",
+      "bm25",
       "qdrant",
       "milvus",
       "obsidian",
-      "note",
+      "mem0",
+      "graphiti",
+      "ragflow",
+      "lightrag",
+      "supermemory",
     ],
-  },
-  {
-    slug: "dev-infra",
-    name: "研发基建与 CLI 工具",
-    description: "终端效率、Git/Worktree 隔离、构建编译、代码分析、测试与开发运行时",
-    color: "#0d9488",
-    icon: "terminal",
-    sortOrder: 30,
-    seedKeywords: [
-      "cli",
-      "terminal",
-      "tmux",
-      "git",
-      "worktree",
-      "build",
-      "compiler",
-      "bundler",
-      "testing",
-      "debug",
-      "lsp",
-      "devtool",
-      "shell",
-      "rust",
-      "typescript",
-      "runtime",
-      "sdk",
-      "ast",
+    strongTerms: [
+      "rag",
+      "agentic-rag",
+      "graphrag",
+      "knowledge-graph",
+      "knowledge graph",
+      "context-graph",
+      "context graph",
+      "context-engineering",
+      "kv-cache",
+      "kv cache",
+      "agent-memory",
+      "long-term-memory",
+      "persistent-memory",
+      "mem0",
+      "graphiti",
+      "cognee",
+      "supermemory",
+      "claude-mem",
+      "memvid",
+      "ragflow",
+      "lightrag",
+      "pageindex",
+      "graphify",
+      "claude-context",
+      "pgvector",
+      "vector-database",
+      "vector-search",
+      "vector-store",
+      "embeddings",
+      "embedding",
+      "rerank",
+      "reranker",
+      "hybrid-search",
+      "bm25",
+      "chunking",
+      "qdrant",
+      "milvus",
+      "weaviate",
+      "chromadb",
+      "faiss",
+      "obsidian",
+      "obsidian-plugin",
+      "joplin",
+      "pkm",
+      "second-brain",
+      "knowledge-base",
+      "information-retrieval",
+      "semantic-search",
+      "code-search",
+      "neo4j",
+      "知识图谱",
+      "上下文图",
+      "记忆库",
+      "向量检索",
+      "知识库",
+      "信息采集",
     ],
-  },
-  {
-    slug: "web-ui-viz",
-    name: "前端交互与可视化",
-    description: "React 组件架构、画布/图谱 SVG 渲染、编辑器、设计系统与数据可视化",
-    color: "#d97706",
-    icon: "layout",
-    sortOrder: 40,
-    seedKeywords: [
-      "react",
-      "ui",
-      "canvas",
-      "svg",
-      "chart",
-      "diagram",
-      "design-system",
-      "css",
-      "animation",
-      "editor",
-      "whiteboard",
-      "markdown",
-      "dashboard",
-      "tailwind",
-      "frontend",
-      "visualization",
-      "mermaid",
-      "excalidraw",
+    supportTerms: [
+      "vector",
+      "retrieval",
+      "indexing",
+      "semantic",
+      "memory",
+      "note-taking",
+      "notes",
+      "markdown-notes",
+      "logseq",
+      "tolaria",
+      "doc-summary",
     ],
-  },
-  {
-    slug: "data-backend",
-    name: "数据库与分布式后端",
-    description: "PostgreSQL/SQLite 引擎、事件流、异步队列、高性能 API 框架与同步存储",
-    color: "#2563eb",
-    icon: "database",
-    sortOrder: 50,
-    seedKeywords: [
-      "postgres",
-      "postgresql",
-      "sqlite",
-      "database",
-      "sql",
-      "queue",
-      "cache",
-      "api",
-      "hono",
-      "rpc",
-      "websocket",
-      "sync",
-      "distributed",
-      "storage",
-      "backend",
-      "server",
-      "duckdb",
-      "orm",
+    antiTerms: [
+      "video-editor",
+      "tts",
+      "whisper",
+      "trading",
+      "stock",
+      "quant",
+      "chrome-extension",
+      "playwright",
+      "firecracker",
+      "microvm",
+      "stripe",
+      "billing",
+      "godot",
     ],
   },
   {
     slug: "browser-automation",
-    name: "浏览器自动化与采集",
-    description: "Playwright/Puppeteer 驱动、Chrome 插件、网页抓取、DOM 理解与 RPA 自动化",
+    name: "浏览器插件与网页自动化",
+    description: "Chrome MV3 侧栏插件、页面理解与填表 Agent、Playwright/CDP 控制网关与网页抓取采集",
     color: "#9333ea",
     icon: "globe",
-    sortOrder: 60,
+    sortOrder: 40,
     seedKeywords: [
+      "chrome-extension",
+      "browser-extension",
+      "manifest-v3",
+      "side-panel",
       "playwright",
+      "playwright-mcp",
       "puppeteer",
-      "browser",
-      "chrome",
-      "extension",
+      "cdp",
+      "chrome-devtools",
+      "browser-use",
+      "page-agent",
+      "agent-browser",
+      "firecrawl",
+      "crawl4ai",
+      "scrapling",
+      "web-scraping",
+      "headless-browser",
+      "web-translator",
+    ],
+    strongTerms: [
+      "chrome-extension",
+      "browser-extension",
+      "manifest-v3",
+      "manifest v3",
+      "side-panel",
+      "sidepanel",
+      "native-host",
+      "native-messaging",
+      "playwright",
+      "playwright-mcp",
+      "puppeteer",
+      "cdp",
+      "chrome-devtools",
+      "chrome-devtools-mcp",
+      "devtools-protocol",
+      "browser-use",
+      "page-agent",
+      "gui-agent",
+      "computer-use",
+      "web-agent",
+      "agent-browser",
+      "browser-automation",
+      "headless-browser",
+      "lightpanda",
+      "cloakbrowser",
+      "selenium",
+      "firecrawl",
+      "crawl4ai",
+      "scrapling",
+      "web-scraping",
+      "web-crawler",
       "scraper",
       "crawler",
-      "automation",
+      "dom-automation",
+      "userscript",
+      "tampermonkey",
+      "web-translator",
+      "page-translator",
+      "immersive-translate",
+      "web-clipper",
+      "agent-reach",
+      "chromegate",
+      "pagelens",
+      "浏览器扩展",
+      "浏览器插件",
+      "侧栏",
+      "网页翻译",
+      "网页理解",
+      "网页自动化",
+      "爬虫",
+      "填表",
+    ],
+    supportTerms: [
+      "browser",
+      "chrome",
+      "chromium",
+      "firefox",
       "dom",
       "headless",
       "rpa",
-      "cdp",
-      "web-scraping",
       "rss",
+      "bookmark",
+      "bookmarks",
+      "tabs",
+      "webpage",
+      "web-page",
+    ],
+    antiTerms: [
+      "trading",
+      "stock",
+      "quant",
+      "firecracker",
+      "microvm",
+      "video-editor",
+      "audiobook",
+      "tts",
+      "whisper",
+      "dubbing",
+      "joplin",
+      "同声传译",
+      "配音",
+      "godot",
     ],
   },
   {
     slug: "media-creative",
     name: "音视频与多模态创作",
-    description: "可编程视频渲染、Remotion/FFmpeg、语音合成/识别、图像生成与实时着色器",
+    description: "视频同声传译与配音、TTS/声音克隆/有声书、ASR/Whisper、Remotion/FFmpeg 可编程视频与 AIGC 创作",
     color: "#db2777",
     icon: "film",
-    sortOrder: 70,
+    sortOrder: 50,
     seedKeywords: [
-      "video",
-      "audio",
-      "remotion",
-      "ffmpeg",
       "tts",
+      "text-to-speech",
+      "voice-cloning",
       "asr",
       "whisper",
-      "speech",
-      "image",
+      "audiobook",
+      "dubbing",
+      "subtitle",
+      "video-translation",
+      "remotion",
+      "ffmpeg",
+      "opencut",
+      "manim",
+      "comfyui",
+      "stable-diffusion",
+      "ocr",
+      "paddleocr",
+      "pdf-parser",
+      "stirling-pdf",
+      "aigc",
+    ],
+    strongTerms: [
+      "tts",
+      "text-to-speech",
+      "index-tts",
+      "voice-cloning",
+      "voice-synthesis",
+      "kokoro",
+      "cosyvoice",
+      "fish-speech",
+      "f5-tts",
+      "chatterbox",
+      "voicebox",
+      "voicestudio",
+      "asr",
+      "speech-to-text",
+      "whisper",
+      "faster-whisper",
+      "funasr",
+      "audiobook",
+      "audio-book",
+      "podcast",
+      "dubbing",
+      "subtitle",
+      "subtitles",
+      "caption",
+      "captions",
+      "video-translation",
+      "simultaneous-interpretation",
+      "remotion",
+      "ffmpeg",
+      "opencut",
+      "video-editor",
+      "video-editing",
+      "video-generation",
+      "moneyprinter",
+      "manim",
+      "comfyui",
+      "stable-diffusion",
       "diffusion",
+      "image-generation",
+      "storyboard",
+      "aigc",
+      "ocr",
+      "paddleocr",
+      "mineru",
+      "stirling-pdf",
+      "pdf-parser",
+      "pdf-converter",
+      "docling",
+      "markitdown",
       "shader",
       "webgl",
-      "caption",
+      "threejs",
+      "webrtc",
+      "同声传译",
+      "同传",
+      "配音",
+      "有声书",
+      "字幕",
+      "视频翻译",
+      "影视",
+      "分镜",
+      "语音合成",
+    ],
+    supportTerms: [
+      "video",
+      "audio",
+      "speech",
+      "voice",
       "media",
       "multimodal",
-      "ocr",
       "pdf",
+      "epub",
+      "wav",
+      "mp3",
+      "streaming-audio",
+      "image-processing",
+    ],
+    antiTerms: [
+      "vllm",
+      "sglang",
+      "llama-cpp",
+      "gguf",
+      "fine-tuning",
+      "lora",
+      "qlora",
+      "rlhf",
+      "pretraining",
+      "unsloth",
+      "trading",
+      "stock",
+      "quant",
+      "postgres",
+      "sqlite",
+      "firecracker",
+      "crm",
+    ],
+  },
+  {
+    slug: "quant-data",
+    name: "量化投研与数据分析",
+    description: "AI 量化投研与因子回测、A股/美股行情接口、多智能体交易、DuckDB/Arrow 现代数据栈与业务本体分析",
+    color: "#059669",
+    icon: "chart",
+    sortOrder: 60,
+    seedKeywords: [
+      "quant",
+      "quantitative",
+      "algotrading",
+      "tradingagents",
+      "backtest",
+      "stock",
+      "a-share",
+      "akshare",
+      "yfinance",
+      "openbb",
+      "qlib",
+      "vnpy",
+      "barra",
+      "portfolio",
+      "duckdb",
+      "apache-arrow",
+      "polars",
+      "ontology",
+      "data-formulator",
+      "pygwalker",
+    ],
+    strongTerms: [
+      "quant",
+      "quantitative",
+      "algotrading",
+      "algorithmic-trading",
+      "tradingagents",
+      "trading-bot",
+      "trading-engine",
+      "backtest",
+      "backtesting",
+      "stock",
+      "stocks",
+      "a-share",
+      "ashare",
+      "akshare",
+      "yfinance",
+      "tushare",
+      "openbb",
+      "qlib",
+      "vnpy",
+      "quantconnect",
+      "fincept",
+      "openstock",
+      "vibe-trading",
+      "ai-berkshire",
+      "quantdinger",
+      "barra",
+      "cvxpy",
+      "factor-model",
+      "alpha-factor",
+      "portfolio",
+      "risk-model",
+      "market-data",
+      "candlestick",
+      "kline",
+      "financial-analysis",
+      "investment-research",
+      "equity-research",
+      "polymarket",
+      "duckdb",
+      "apache-arrow",
+      "polars",
+      "ontology",
+      "palantir",
+      "evoontology",
+      "data-formulator",
+      "pygwalker",
+      "metabase",
+      "superset",
+      "business-intelligence",
+      "data-analysis",
+      "data-analytics",
+      "visual-analytics",
+      "olap",
+      "dataframe",
+      "量化",
+      "股票",
+      "回测",
+      "投研",
+      "交易",
+      "因子",
+      "数据分析",
+      "业务本体",
+      "行情",
+    ],
+    supportTerms: [
+      "finance",
+      "financial",
+      "trading",
+      "crypto",
+      "cryptocurrency",
+      "bi",
+      "analytics-engine",
+      "insight-engine",
+      "timeseries",
+      "time-series",
+      "microstructure",
+      "equity",
+    ],
+    antiTerms: [
+      "tutor",
+      "tutoring",
+      "chrome-extension",
+      "video-editor",
+      "audiobook",
+      "3d-scene",
+      "godot",
+      "roguelike",
+      "lean4",
+      "theorem-proving",
+    ],
+  },
+  {
+    slug: "dev-infra",
+    name: "终端、沙箱与研发基建",
+    description: "原生多窗格终端、Firecracker/E2B MicroVM Agent 沙箱、Shell/Worktree 工具链、编译器与语言运行时",
+    color: "#0d9488",
+    icon: "terminal",
+    sortOrder: 70,
+    seedKeywords: [
+      "terminal",
+      "ghostty",
+      "waveterm",
+      "cmux",
+      "warp",
+      "tmux",
+      "microvm",
+      "firecracker",
+      "e2b",
+      "smolvm",
+      "sandbox",
+      "boxsh",
+      "wasm",
+      "worktree",
+      "compiler",
+      "bundler",
+      "lsp",
+      "tree-sitter",
+      "bun",
+      "vite",
+    ],
+    strongTerms: [
+      "terminal",
+      "terminal-emulator",
+      "ghostty",
+      "waveterm",
+      "cmux",
+      "warp",
+      "alacritty",
+      "wezterm",
+      "tmux",
+      "pty",
+      "tui",
+      "crt-theme",
+      "pip-boy",
+      "sandbox",
+      "microvm",
+      "firecracker",
+      "e2b",
+      "smolvm",
+      "code-interpreter",
+      "virtual-machine",
+      "qemu",
+      "cloud-hypervisor",
+      "kata-containers",
+      "boxsh",
+      "posix",
+      "wasm",
+      "wasi",
+      "dotfiles",
+      "worktree",
+      "jujutsu",
+      "compiler",
+      "bundler",
+      "vite",
+      "esbuild",
+      "rolldown",
+      "oxc",
+      "rollup",
+      "bun",
+      "deno",
+      "lsp",
+      "tree-sitter",
+      "ast",
+      "debugger",
+      "profiler",
+      "homebrew",
+      "nix",
+      "devtool",
+      "devtools",
+      "终端",
+      "沙箱",
+      "微虚拟机",
+      "分屏",
+    ],
+    supportTerms: [
+      "shell",
+      "zsh",
+      "bash",
+      "git",
+      "build-tool",
+      "testing",
+      "test-runner",
+      "linter",
+      "formatter",
+      "runtime",
+      "package-manager",
+      "cli-tool",
+    ],
+    antiTerms: [
+      "trading",
+      "stock",
+      "quant",
+      "audiobook",
+      "tts",
+      "whisper",
+      "chrome-extension",
+      "bazi",
+      "crm",
+      "stripe",
+      "godot",
+    ],
+  },
+  {
+    slug: "data-backend",
+    name: "数据库与分布式后端",
+    description: "事务存储引擎、PostgreSQL/SQLite/Turso 数据库、Local-first 同步、事件队列与高性能后端服务框架",
+    color: "#2563eb",
+    icon: "database",
+    sortOrder: 80,
+    seedKeywords: [
+      "postgres",
+      "postgresql",
+      "sqlite",
+      "turso",
+      "libsql",
+      "pglite",
+      "storage-engine",
+      "transactional",
+      "sql",
+      "orm",
+      "drizzle",
+      "prisma",
+      "supabase",
+      "redis",
+      "kafka",
+      "nats",
+      "hono",
+      "trpc",
+      "crdt",
+      "durable-execution",
+    ],
+    strongTerms: [
+      "database",
+      "transactional-database",
+      "storage-engine",
+      "postgres",
+      "postgresql",
+      "sqlite",
+      "libsql",
+      "turso",
+      "pglite",
+      "clickhouse",
+      "rocksdb",
+      "lsm-tree",
+      "mvcc",
+      "wal",
+      "raft",
+      "consensus",
+      "sql-client",
+      "sql-engine",
+      "dbeaver",
+      "tabularis",
+      "chat2db",
+      "orm",
+      "drizzle",
+      "prisma",
+      "supabase",
+      "electric-sql",
+      "crdt",
+      "sync-engine",
+      "message-queue",
+      "kafka",
+      "nats",
+      "redis",
+      "dragonfly",
+      "hono",
+      "fastapi",
+      "trpc",
+      "grpc",
+      "websocket",
+      "distributed-systems",
+      "event-sourcing",
+      "durable-execution",
+      "temporal",
+      "trigger-dev",
+      "数据库",
+      "事务",
+      "存储引擎",
+      "分布式",
+    ],
+    supportTerms: [
+      "sql",
+      "nosql",
+      "queue",
+      "cache",
+      "rpc",
+      "storage",
+      "distributed",
+      "backend",
+      "local-first",
+      "migrations",
+      "kv-store",
+    ],
+    antiTerms: [
+      "tv-channels",
+      "iptv",
+      "supermemory",
+      "trading",
+      "stock",
+      "video-editor",
+      "tts",
+      "chrome-extension",
+      "godot",
+      "bazi",
+    ],
+  },
+  {
+    slug: "web-ui-viz",
+    name: "前端交互与可视化",
+    description: "React/Flutter/Godot 交互应用、SVG/Canvas 图谱与白板、设计系统组件库、排盘与互动教学轻工具",
+    color: "#d97706",
+    icon: "layout",
+    sortOrder: 90,
+    seedKeywords: [
+      "react",
+      "svg",
+      "canvas",
+      "diagram",
+      "mermaid",
+      "excalidraw",
+      "whiteboard",
+      "d3",
+      "shadcn",
+      "tailwind",
+      "design-system",
+      "visualization",
+      "flutter",
+      "godot",
+      "roguelike",
+      "rich-text",
+      "animation",
+      "storybook",
+      "bazi",
+      "rubiks-cube",
+    ],
+    strongTerms: [
+      "react",
+      "nextjs",
+      "svelte",
+      "vue",
+      "flutter",
+      "dart",
+      "swiftui",
+      "shadcn",
+      "tailwind",
+      "tailwindcss",
+      "radix",
+      "design-system",
+      "design-systems",
+      "ui-components",
+      "component-library",
+      "canvas",
+      "svg",
+      "d3",
+      "echarts",
+      "chart",
+      "charts",
+      "diagram",
+      "diagrams",
+      "mermaid",
+      "excalidraw",
+      "tldraw",
+      "whiteboard",
+      "react-flow",
+      "xyflow",
+      "cytoscape",
+      "graph-visualization",
+      "archify",
+      "gitdiagram",
+      "asciiflow",
+      "rich-text",
+      "tiptap",
+      "prosemirror",
+      "slate",
+      "storybook",
+      "animation",
+      "framer-motion",
+      "gsap",
+      "anime",
+      "tegaki",
+      "pretext",
+      "looseleaf",
+      "open-design",
+      "affine",
+      "penpot",
+      "godot",
+      "gdscript",
+      "roguelike",
+      "game-engine",
+      "ai-npc",
+      "rubiks-cube",
+      "bazi",
+      "ziwei",
+      "iching",
+      "generative-ui",
+      "screenshot-to-code",
+      "品牌官网",
+      "产品货架",
+      "可视化",
+      "白板",
+      "画布",
+      "魔方",
+      "八字",
+      "紫微",
+      "排盘",
+      "术数",
+      "游戏",
+      "组件库",
+      "设计系统",
+    ],
+    supportTerms: [
+      "frontend",
+      "dashboard",
+      "editor",
+      "typography",
+      "layout",
+      "theme",
+      "drag-and-drop",
+      "grid-layout",
+      "interactive",
+      "visualization",
+      "web-ui",
+    ],
+    antiTerms: [
+      "firecracker",
+      "microvm",
+      "trading",
+      "stock",
+      "quant",
+      "pgvector",
+      "milvus",
+      "vllm",
+      "llama-cpp",
+      "stripe",
+      "billing",
+      "crm",
+      "langflow",
+      "immich",
     ],
   },
   {
     slug: "ops-security-growth",
-    name: "运维安全与商业增长",
-    description: "容器部署、内网穿透、监控自愈、安全鉴权、支付账单与 SaaS 增长基础设施",
+    name: "安全凭据、商业化与运维",
+    description: "Agent 盲凭据与密钥隔离、支付/Ed25519 离线授权、CRM 客服与遥测可观测、容器部署与内网穿透",
     color: "#dc2626",
     icon: "shield",
-    sortOrder: 80,
+    sortOrder: 100,
     seedKeywords: [
-      "docker",
-      "kubernetes",
-      "tailscale",
-      "ssh",
-      "monitoring",
-      "observability",
-      "security",
-      "auth",
+      "credential",
+      "secrets",
+      "vault",
+      "guardrails",
+      "prompt-injection",
+      "ed25519",
+      "licensing",
       "payment",
       "billing",
       "stripe",
+      "finops",
+      "crm",
+      "telemetry",
+      "observability",
+      "langfuse",
       "analytics",
-      "saas",
-      "deploy",
-      "self-hosted",
+      "docker",
+      "kubernetes",
+      "tailscale",
+      "netbird",
+    ],
+    strongTerms: [
+      "credential",
+      "credentials",
+      "secret-management",
+      "secrets",
+      "vault",
+      "password-manager",
+      "bitwarden",
+      "1password",
+      "ed25519",
+      "license",
+      "licensing",
+      "oauth",
+      "oidc",
+      "jwt",
+      "authentication",
+      "rbac",
+      "guardrails",
+      "prompt-injection",
+      "ssrf",
+      "red-team",
+      "cybersecurity",
+      "vulnerability",
+      "trivy",
+      "payment",
+      "billing",
+      "stripe",
+      "lemonsqueezy",
+      "paddle",
+      "merchant-of-record",
+      "finops",
+      "subscription",
+      "crm",
+      "helpdesk",
+      "support-ticket",
+      "telemetry",
+      "crash-reporting",
+      "sentry",
+      "opentelemetry",
+      "observability",
+      "langfuse",
+      "prometheus",
+      "grafana",
+      "uptime",
+      "uptime-kuma",
+      "monitoring",
+      "analytics",
+      "plausible",
+      "posthog",
+      "umami",
+      "utm",
+      "waitlist",
+      "storefront",
+      "seo",
+      "ghost",
+      "newsletter",
+      "docker",
+      "kubernetes",
+      "k8s",
+      "helm",
+      "tailscale",
+      "wireguard",
+      "netbird",
+      "reverse-proxy",
+      "caddy",
+      "traefik",
+      "nginx",
+      "coolify",
+      "portainer",
+      "ai-gateway",
+      "llm-gateway",
+      "litellm",
+      "portkey",
+      "凭据",
+      "秘钥",
+      "离线授权",
+      "验签",
+      "收银",
+      "客服",
+      "遥测",
+      "监控",
+      "部署",
+      "穿透",
+    ],
+    supportTerms: [
+      "security",
+      "auth",
+      "ssh",
       "proxy",
+      "vpn",
+      "deploy",
+      "deployment",
+      "self-hosted",
+      "saas",
+      "cms",
+      "publishing",
+      "compliance",
+    ],
+    antiTerms: [
+      "video-editor",
+      "audiobook",
+      "tts",
+      "godot",
+      "roguelike",
+      "rubiks-cube",
+      "bazi",
+      "trading",
+      "stock",
+      "opc os",
+      "一人公司",
+      "多 agent 产研",
+    ],
+  },
+  {
+    slug: "llm-models",
+    name: "大模型训练与本地推理",
+    description: "vLLM / Ollama / llama.cpp / MLX 本地推理引擎、Unsloth / LoRA / RLHF 微调训练与模型量化",
+    color: "#6366f1",
+    icon: "cpu",
+    sortOrder: 110,
+    seedKeywords: [
+      "vllm",
+      "sglang",
+      "ollama",
+      "llama-cpp",
+      "mlx",
+      "gguf",
+      "quantization",
+      "unsloth",
+      "llama-factory",
+      "fine-tuning",
+      "lora",
+      "rlhf",
+      "grpo",
+      "transformers",
+      "pytorch",
+      "cuda",
+      "flash-attention",
+      "local-llm",
+      "inference-engine",
+      "nanochat",
+    ],
+    strongTerms: [
+      "vllm",
+      "sglang",
+      "ollama",
+      "llama-cpp",
+      "llama.cpp",
+      "llamacpp",
+      "mlx",
+      "tensorrt",
+      "triton",
+      "gguf",
+      "ggml",
+      "quantization",
+      "awq",
+      "gptq",
+      "exllamav2",
+      "unsloth",
+      "llama-factory",
+      "axolotl",
+      "fine-tuning",
+      "finetuning",
+      "lora",
+      "qlora",
+      "rlhf",
+      "dpo",
+      "grpo",
+      "pretraining",
+      "transformers",
+      "huggingface",
+      "pytorch",
+      "cuda",
+      "flash-attention",
+      "local-llm",
+      "inference-engine",
+      "model-serving",
+      "deepinfer",
+      "nanochat",
+      "nanogpt",
+      "microgpt",
+      "lm-studio",
+      "vllm-ascend",
+      "大模型训练",
+      "微调",
+      "推理引擎",
+      "量化推理",
+      "本地模型",
+    ],
+    supportTerms: [
+      "deep-learning",
+      "machine-learning",
+      "neural-network",
+      "inference",
+      "training",
+      "moe",
+      "reasoning-model",
+      "qwen",
+      "llama",
+      "mistral",
+      "gemma",
+      "gpu",
+    ],
+    antiTerms: [
+      "chrome-extension",
+      "playwright",
+      "trading",
+      "stock",
+      "crm",
+      "stripe",
+      "bazi",
+      "godot",
+      "audiobook",
     ],
   },
 ];
+
+const BUILTIN_DOMAIN_BY_SLUG = new Map<string, SeedDomainSpec>(
+  BUILTIN_REPO_DOMAINS.map((d) => [d.slug, d]),
+);
 
 const GITHUB_LIST_PALETTE = [
   "#0ea5e9",
@@ -567,6 +1681,7 @@ function buildRepoSemanticText(repo: {
   description: string;
   primaryLanguage: string | null;
   topics: string[];
+  notes?: string;
   readmeDigest?: RepoReadmeDigest | null;
 }): string {
   const parts = [
@@ -574,6 +1689,7 @@ function buildRepoSemanticText(repo: {
     repo.name.replace(/[-_./]+/g, " "),
     repo.fullName,
     repo.description,
+    repo.notes ?? "",
     repo.primaryLanguage ?? "",
     repo.topics.join(" "),
     repo.readmeDigest?.summary ?? "",
@@ -586,47 +1702,1090 @@ function buildRepoSemanticText(repo: {
     .join(" · ");
 }
 
-function extractTokens(text: string): Set<string> {
+// ---- High-Precision Stopwords, Curated-List Detection & Mechanism Concept Ontology ----
+
+export const GENERIC_STOP_WORDS = new Set<string>([
+  // English prose & boilerplate
+  "the", "and", "for", "with", "from", "that", "this", "your", "into", "over", "using", "uses",
+  "is", "in", "to", "an", "on", "it", "or", "no", "by", "at", "of", "as", "be", "do", "go",
+  "if", "me", "my", "so", "up", "us", "we", "he", "ag", "md", "os", "ts", "js", "py", "ui",
+  "tsconfig", "tsconfig.json", "package.json", "makefile", "dockerfile", "readme", "readme.md",
+  "used", "built", "based", "make", "makes", "made", "build", "building", "create", "creating",
+  "simple", "fast", "modern", "powerful", "easy", "free", "best", "real", "time", "full", "new",
+  "lightweight", "complete", "native", "cross", "platform", "local", "first", "self", "hosted",
+  "single", "multi", "auto", "smart", "super", "pro", "core", "hub", "kit", "lab", "studio",
+  "box", "one", "dev", "src", "docs", "test", "tests", "main", "beta", "alpha", "more", "most",
+  "any", "all", "can", "you", "are", "was", "were", "has", "have", "had", "not", "but", "out",
+  "about", "just", "only", "very", "also", "like", "what", "when", "where", "how", "why", "who",
+  "into", "onto", "upon", "via", "per", "etc", "run", "running", "runs", "work", "works", "working",
+  "get", "set", "use", "way", "ways", "help", "helps", "better", "clean", "great", "world", "class",
+  "every", "everything", "anything", "nothing", "zero", "high", "low", "next", "gen", "generation",
+  "powered", "driven", "native", "ready", "friendly", "featured", "minimal", "tiny", "small", "large",
+  "universal", "unified", "integrated", "interactive", "extensible", "flexible", "modular", "scalable",
+  "configurable", "customizable", "production", "grade", "enterprise", "personal", "private", "public",
+  "official", "community", "mirror", "fork", "forked", "copy", "backup", "archive", "archived",
+  // Over-broad tech buzzwords that MUST NEVER establish links on their own
+  "ai", "llm", "llms", "gpt", "chatgpt", "openai", "anthropic", "claude", "gemini", "deepseek",
+  "model", "models", "agent", "agents", "agentic", "bot", "bots", "app", "apps", "application",
+  "applications", "tool", "tools", "toolkit", "cli", "web", "server", "servers", "client", "clients",
+  "framework", "frameworks", "library", "libraries", "sdk", "sdks", "api", "apis", "service",
+  "services", "system", "systems", "engine", "engines", "project", "projects", "workspace",
+  "manager", "helper", "utils", "utility", "utilities", "awesome", "curated", "list", "lists",
+  "collection", "collections", "resources", "resource", "demo", "demos", "example", "examples",
+  "starter", "template", "templates", "boilerplate", "sample", "samples", "cookbook", "tutorial",
+  "tutorials", "course", "courses", "book", "books", "guide", "guides", "roadmap", "interview",
+  "cheatsheet", "learning", "learn", "education", "open", "source", "open-source", "opensource",
+  "oss", "github", "repo", "repos", "repository", "repositories", "code", "codebase", "software",
+  "developer", "developers", "programming", "program", "script", "scripts", "python", "javascript",
+  "typescript", "golang", "rust", "java", "html", "css", "markdown", "json", "yaml", "toml",
+  "nodejs", "node", "linux", "macos", "windows", "android", "ios", "hacktoberfest", "research",
+  "data", "chat", "chatbot", "prompt", "prompts", "skill", "skills", "plugin", "plugins",
+  "extension", "extensions", "interface", "ui", "gui", "desktop", "mobile", "cloud", "infra",
+  "infrastructure", "automation", "workflow", "workflows", "solution", "management", "control",
+  "assistant", "support", "custom", "feature", "features", "file", "files", "text", "content",
+  "page", "pages", "site", "website", "version", "release", "update", "pack", "package", "packages",
+  "module", "modules", "component", "components", "layer", "node", "nodes", "graph", "network",
+  "http", "https", "url", "urls", "link", "links", "input", "output", "state", "event", "events",
+  "task", "tasks", "job", "jobs", "user", "users", "team", "teams", "human", "humans", "value",
+  "based", "driven", "first", "only", "mode", "type", "types", "format", "formats", "view",
+  "language", "languages", "natural", "intelligence", "artificial", "generative", "machine",
+  "deep", "neural", "large", "general", "purpose", "autonomous", "intelligent", "digital",
+  "without", "through", "between", "across", "around", "within", "under", "above", "below",
+  "after", "before", "while", "during", "since", "until", "against", "toward", "towards",
+  // Common Chinese stopwords / generic buzzwords
+  "一个", "基于", "支持", "使用", "用于", "开源", "工具", "系统", "框架", "平台", "应用", "项目",
+  "智能", "模型", "大模型", "人工智能", "通用", "自动", "自动化", "本地", "轻量", "高效", "快速",
+  "简单", "完整", "功能", "服务", "管理", "开发", "编程", "代码", "数据", "文件", "内容", "界面",
+  "助手", "机器人", "工作", "流程", "插件", "扩展", "组件", "模块", "引擎", "版本", "中文", "教程",
+  "指南", "合集", "大全", "列表", "资源", "文档", "学习", "笔记", "示例", "模板", "提供", "完全",
+  "推荐", "本机", "发布", "生成", "同步", "与工", "渠道", "多渠", "多渠道", "浏览", "览器", "多平",
+  "化投", "量化投", "市场", "软件", "方案", "原理", "实践", "架构", "设计", "工程",
+]);
+
+export interface RepoConceptPattern {
+  id: string;
+  label: string;
+  domainSlug: string;
+  specificity: number; // 0.7..1.0 higher = narrower & more diagnostic
+  relationHint: RepoRelationType;
+  exactTokens: readonly string[];
+  phrases: readonly string[];
+}
+
+export const REPO_CONCEPT_PATTERNS: readonly RepoConceptPattern[] = [
+  // ---- AI Agents & Orchestration ----
+  {
+    id: "mcp-protocol",
+    label: "MCP 工具协议与 Server/Client 集成",
+    domainSlug: "ai-agents",
+    specificity: 0.85,
+    relationHint: "direct_module",
+    exactTokens: ["mcp", "mcp-server", "mcp-client", "model-context-protocol", "fastmcp"],
+    phrases: ["model context protocol", "mcp server", "mcp client", "mcp tool", "mcp tools", "mcp gateway"],
+  },
+  {
+    id: "multi-agent-orchestration",
+    label: "多 Agent 协同编排与状态路由",
+    domainSlug: "ai-agents",
+    specificity: 0.86,
+    relationHint: "architecture_pattern",
+    exactTokens: ["multi-agent", "multiagent", "orchestrator", "langgraph", "autogen", "crewai", "voltagent", "mastra", "a2a", "agent2agent", "agent-swarm", "swarm", "subagent", "subagents", "deepagents", "hermes-agent", "openclaw"],
+    phrases: ["multi-agent", "multi agent", "agent orchestration", "agent swarm", "agent orchestrator", "多智能体", "多 agent", "多agent", "协同编排"],
+  },
+  {
+    id: "agent-loop-runtime",
+    label: "Agent Loop 执行运行时与工具调度",
+    domainSlug: "ai-agents",
+    specificity: 0.82,
+    relationHint: "architecture_pattern",
+    exactTokens: ["agent-loop", "agent-runtime", "agent-framework", "tool-calling", "function-calling", "pydantic-ai", "smolagents", "copilotkit", "ag-ui", "google-adk", "adk"],
+    phrases: ["agent loop", "agent runtime", "tool calling", "function calling", "agent node", "agent runner", "openaigentrunner", "re-act loop"],
+  },
+  {
+    id: "im-channel-agent",
+    label: "多渠道 IM 接入与消息分发网关",
+    domainSlug: "ai-agents",
+    specificity: 0.90,
+    relationHint: "direct_module",
+    exactTokens: ["feishu", "lark", "dingtalk", "wecom", "wechat", "qqbot", "slack-bot", "telegram-bot", "whatsapp", "discord-bot", "socket.io", "socketio"],
+    phrases: ["socket.io", "feishu", "dingtalk", "飞书", "钉钉", "企微", "微信机器人"],
+  },
+  {
+    id: "agent-control-plane",
+    label: "多 Agent 任务总控台与人机审批工作流",
+    domainSlug: "ai-agents",
+    specificity: 0.88,
+    relationHint: "ux_workflow",
+    exactTokens: ["paperclip", "pilotdeck", "multica", "human-in-the-loop", "approval-gate", "mission-control", "digital-employee", "agent-os"],
+    phrases: ["control plane", "human-in-the-loop", "human in the loop", "approval gate", "manage agents", "agent workforce", "opc os", "一人公司", "组织数字孪生", "决策脑枢", "多 agent 产研", "数字员工", "经营中控", "公司总控", "审批"],
+  },
+  {
+    id: "visual-workflow-canvas",
+    label: "可视化节点工作流编排画布",
+    domainSlug: "ai-agents",
+    specificity: 0.90,
+    relationHint: "ux_workflow",
+    exactTokens: ["flowgram", "n8n", "dify", "coze", "fastgpt", "workflow-editor", "node-editor", "visual-workflow", "dag-editor"],
+    phrases: ["workflow editor", "visual workflow", "workflow canvas", "node-based workflow", "工作流编辑"],
+  },
+  {
+    id: "adaptive-tutor-learning",
+    label: "认知诊断、间隔重复与主动学习 Agent",
+    domainSlug: "ai-agents",
+    specificity: 0.94,
+    relationHint: "algorithm_idea",
+    exactTokens: ["spaced-repetition", "sm-2", "sm2", "anki", "flashcard", "flashcards", "tutor", "tutoring", "deeptutor", "pedagogy", "quiz", "learningharness"],
+    phrases: ["spaced repetition", "sm-2", "personalized tutoring", "active learning", "learning harness", "学习向", "先测理解", "主动学习", "认知诊断"],
+  },
+
+  // ---- Coding Agents & Engineering Paradigm ----
+  {
+    id: "coding-agent-harness",
+    label: "编程 Agent 运行时与 Harness/Hooks 工程",
+    domainSlug: "coding-agents",
+    specificity: 0.88,
+    relationHint: "architecture_pattern",
+    exactTokens: ["claude-code", "codex", "opencode", "cline", "aider", "openhands", "swe-agent", "swe-bench", "roo-code", "kilo-code", "gemini-cli", "agent-harness", "deepseek-harness", "claude-hooks", "cc-switch", "gstack", "coding-agent", "vibe-coding"],
+    phrases: ["claude code", "coding agent", "code agent", "agent harness", "claude code hooks", "vibe coding", "autonomous coding", "swe-bench"],
+  },
+  {
+    id: "worktree-fleet-orchestration",
+    label: "Git Worktree 隔离与多编码 Agent 舰队调度",
+    domainSlug: "coding-agents",
+    specificity: 0.94,
+    relationHint: "tooling_infra",
+    exactTokens: ["worktree", "vibe-kanban", "vibekanban", "orca", "git-worktree", "herdr"],
+    phrases: ["git worktree", "vibe kanban", "vibe-kanban", "fleet of bots", "fleet of agents", "parallel coding", "多 agent 编码", "编码交付", "隔离实现"],
+  },
+  {
+    id: "agent-skills-paradigm",
+    label: "Agent Skills 规范与验收驱动 AI 工程范式",
+    domainSlug: "coding-agents",
+    specificity: 0.86,
+    relationHint: "benchmark_ref",
+    exactTokens: ["agent-skills", "claude-skills", "spec-driven", "agents-md", "claude-md", "acceptance-criteria", "evals", "eval-harness"],
+    phrases: ["agent skills", "claude skills", "spec-driven", "acceptance criteria", "agents.md", "claude.md", "研发范式", "验收先行", "行为基线"],
+  },
+  {
+    id: "llm-model-router",
+    label: "多模型路由控制面与 Token 压缩代理",
+    domainSlug: "coding-agents",
+    specificity: 0.90,
+    relationHint: "tooling_infra",
+    exactTokens: ["claude-code-router", "litellm", "portkey", "ai-gateway", "llm-gateway", "model-router", "tokenjuice", "caveman"],
+    phrases: ["ai gateway", "llm gateway", "route across models", "model router", "token compaction", "token weight loss", "模型路由"],
+  },
+
+  // ---- RAG, Knowledge Graph & Context Memory ----
+  {
+    id: "context-graph-dag",
+    label: "图结构上下文组装与 KV-Cache 感知压缩",
+    domainSlug: "rag-knowledge",
+    specificity: 0.96,
+    relationHint: "algorithm_idea",
+    exactTokens: ["context-graph", "kv-cache", "prefix-cache", "context-engineering", "context-assembly", "context-compression", "property-dag", "long-horizon"],
+    phrases: ["context graph", "kv-cache", "kv cache", "prefix cache", "context assembly", "context engineering", "context rot", "long-horizon agent", "图结构上下文"],
+  },
+  {
+    id: "knowledge-graph-rag",
+    label: "知识图谱抽取与 GraphRAG 拓扑检索",
+    domainSlug: "rag-knowledge",
+    specificity: 0.92,
+    relationHint: "algorithm_idea",
+    exactTokens: ["graphrag", "knowledge-graph", "graphify", "graphiti", "lightrag", "cognee", "neo4j", "understand-anything"],
+    phrases: ["knowledge graph", "graph rag", "graphrag", "queryable knowledge graph", "codebase knowledge graph", "知识图谱"],
+  },
+  {
+    id: "agent-persistent-memory",
+    label: "跨会话持久化 Agent 记忆引擎",
+    domainSlug: "rag-knowledge",
+    specificity: 0.90,
+    relationHint: "direct_module",
+    exactTokens: ["agent-memory", "long-term-memory", "persistent-memory", "mem0", "supermemory", "claude-mem", "memvid", "episodic-memory", "memory-graph"],
+    phrases: ["agent memory", "persistent memory", "persistent context", "long-term memory", "memory graph", "memory engine", "记忆库", "上下文记忆"],
+  },
+  {
+    id: "hybrid-rag-retrieval",
+    label: "向量检索、BM25 混合召回与重排管线",
+    domainSlug: "rag-knowledge",
+    specificity: 0.88,
+    relationHint: "algorithm_idea",
+    exactTokens: ["rag", "agentic-rag", "ragflow", "pgvector", "qdrant", "milvus", "weaviate", "chromadb", "faiss", "rerank", "reranker", "hybrid-search", "bm25", "pageindex", "claude-context", "chunking", "vector-search", "vector-database"],
+    phrases: ["vector search", "vector database", "hybrid search", "rag pipeline", "semantic retrieval", "code search mcp", "向量检索", "混合检索"],
+  },
+  {
+    id: "obsidian-pkm-notes",
+    label: "Obsidian / Markdown 知识库与智能笔记整理",
+    domainSlug: "rag-knowledge",
+    specificity: 0.94,
+    relationHint: "direct_module",
+    exactTokens: ["obsidian", "obsidian-plugin", "pkm", "second-brain", "logseq", "tolaria", "markdown-notes", "obsidian-palace"],
+    phrases: ["obsidian", "second brain", "markdown knowledge", "note taking", "personal knowledge", "笔记库", "文档总结"],
+  },
+
+  // ---- Browser Extensions & Web Automation ----
+  {
+    id: "chrome-mv3-extension",
+    label: "Chrome Manifest V3 侧栏扩展与 Native Host 通信",
+    domainSlug: "browser-automation",
+    specificity: 0.94,
+    relationHint: "architecture_pattern",
+    exactTokens: ["chrome-extension", "browser-extension", "manifest-v3", "mv3", "side-panel", "sidepanel", "native-host", "native-messaging", "plasmo", "wxt", "chromegate", "pagelens"],
+    phrases: ["chrome extension", "browser extension", "manifest v3", "side panel", "native host", "native messaging", "chrome 扩展", "浏览器扩展", "浏览器插件", "侧栏"],
+  },
+  {
+    id: "browser-gui-agent",
+    label: "页面理解、DOM 填表与 Browser-Use / GUI 智能体",
+    domainSlug: "browser-automation",
+    specificity: 0.92,
+    relationHint: "architecture_pattern",
+    exactTokens: ["browser-use", "page-agent", "gui-agent", "computer-use", "web-agent", "agent-browser", "dom-automation", "browser-automation"],
+    phrases: ["browser-use", "browser use", "page agent", "in-page gui agent", "gui agent", "computer use", "control web", "web automation", "browser automation", "操作网页", "读页", "填表", "控屏"],
+  },
+  {
+    id: "cdp-playwright-driver",
+    label: "Playwright / Puppeteer / CDP 浏览器底层驱动与 MCP 桥接",
+    domainSlug: "browser-automation",
+    specificity: 0.92,
+    relationHint: "direct_module",
+    exactTokens: ["playwright", "playwright-mcp", "puppeteer", "cdp", "chrome-devtools", "chrome-devtools-mcp", "devtools-protocol", "headless-browser", "lightpanda", "cloakbrowser", "selenium"],
+    phrases: ["playwright", "puppeteer", "chrome devtools", "devtools protocol", "headless browser", "browser mcp"],
+  },
+  {
+    id: "web-scraping-extraction",
+    label: "网页抓取、反爬采集与多平台正文抽取",
+    domainSlug: "browser-automation",
+    specificity: 0.88,
+    relationHint: "direct_module",
+    exactTokens: ["firecrawl", "crawl4ai", "scrapling", "web-scraping", "web-crawler", "scraper", "crawler", "readability", "web-clipper", "rss", "agent-reach"],
+    phrases: ["web scraping", "web crawler", "scrape", "crawl websites", "extract markdown", "content extraction", "网页抓取", "剪藏", "信息采集"],
+  },
+  {
+    id: "web-page-translation",
+    label: "网页实时翻译、双语对照与本地模型缓存",
+    domainSlug: "browser-automation",
+    specificity: 0.95,
+    relationHint: "direct_module",
+    exactTokens: ["web-translator", "page-translator", "immersive-translate", "bilingual", "translator"],
+    phrases: ["translate web", "webpage translation", "page translator", "网页翻译", "翻译插件", "划词翻译"],
+  },
+
+  // ---- Media, Speech & Multimodal Creative ----
+  {
+    id: "tts-voice-synthesis",
+    label: "TTS 语音合成、参考音克隆与有声书流水线",
+    domainSlug: "media-creative",
+    specificity: 0.94,
+    relationHint: "direct_module",
+    exactTokens: ["tts", "text-to-speech", "index-tts", "voice-cloning", "voice-synthesis", "kokoro", "cosyvoice", "fish-speech", "f5-tts", "chatterbox", "voicebox", "voicestudio", "audiobook", "audio-book"],
+    phrases: ["text to speech", "text-to-speech", "voice cloning", "voice synthesis", "index-tts", "audio book", "audiobook", "有声书", "语音合成", "参考音"],
+  },
+  {
+    id: "asr-subtitle-dubbing",
+    label: "ASR 语音识别、视频字幕翻译与同声传译配音",
+    domainSlug: "media-creative",
+    specificity: 0.94,
+    relationHint: "direct_module",
+    exactTokens: ["asr", "speech-to-text", "whisper", "faster-whisper", "funasr", "subtitle", "subtitles", "caption", "captions", "dubbing", "video-translation", "simultaneous-interpretation"],
+    phrases: ["speech to text", "speech-to-text", "video translation", "simultaneous interpretation", "auto subtitle", "voice dubbing", "同声传译", "同传", "配音", "字幕", "视频翻译"],
+  },
+  {
+    id: "pdf-document-parsing",
+    label: "PDF / 网页文档分段解析与 OCR 抽取",
+    domainSlug: "media-creative",
+    specificity: 0.90,
+    relationHint: "direct_module",
+    exactTokens: ["ocr", "paddleocr", "mineru", "stirling-pdf", "pdf-parser", "pdf-converter", "docling", "markitdown", "epub"],
+    phrases: ["pdf parser", "pdf to markdown", "pdf converter", "edit pdf", "document ocr", "pdf 和网页", "pdf or a web page"],
+  },
+  {
+    id: "programmable-video-aigc",
+    label: "可编程视频剪辑、分镜生成与 AIGC 创作工作台",
+    domainSlug: "media-creative",
+    specificity: 0.90,
+    relationHint: "architecture_pattern",
+    exactTokens: ["remotion", "ffmpeg", "opencut", "video-editor", "video-editing", "video-generation", "moneyprinter", "manim", "comfyui", "stable-diffusion", "diffusion", "storyboard", "aigc"],
+    phrases: ["video editor", "video editing", "video generation", "image generation", "stable diffusion", "text to video", "剧本", "分镜", "剪辑", "影视"],
+  },
+
+  // ---- Quant Finance & Data Analytics ----
+  {
+    id: "quant-backtest-factors",
+    label: "量化多因子模型、回测引擎与组合风险优化",
+    domainSlug: "quant-data",
+    specificity: 0.96,
+    relationHint: "algorithm_idea",
+    exactTokens: ["quant", "quantitative", "backtest", "backtesting", "qlib", "vnpy", "quantconnect", "barra", "cvxpy", "factor-model", "alpha-factor", "portfolio", "risk-model", "microstructure", "quantdinger", "algotrading"],
+    phrases: ["quant research", "quantitative research", "algorithmic trading", "factor model", "risk platform", "backtest", "量化", "回测", "因子", "风控"],
+  },
+  {
+    id: "financial-trading-agents",
+    label: "A股/美股行情数据与多智能体金融投研交易",
+    domainSlug: "quant-data",
+    specificity: 0.95,
+    relationHint: "architecture_pattern",
+    exactTokens: ["tradingagents", "stock", "stocks", "a-share", "ashare", "akshare", "yfinance", "tushare", "openbb", "fincept", "openstock", "vibe-trading", "ai-berkshire", "trading-bot", "market-data", "polymarket"],
+    phrases: ["stock analysis", "financial research", "financial trading", "trading agent", "market data", "value investing", "stock market", "股票", "行情", "投研", "交易框架"],
+  },
+  {
+    id: "duckdb-arrow-ontology",
+    label: "DuckDB 向量化计算、Apache Arrow 与 Palantir 业务本体分析",
+    domainSlug: "quant-data",
+    specificity: 0.95,
+    relationHint: "architecture_pattern",
+    exactTokens: ["duckdb", "apache-arrow", "polars", "ontology", "palantir", "evoontology", "data-formulator", "pygwalker", "metabase", "superset", "olap", "dataframe", "visual-analytics"],
+    phrases: ["apache arrow", "duckdb", "business intelligence", "data analysis", "data analytics", "visual analysis", "ontology layer", "现代数据栈", "业务本体", "数据分析", "向量化计算"],
+  },
+
+  // ---- Systems, Terminals, Sandboxes & Databases ----
+  {
+    id: "microvm-agent-sandbox",
+    label: "Firecracker MicroVM / E2B 隔离沙箱与安全代码执行面",
+    domainSlug: "dev-infra",
+    specificity: 0.96,
+    relationHint: "architecture_pattern",
+    exactTokens: ["microvm", "firecracker", "e2b", "smolvm", "sandbox", "sandboxed", "code-interpreter", "boxsh", "cloud-hypervisor", "kata-containers", "qemu"],
+    phrases: ["microvm", "micro-vm", "firecracker", "code interpreter", "code interpreting", "agent sandbox", "sandboxed shell", "virtual machine to safely run", "give your agent a computer", "沙箱", "微虚拟机"],
+  },
+  {
+    id: "native-terminal-cockpit",
+    label: "原生多窗格终端、Ghostty/WaveTerm 主题与终端驾驶舱",
+    domainSlug: "dev-infra",
+    specificity: 0.94,
+    relationHint: "ux_workflow",
+    exactTokens: ["terminal-emulator", "ghostty", "waveterm", "cmux", "warp", "alacritty", "wezterm", "tmux", "pty", "crt", "pip-boy", "macos-terminal"],
+    phrases: ["macos terminal", "terminal emulator", "wave terminal", "nested splits", "vertical tabs", "terminal theme", "ghostty-based", "原生终端", "终端驾驶舱"],
+  },
+  {
+    id: "transactional-db-engine",
+    label: "嵌入式/单机事务数据库与 SQL 存储引擎",
+    domainSlug: "data-backend",
+    specificity: 0.93,
+    relationHint: "architecture_pattern",
+    exactTokens: ["transactional", "storage-engine", "sqlite", "libsql", "turso", "postgres", "postgresql", "pglite", "rocksdb", "lsm-tree", "mvcc", "wal", "raft", "sql-engine", "supabase", "drizzle", "prisma", "tabularis", "dbeaver"],
+    phrases: ["transactional database", "sql database", "storage engine", "sqlite-compatible", "embedded database", "单机事务", "数据库引擎", "存储引擎"],
+  },
+  {
+    id: "local-first-sync-queue",
+    label: "Local-first 同步引擎、CRDT 与持久化任务队列",
+    domainSlug: "data-backend",
+    specificity: 0.92,
+    relationHint: "architecture_pattern",
+    exactTokens: ["local-first", "crdt", "sync-engine", "electric-sql", "durable-execution", "temporal", "trigger-dev", "event-sourcing"],
+    phrases: ["durable execution", "durable ai agents", "sync engine", "local-first sync", "event sourcing"],
+  },
+
+  // ---- Web UI, Visualization & Creative Apps ----
+  {
+    id: "svg-graph-canvas-viz",
+    label: "SVG/Canvas 高密度图谱渲染、白板与架构可视化",
+    domainSlug: "web-ui-viz",
+    specificity: 0.91,
+    relationHint: "ux_workflow",
+    exactTokens: ["svg", "canvas", "d3", "diagram", "diagrams", "mermaid", "excalidraw", "tldraw", "whiteboard", "react-flow", "xyflow", "cytoscape", "graph-visualization", "archify", "gitdiagram", "asciiflow", "visualization"],
+    phrases: ["svg graph", "graph canvas", "node diagram", "interactive diagram", "architecture diagram", "data visualization", "bezier edge", "图谱渲染", "可视化", "白板"],
+  },
+  {
+    id: "react-design-system-ui",
+    label: "React 组件体系、设计系统与前端交互动效",
+    domainSlug: "web-ui-viz",
+    specificity: 0.87,
+    relationHint: "ux_workflow",
+    exactTokens: ["shadcn", "tailwind", "tailwindcss", "radix", "design-system", "design-systems", "ui-components", "component-library", "storybook", "framer-motion", "gsap", "anime", "tegaki", "pretext", "looseleaf", "open-design", "penpot", "affine"],
+    phrases: ["design system", "react components", "component library", "ui components", "text measurement", "handwriting animation", "设计系统", "组件库"],
+  },
+  {
+    id: "flutter-crossplatform-chat",
+    label: "Flutter / 跨端 AI 聊天客户端界面",
+    domainSlug: "web-ui-viz",
+    specificity: 0.94,
+    relationHint: "ux_workflow",
+    exactTokens: ["fluterllmchatbot", "gtk-llm-chat", "nextchat", "lobechat", "chatbox", "jan", "cherry-studio", "chatbot-ui", "chat-ui"],
+    phrases: ["flutter chatbot", "flutter llm", "llm chat", "chatting with large language", "ai chat client", "openai-like model provider", "chat ui"],
+  },
+  {
+    id: "godot-narrative-game",
+    label: "Godot 游戏引擎、Roguelike 循环与 AI NPC 叙事",
+    domainSlug: "web-ui-viz",
+    specificity: 0.97,
+    relationHint: "architecture_pattern",
+    exactTokens: ["godot", "gdscript", "roguelike", "game-engine", "ai-npc", "narrative-game"],
+    phrases: ["godot 4", "game engine", "roguelike", "ai npc", "narrative game", "游戏引擎", "剧情引擎", "分支叙事"],
+  },
+  {
+    id: "chinese-metaphysics-divination",
+    label: "传统文化术数排盘与命理算法引擎",
+    domainSlug: "web-ui-viz",
+    specificity: 0.98,
+    relationHint: "algorithm_idea",
+    exactTokens: ["bazi", "ziwei", "iching", "iztro", "py-iztro", "lifekline"],
+    phrases: ["bazi", "ziwei", "iztro", "八字", "紫微", "紫薇", "奇门", "六爻", "梅花", "排盘", "术数"],
+  },
+  {
+    id: "rubiks-cube-puzzle",
+    label: "魔方交互教学与还原算法",
+    domainSlug: "web-ui-viz",
+    specificity: 0.98,
+    relationHint: "algorithm_idea",
+    exactTokens: ["rubiks", "rubiks-cube", "cfop", "cubing"],
+    phrases: ["rubik's cube", "rubiks cube", "魔方"],
+  },
+
+  // ---- Security, Commerce, Growth & Ops ----
+  {
+    id: "blind-credential-security",
+    label: "盲凭据代理、密钥隔离 Vault 与防 Prompt 注入安全",
+    domainSlug: "ops-security-growth",
+    specificity: 0.95,
+    relationHint: "direct_module",
+    exactTokens: ["credential", "credentials", "secret-management", "secrets", "vault", "password-manager", "bitwarden", "1password", "guardrails", "prompt-injection", "ssrf", "red-team", "trivy", "oauth", "rbac"],
+    phrases: ["credential broker", "secret management", "password manager", "prompt injection", "output scrubbing", "never sees secrets", "盲凭据", "密钥隔离", "零知识"],
+  },
+  {
+    id: "commerce-licensing-finops",
+    label: "支付收银 MoR、Ed25519 离线授权验签与 FinOps 计费",
+    domainSlug: "ops-security-growth",
+    specificity: 0.95,
+    relationHint: "direct_module",
+    exactTokens: ["payment", "payments", "billing", "stripe", "lemonsqueezy", "paddle", "merchant-of-record", "licensing", "license-key", "ed25519", "finops", "checkout", "invoicing"],
+    phrases: ["merchant of record", "offline license", "license key", "license sdk", "unit economics", "online payments", "billing", "stripe", "离线授权", "验签", "收银"],
+  },
+  {
+    id: "gtm-storefront-publishing",
+    label: "产品着陆页、UTM 增长归因与多平台内容分发",
+    domainSlug: "ops-security-growth",
+    specificity: 0.92,
+    relationHint: "ux_workflow",
+    exactTokens: ["storefront", "landing-page", "waitlist", "utm", "attribution", "seo", "tryghost", "newsletter", "repurposer", "cms", "cose"],
+    phrases: ["landing page", "utm attribution", "multi-channel", "content publishing", "google ads", "ghost cms", "memberships, subscriptions and newsletters", "着陆页", "多平台同步", "多平台发布", "增长归因"],
+  },
+  {
+    id: "crm-telemetry-observability",
+    label: "客服 CRM 工单、去隐私遥测、崩溃指纹与可观测性",
+    domainSlug: "ops-security-growth",
+    specificity: 0.92,
+    relationHint: "tooling_infra",
+    exactTokens: ["crm", "helpdesk", "support-ticket", "telemetry", "crash-reporting", "sentry", "opentelemetry", "observability", "langfuse", "plausible", "posthog", "umami", "uptime-kuma", "grafana", "prometheus"],
+    phrases: ["support crm", "crash fingerprinting", "privacy-first telemetry", "web analytics", "observability", "uptime monitoring", "客服", "工单", "遥测", "可观测"],
+  },
+  {
+    id: "mesh-network-deployment",
+    label: "Docker/K8s 容器部署、Tailscale/NetBird 内网穿透与自托管",
+    domainSlug: "ops-security-growth",
+    specificity: 0.90,
+    relationHint: "tooling_infra",
+    exactTokens: ["docker", "kubernetes", "k8s", "helm", "tailscale", "wireguard", "netbird", "reverse-proxy", "caddy", "traefik", "coolify", "portainer"],
+    phrases: ["reverse proxy", "mesh vpn", "self-hosted", "docker compose", "内网穿透", "自托管", "容器部署"],
+  },
+
+  // ---- Local LLM Inference & Training ----
+  {
+    id: "local-llm-inference",
+    label: "Ollama / vLLM / llama.cpp / MLX 本地模型推理加速",
+    domainSlug: "llm-models",
+    specificity: 0.92,
+    relationHint: "tooling_infra",
+    exactTokens: ["ollama", "vllm", "sglang", "llama-cpp", "llamacpp", "mlx", "gguf", "ggml", "quantization", "awq", "gptq", "deepinfer", "tensorrt", "local-llm", "lm-studio"],
+    phrases: ["llama.cpp", "inference engine", "inference framework", "local llm", "model serving", "ollama", "本地模型", "推理引擎"],
+  },
+  {
+    id: "llm-finetune-training",
+    label: "Unsloth / LoRA / RLHF 大模型微调与后训练管线",
+    domainSlug: "llm-models",
+    specificity: 0.94,
+    relationHint: "algorithm_idea",
+    exactTokens: ["unsloth", "llama-factory", "axolotl", "fine-tuning", "finetuning", "lora", "qlora", "rlhf", "grpo", "dpo", "pretraining", "nanochat", "nanogpt", "transformers"],
+    phrases: ["fine-tuning", "fine tuning", "post-training", "language model training", "大模型训练", "微调"],
+  },
+];
+
+const CONCEPT_BY_ID = new Map<string, RepoConceptPattern>(
+  REPO_CONCEPT_PATTERNS.map((c) => [c.id, c]),
+);
+
+export function isCuratedListOrTutorial(repo: {
+  fullName: string;
+  name: string;
+  description: string;
+  topics: string[];
+}): boolean {
+  const nameLower = repo.name.trim().toLowerCase();
+  const fullLower = repo.fullName.trim().toLowerCase();
+  const descLower = repo.description.trim().toLowerCase();
+  const topicsLower = new Set(repo.topics.map((t) => t.trim().toLowerCase()));
+
+  if (
+    /^awesome[-_]/.test(nameLower) ||
+    /[-_]awesome$/.test(nameLower) ||
+    nameLower === "awesome" ||
+    /[-_](book|books|tutorial|tutorials|starter[-_]kit|cookbook|primer)$/.test(nameLower) ||
+    /^free-programming-books/.test(nameLower) ||
+    /^hello-(python|algo|world)/.test(nameLower) ||
+    /roadmap|cheatsheet|interview-questions|build-your-own-x|every-programmer-should-know|best-websites|public-apis|system-design-notes|system-design-primer|new-grad-positions|foundations-of-llms|llm-course|ai-agents-for-beginners|guidance-book|crawlertutorial/.test(
+      nameLower,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    topicsLower.has("awesome") ||
+    topicsLower.has("awesome-list") ||
+    topicsLower.has("cheatsheet") ||
+    topicsLower.has("interview-questions") ||
+    topicsLower.has("free-programming-books") ||
+    topicsLower.has("roadmap") ||
+    topicsLower.has("course") ||
+    topicsLower.has("tutorials") ||
+    topicsLower.has("tutorial") ||
+    topicsLower.has("book") ||
+    topicsLower.has("starter-kit")
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(curated list|awesome list|a collection of|collection of .*?(links|resources|papers|tools|books|tutorials|prompts|skills|servers|notebooks|recipes|projects|use cases|full time roles)|free programming books|interview questions|study notes|notes of the book|a book for learning|lessons to get started|course to get into|recreating your favorite technologies|curated library of|useful websites for programmers|user editable database for tv channels|comprehensive guide to|tutorial assets|lessons and tutorials|starter kit with)\b/i.test(
+      descLower,
+    ) ||
+    /(合集|用法大全|资源汇总|面试题库|学习路线|教程合集|免费接码|电子书|计算机程序设计的艺术|科普教程|开源书稿|全书正文|从零入门指南|原书框架|深度学习教程|爬虫入门|30天掌握)/.test(
+      repo.description,
+    )
+  ) {
+    return true;
+  }
+
+  // Learning course repos like learn-agentic-ai / learn-python
+  if (/^learn[-_]/.test(nameLower) && /^learn\b/i.test(descLower)) {
+    return true;
+  }
+
+  // Pure markdown/no-code awesome/collection repo with "collection"/"list" in name
+  if (/(^|\/)(500-|100-|top-|best-|awesome)/.test(fullLower) && /\b(collection|list|curated|projects|prompts)\b/i.test(descLower)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isMetadataStub(repo: {
+  description: string;
+  topics: string[];
+  notes?: string;
+  readmeDigest?: RepoReadmeDigest | null;
+}): boolean {
+  const cleanDesc = repo.description.replace(/[-_.\s•·✨🚀🔥]+/g, "").trim();
+  const cleanNotes = (repo.notes ?? "").trim();
+  const cleanReadme = (repo.readmeDigest?.summary ?? "").trim();
+  return cleanDesc.length < 6 && repo.topics.length === 0 && cleanNotes.length < 8 && cleanReadme.length < 16;
+}
+
+function extractRawTokens(text: string): string[] {
   const raw = text.toLowerCase();
-  const words = raw.match(/[a-z0-9][a-z0-9_-]{1,31}/g) ?? [];
-  const out = new Set<string>();
-  for (const w of words) {
-    out.add(w);
-    for (const part of w.split(/[-_]+/)) {
-      if (part.length >= 2) out.add(part);
+  const out: string[] = [];
+  const latinWords = raw.match(/[a-z0-9][a-z0-9_.+-]{1,35}/g) ?? [];
+  for (const w of latinWords) {
+    const clean = w.replace(/^[._+-]+|[._+-]+$/g, "");
+    if (!clean || clean.length < 2) continue;
+    out.push(clean);
+    if (/[-_./]/.test(clean)) {
+      for (const part of clean.split(/[-_./]+/)) {
+        if (part.length >= 2) out.push(part);
+      }
+    }
+  }
+  const cjkRuns = raw.match(/[\u4e00-\u9fff]{2,16}/g) ?? [];
+  for (const run of cjkRuns) {
+    if (run.length <= 4) {
+      out.push(run);
+    }
+    for (let i = 0; i <= run.length - 2; i++) {
+      out.push(run.slice(i, i + 2));
+      if (i <= run.length - 3) out.push(run.slice(i, i + 3));
+      if (i <= run.length - 4) out.push(run.slice(i, i + 4));
     }
   }
   return out;
 }
 
-function keywordOverlapBoost(repoTokens: Set<string>, keywords: readonly string[]): number {
-  if (!repoTokens.size || !keywords.length) return 0;
-  let hits = 0;
-  for (const kw of keywords) {
-    const k = kw.trim().toLowerCase();
-    if (!k) continue;
-    if (repoTokens.has(k)) {
-      hits += 1;
-    } else if (k.includes("-")) {
-      const parts = k.split("-").filter(Boolean);
-      if (parts.length > 0 && parts.every((p) => repoTokens.has(p))) hits += 0.85;
-    }
+export function extractDistinctiveTokens(text: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const tok of extractRawTokens(text)) {
+    if (tok.length < 2 || /^\d+$/.test(tok)) continue;
+    if (GENERIC_STOP_WORDS.has(tok)) continue;
+    counts.set(tok, (counts.get(tok) ?? 0) + 1);
   }
-  if (hits === 0) return 0;
-  return Math.min(0.42, 0.14 + (hits - 1) * 0.08);
+  return counts;
 }
 
-function topicOverlapScore(aTopics: string[], bTopics: string[], aLang: string | null, bLang: string | null): number {
-  const setA = new Set(aTopics.map((t) => t.toLowerCase()));
-  const setB = new Set(bTopics.map((t) => t.toLowerCase()));
-  let overlap = 0;
-  for (const t of setA) {
-    if (setB.has(t)) overlap++;
+interface RepoFeatureProfile {
+  nameTokens: Set<string>;
+  topicTokens: Set<string>;
+  allRawTokens: Set<string>;
+  distinctiveTokens: Map<string, number>;
+  fullBagLower: string;
+  nameLower: string;
+  descLower: string;
+  concepts: Map<string, number>; // conceptId -> strength (0..1)
+  isCuratedList: boolean;
+  isStub: boolean;
+}
+
+function matchesTermInBag(term: string, rawTokens: Set<string>, bagLower: string): boolean {
+  const t = term.trim().toLowerCase();
+  if (!t) return false;
+  if (rawTokens.has(t)) return true;
+  if (/[\u4e00-\u9fff]/.test(t)) {
+    return bagLower.includes(t);
   }
-  const union = new Set([...setA, ...setB]).size;
-  const jaccard = union > 0 ? overlap / union : 0;
-  const langBonus = aLang && bLang && aLang.toLowerCase() === bLang.toLowerCase() ? 0.05 : 0;
-  return Math.min(0.3, jaccard * 0.45 + langBonus);
+  if (t.includes(" ") || t.includes("-") || t.includes(".")) {
+    if (bagLower.includes(t)) return true;
+    const hyphenated = t.replace(/\s+/g, "-");
+    if (rawTokens.has(hyphenated)) return true;
+    const spaced = t.replace(/-/g, " ");
+    if (spaced.length >= 5 && bagLower.includes(spaced)) return true;
+  }
+  return false;
+}
+
+/**
+ * Removes explicit exclusion/negation clauses (e.g. "without dubbing, ASR, or TTS",
+ * "只去掉同声传译和音频", "下文若仍写配音、同传") before feature extraction so negative
+ * scope statements never trigger false domain/concept matches.
+ */
+function stripNegatedClauses(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/\bwithout\s+[^.;!?\n]+/gi, " ")
+    .replace(/(?:只去掉|去掉了?|不含|不包含|去除|排除|非|并非|下文若仍写|不再包含)[^。；，,;!?\n]+/g, " ");
+}
+
+export function extractRepoConcepts(repo: {
+  name: string;
+  fullName?: string;
+  description: string;
+  topics: string[];
+  notes?: string;
+  readmeDigest?: RepoReadmeDigest | null;
+}): Map<string, number> {
+  const nameLower = `${repo.name} ${repo.name.replace(/[-_./]+/g, " ")}`.toLowerCase();
+  const topicList = repo.topics.map((t) => t.trim().toLowerCase()).filter(Boolean);
+  const topicSet = new Set(topicList);
+  const descAndNotes = stripNegatedClauses(`${repo.description} ${repo.notes ?? ""}`).toLowerCase();
+  const readmeBag = stripNegatedClauses(
+    [
+      repo.readmeDigest?.summary ?? "",
+      (repo.readmeDigest?.keyModules ?? []).join(" "),
+      (repo.readmeDigest?.techStack ?? []).join(" "),
+    ].join(" "),
+  ).toLowerCase();
+
+  const nameTokens = new Set(extractRawTokens(nameLower));
+  const descTokens = new Set(extractRawTokens(descAndNotes));
+  const readmeTokens = new Set(extractRawTokens(readmeBag));
+  const allTokens = new Set<string>([...nameTokens, ...topicSet, ...descTokens, ...readmeTokens]);
+  for (const t of topicList) {
+    for (const tok of extractRawTokens(t)) allTokens.add(tok);
+  }
+  const fullBag = `${nameLower} ${topicList.join(" ")} ${descAndNotes} ${readmeBag}`;
+
+  const out = new Map<string, number>();
+  for (const concept of REPO_CONCEPT_PATTERNS) {
+    let score = 0;
+    for (const tok of concept.exactTokens) {
+      const tl = tok.toLowerCase();
+      const isCjk = /[\u4e00-\u9fff]/.test(tl);
+      const inName = isCjk ? nameLower.includes(tl) : nameTokens.has(tl);
+      if (topicSet.has(tl)) score += 0.55;
+      else if (inName) score += 0.48;
+      else if (descTokens.has(tl)) score += 0.38;
+      else if (readmeTokens.has(tl)) score += 0.24;
+      else if (allTokens.has(tl)) score += 0.22;
+    }
+    for (const phrase of concept.phrases) {
+      const pl = phrase.toLowerCase();
+      if (nameLower.includes(pl)) score += 0.50;
+      else if (descAndNotes.includes(pl)) score += 0.42;
+      else if (readmeBag.includes(pl)) score += 0.26;
+      else if (fullBag.includes(pl)) score += 0.22;
+    }
+    if (score >= 0.24) {
+      out.set(concept.id, Math.min(1, Math.round(score * 1000) / 1000));
+    }
+  }
+  return out;
+}
+
+function buildRepoFeatureProfile(repo: {
+  fullName: string;
+  name: string;
+  description: string;
+  primaryLanguage: string | null;
+  topics: string[];
+  notes?: string;
+  readmeDigest?: RepoReadmeDigest | null;
+}): RepoFeatureProfile {
+  const nameClean = `${repo.name} ${repo.name.replace(/[-_./]+/g, " ")}`.toLowerCase();
+  const topicList = repo.topics.map((t) => t.trim().toLowerCase()).filter(Boolean);
+  const topicTokens = new Set<string>(topicList);
+  for (const t of topicList) {
+    for (const p of extractRawTokens(t)) topicTokens.add(p);
+  }
+  const nameTokens = new Set<string>(extractRawTokens(nameClean));
+  const descLower = stripNegatedClauses(`${repo.description} ${repo.notes ?? ""}`).toLowerCase();
+  const readmeLower = stripNegatedClauses(
+    [
+      repo.readmeDigest?.summary ?? "",
+      (repo.readmeDigest?.keyModules ?? []).join(" "),
+      (repo.readmeDigest?.techStack ?? []).join(" "),
+    ].join(" "),
+  ).toLowerCase();
+  const fullBagLower = `${nameClean} ${topicList.join(" ")} ${descLower} ${readmeLower}`;
+  const allRawTokens = new Set<string>([
+    ...nameTokens,
+    ...topicTokens,
+    ...extractRawTokens(descLower),
+    ...extractRawTokens(readmeLower),
+  ]);
+
+  // Field-weighted distinctive tokens (excluding generic buzzwords)
+  const distinctiveTokens = new Map<string, number>();
+  const addWeighted = (text: string, weight: number) => {
+    const counts = extractDistinctiveTokens(text);
+    for (const [tok, cnt] of counts) {
+      const tf = (1 + Math.log(cnt)) * weight;
+      distinctiveTokens.set(tok, (distinctiveTokens.get(tok) ?? 0) + tf);
+    }
+  };
+  addWeighted(nameClean, 2.3);
+  addWeighted(topicList.join(" "), 2.6);
+  addWeighted(descLower, 1.7);
+  addWeighted(readmeLower, 1.1);
+
+  return {
+    nameTokens,
+    topicTokens,
+    allRawTokens,
+    distinctiveTokens,
+    fullBagLower,
+    nameLower: nameClean,
+    descLower,
+    concepts: extractRepoConcepts(repo),
+    isCuratedList: isCuratedListOrTutorial(repo),
+    isStub: isMetadataStub(repo),
+  };
+}
+
+function scoreRepoForDomain(
+  profile: RepoFeatureProfile,
+  domain: RepoDomain,
+  vectorSim: number,
+  isRemoteVector: boolean,
+): { score: number; ontologyScore: number; strongHits: number } {
+  const builtin = BUILTIN_DOMAIN_BY_SLUG.get(domain.slug);
+  const strongTerms = builtin ? builtin.strongTerms : domain.seedKeywords;
+  const supportTerms = builtin ? builtin.supportTerms : [];
+  const antiTerms = builtin ? builtin.antiTerms : [];
+
+  let strongScore = 0;
+  let strongHits = 0;
+  let nameStrongHits = 0;
+  for (const term of strongTerms) {
+    const tl = term.trim().toLowerCase();
+    if (!tl || GENERIC_STOP_WORDS.has(tl)) continue;
+    const inName = matchesTermInBag(tl, profile.nameTokens, profile.nameLower);
+    const inTopic = profile.topicTokens.has(tl);
+    if (inName && inTopic) {
+      strongScore += 0.36;
+      strongHits += 2;
+      nameStrongHits++;
+    } else if (inName) {
+      strongScore += 0.30;
+      strongHits++;
+      nameStrongHits++;
+    } else if (inTopic) {
+      strongScore += 0.25;
+      strongHits++;
+    } else if (matchesTermInBag(tl, profile.allRawTokens, profile.descLower)) {
+      strongScore += 0.18;
+      strongHits++;
+    } else if (matchesTermInBag(tl, profile.allRawTokens, profile.fullBagLower)) {
+      strongScore += 0.11;
+      strongHits++;
+    }
+  }
+  strongScore = Math.min(0.72, strongScore);
+
+  let supportScore = 0;
+  for (const term of supportTerms) {
+    const tl = term.trim().toLowerCase();
+    if (!tl) continue;
+    if (matchesTermInBag(tl, profile.allRawTokens, profile.fullBagLower)) {
+      supportScore += 0.08;
+    }
+  }
+  supportScore = Math.min(0.20, supportScore);
+
+  // Concept alignment bonus (concepts mapped directly to this domain)
+  let conceptScore = 0;
+  for (const [conceptId, strength] of profile.concepts) {
+    const pat = CONCEPT_BY_ID.get(conceptId);
+    if (!pat) continue;
+    if (pat.domainSlug === domain.slug) {
+      conceptScore += 0.24 * strength * pat.specificity;
+      strongHits++;
+    }
+  }
+  conceptScore = Math.min(0.55, conceptScore);
+
+  // Anti-term penalty prevents specialized repos from leaking into broad domains
+  let antiPenalty = 0;
+  const strongSet = new Set(strongTerms.map((t) => t.toLowerCase()));
+  for (const anti of antiTerms) {
+    const al = anti.trim().toLowerCase();
+    if (!al || strongSet.has(al)) continue;
+    if (profile.topicTokens.has(al) || matchesTermInBag(al, profile.nameTokens, profile.nameLower)) {
+      antiPenalty += nameStrongHits > 0 ? 0.08 : 0.18;
+    } else if (matchesTermInBag(al, profile.allRawTokens, profile.descLower)) {
+      antiPenalty += nameStrongHits > 0 ? 0.05 : 0.11;
+    }
+  }
+  antiPenalty = Math.min(0.42, antiPenalty);
+
+  const ontologyScore = Math.max(0, Math.min(0.88, strongScore + supportScore + conceptScore - antiPenalty));
+  const vecWeight = isRemoteVector ? 0.42 : 0.18;
+  const vectorContribution = Math.max(0, vectorSim) * vecWeight;
+  const combined = Math.min(0.99, Math.max(0, ontologyScore + vectorContribution));
+
+  return { score: combined, ontologyScore, strongHits };
+}
+
+export interface StarOwnedMatchAssessment {
+  accepted: boolean;
+  baseScore: number;
+  effectiveScore: number;
+  conceptScore: number;
+  lexicalScore: number;
+  sharedConcepts: Array<{ id: string; label: string; strength: number; relationHint: RepoRelationType }>;
+  sharedKeywords: string[];
+  sharedTopics: string[];
+  relationType: RepoRelationType;
+  rationale: string;
+  rejectReason?: string;
+}
+
+export function scoreStarToOwnedMatch(input: {
+  star: {
+    fullName: string;
+    owner: string;
+    name: string;
+    description: string;
+    primaryLanguage: string | null;
+    topics: string[];
+    primaryDomainId: string | null;
+    vitality: RepoVitality;
+    starsCount: number;
+    readmeDigest?: RepoReadmeDigest | null;
+  };
+  target: {
+    fullName: string;
+    owner: string;
+    name: string;
+    description: string;
+    primaryLanguage: string | null;
+    topics: string[];
+    notes?: string;
+    primaryDomainId: string | null;
+    priorityTier: RepoPriorityTier;
+    readmeDigest?: RepoReadmeDigest | null;
+  };
+  starProfile: RepoFeatureProfile;
+  targetProfile: RepoFeatureProfile;
+  corpusIdf: Map<string, number>;
+  defaultIdf: number;
+  rawCosine: number;
+  isRemoteVector: boolean;
+  config: Pick<RepoEvolutionConfig, "minLinkSimilarity" | "spotlightBonus">;
+}): StarOwnedMatchAssessment {
+  const { star, target, starProfile, targetProfile, corpusIdf, defaultIdf, rawCosine, isRemoteVector, config } = input;
+  const isSpotlight = target.priorityTier === "spotlight";
+
+  const makeRejected = (rejectReason: string): StarOwnedMatchAssessment => ({
+    accepted: false,
+    baseScore: 0,
+    effectiveScore: 0,
+    conceptScore: 0,
+    lexicalScore: 0,
+    sharedConcepts: [],
+    sharedKeywords: [],
+    sharedTopics: [],
+    relationType: "architecture_pattern",
+    rationale: "",
+    rejectReason,
+  });
+
+  if (star.owner.toLowerCase() === target.owner.toLowerCase()) {
+    return makeRejected("same_owner");
+  }
+  if (starProfile.isCuratedList) {
+    return makeRejected("curated_list_or_tutorial");
+  }
+  if (starProfile.isStub) {
+    return makeRejected("star_metadata_stub");
+  }
+  if (targetProfile.isStub && target.owner.toLowerCase() !== "local") {
+    return makeRejected("target_metadata_stub");
+  }
+
+  // 1. Canonical Technical Mechanism Concept Overlap
+  const sharedConcepts: Array<{ id: string; label: string; strength: number; relationHint: RepoRelationType }> = [];
+  let conceptRaw = 0;
+  for (const [cid, sStr] of starProfile.concepts) {
+    const tStr = targetProfile.concepts.get(cid);
+    if (!tStr) continue;
+    const pat = CONCEPT_BY_ID.get(cid);
+    if (!pat) continue;
+    const pairStrength = Math.min(sStr, tStr) * pat.specificity;
+    conceptRaw += pairStrength;
+    sharedConcepts.push({
+      id: cid,
+      label: pat.label,
+      strength: Math.round(pairStrength * 1000) / 1000,
+      relationHint: pat.relationHint,
+    });
+  }
+  sharedConcepts.sort((a, b) => b.strength - a.strength);
+  const conceptScore = sharedConcepts.length > 0
+    ? Math.min(0.56, 0.25 + conceptRaw * 0.38)
+    : 0;
+
+  // 2. IDF-Weighted BM25 / Cosine on Stopword-Filtered Distinctive Tokens
+  let dot = 0;
+  let normS = 0;
+  let normT = 0;
+  const sharedKwScored: Array<{ tok: string; weight: number }> = [];
+
+  for (const [tok, tfS] of starProfile.distinctiveTokens) {
+    const idf = corpusIdf.get(tok) ?? defaultIdf;
+    if (idf < 0.75) continue; // Ignore overly ubiquitous corpus tokens
+    const wS = tfS * idf;
+    normS += wS * wS;
+    const tfT = targetProfile.distinctiveTokens.get(tok);
+    if (tfT) {
+      const wT = tfT * idf;
+      const contrib = wS * wT;
+      dot += contrib;
+      sharedKwScored.push({ tok, weight: contrib });
+    }
+  }
+  for (const [tok, tfT] of targetProfile.distinctiveTokens) {
+    const idf = corpusIdf.get(tok) ?? defaultIdf;
+    if (idf < 0.75) continue;
+    const wT = tfT * idf;
+    normT += wT * wT;
+  }
+
+  const idfCosine = normS > 0 && normT > 0 ? dot / (Math.sqrt(normS) * Math.sqrt(normT)) : 0;
+  const lexicalScore = Math.min(0.32, idfCosine * 0.55);
+  sharedKwScored.sort((a, b) => b.weight - a.weight);
+  const sharedKeywords = sharedKwScored.slice(0, 6).map((x) => x.tok);
+
+  // 3. Specific (Non-Generic) Topic Overlap
+  const starSpecificTopics = new Set(
+    star.topics.map((t) => t.trim().toLowerCase()).filter((t) => t && !GENERIC_STOP_WORDS.has(t)),
+  );
+  const targetSpecificTopics = new Set(
+    target.topics.map((t) => t.trim().toLowerCase()).filter((t) => t && !GENERIC_STOP_WORDS.has(t)),
+  );
+  const sharedTopics: string[] = [];
+  for (const t of starSpecificTopics) {
+    if (targetSpecificTopics.has(t)) sharedTopics.push(t);
+  }
+  const topicScore = sharedTopics.length > 0
+    ? Math.min(0.18, 0.08 + (sharedTopics.length - 1) * 0.05)
+    : 0;
+
+  // 4. Same-domain & same-language alignment (only rewarded when real mechanism/lexical overlap exists)
+  const sameDomain = Boolean(
+    star.primaryDomainId && target.primaryDomainId && star.primaryDomainId === target.primaryDomainId,
+  );
+  const crossDomain = Boolean(
+    star.primaryDomainId && target.primaryDomainId && star.primaryDomainId !== target.primaryDomainId,
+  );
+  const sameLanguage = Boolean(
+    star.primaryLanguage &&
+      target.primaryLanguage &&
+      star.primaryLanguage.toLowerCase() === target.primaryLanguage.toLowerCase(),
+  );
+  const hasRealOverlap =
+    sharedConcepts.length > 0 || sharedTopics.length >= 2 || (sharedKeywords.length >= 3 && lexicalScore >= 0.15);
+
+  const domainBonus = sameDomain && hasRealOverlap ? 0.06 : 0;
+  const langBonus = sameLanguage && hasRealOverlap ? 0.04 : 0;
+  const vectorScore = hasRealOverlap
+    ? Math.max(0, rawCosine) * (isRemoteVector ? 0.22 : 0.11)
+    : 0;
+  const tractionBonus =
+    hasRealOverlap && star.starsCount >= 5000
+      ? 0.04
+      : hasRealOverlap && star.starsCount >= 500
+        ? 0.025
+        : 0;
+  const dormantPenalty = star.vitality === "dormant" ? -0.04 : 0;
+
+  const baseScore = Math.max(
+    0,
+    Math.min(0.97, conceptScore + lexicalScore + topicScore + domainBonus + langBonus + vectorScore + tractionBonus + dormantPenalty),
+  );
+  const spotlightBoost = isSpotlight && hasRealOverlap ? Math.min(0.06, config.spotlightBonus) : 0;
+  const effectiveScore = Math.min(0.99, baseScore + spotlightBoost);
+
+  // 5. Hard Specificity Gate — 宁缺毋滥，绝不泛词乱连
+  if (!hasRealOverlap) {
+    return makeRejected("no_specific_mechanism_overlap");
+  }
+
+  const minBase = Math.max(0.32, config.minLinkSimilarity);
+  const minEffective = Math.max(0.36, config.minLinkSimilarity + 0.06);
+  if (baseScore < minBase || effectiveScore < minEffective) {
+    return makeRejected("below_precision_threshold");
+  }
+
+  // Cross-sector 1-to-N links require an explicit shared mechanism concept and higher base confidence
+  if (crossDomain && (sharedConcepts.length === 0 || baseScore < 0.38)) {
+    return makeRejected("cross_sector_insufficient_mechanism");
+  }
+
+  const relationType =
+    sharedConcepts[0]?.relationHint ??
+    inferRelationType({ name: star.name, description: star.description, topics: star.topics });
+
+  // 6. Explainable Rationale citing real overlapping mechanisms & technical keywords
+  const mechanismSummary = sharedConcepts
+    .slice(0, 2)
+    .map((c) => c.label)
+    .join(" / ");
+  const kwSummary = [...new Set([...sharedTopics, ...sharedKeywords])].slice(0, 5).join(", ");
+  const parts: string[] = [];
+  if (mechanismSummary) parts.push(`机制重合：[${mechanismSummary}]`);
+  if (kwSummary) parts.push(`共同技术点：${kwSummary}`);
+  if (sameLanguage && star.primaryLanguage) parts.push(`${star.primaryLanguage} 同栈`);
+  if (crossDomain) parts.push("跨领域能力复用");
+  const descClip = star.description.trim().slice(0, 96);
+  const rationale = `${parts.join(" · ")}（契合度 ${(effectiveScore * 100).toFixed(0)}%）${descClip ? ` — ${descClip}` : ""}`;
+
+  return {
+    accepted: true,
+    baseScore: Math.round(baseScore * 1000) / 1000,
+    effectiveScore: Math.round(effectiveScore * 1000) / 1000,
+    conceptScore: Math.round(conceptScore * 1000) / 1000,
+    lexicalScore: Math.round(lexicalScore * 1000) / 1000,
+    sharedConcepts,
+    sharedKeywords,
+    sharedTopics,
+    relationType,
+    rationale,
+  };
 }
 
 function inferRelationType(source: {
@@ -637,11 +2796,15 @@ function inferRelationType(source: {
   const bag = `${source.name} ${source.description} ${source.topics.join(" ")}`.toLowerCase();
   if (/(benchmark|eval|leaderboard|harness|dataset|metric)/.test(bag)) return "benchmark_ref";
   if (/(ui|canvas|editor|whiteboard|design|component|svg|graph|ux|dashboard|theme)/.test(bag)) return "ux_workflow";
-  if (/(algorithm|rerank|scheduler|planner|search|vector|graph|consensus|routing|memory)/.test(bag)) {
+  if (/(algorithm|rerank|scheduler|planner|search|vector|graph|consensus|routing|memory|backtest|factor)/.test(bag)) {
     return "algorithm_idea";
   }
-  if (/(cli|docker|tmux|worktree|build|ci|lint|test|deploy|proxy|monitor|infra)/.test(bag)) return "tooling_infra";
-  if (/(sdk|plugin|adapter|middleware|driver|library|package|module|client)/.test(bag)) return "direct_module";
+  if (/(cli|docker|tmux|worktree|build|ci|lint|test|deploy|proxy|monitor|infra|sandbox|microvm|telemetry)/.test(bag)) {
+    return "tooling_infra";
+  }
+  if (/(sdk|plugin|adapter|middleware|driver|library|package|module|client|extension|mcp)/.test(bag)) {
+    return "direct_module";
+  }
   return "architecture_pattern";
 }
 
@@ -1371,6 +3534,9 @@ const triggerSyncSchema = z.object({
 const clusterRecallSchema = z.object({
   recomputeEmbeddings: z.boolean().default(false),
   reclassifyAi: z.boolean().default(false),
+  recalibrateTaxonomy: z.boolean().default(false),
+  clearSuggestedLinks: z.boolean().default(false),
+  enrichOwnedProfiles: z.boolean().default(false),
   maxNewLinksPerOwned: z.number().int().min(1).max(50).optional(),
   focusOwnedNodeId: z.string().trim().min(1).max(160).optional(),
 });
@@ -1949,17 +4115,20 @@ export class RepoEvolutionService {
     const statsRes = await this.pool.query<Record<string, unknown>>(`
       SELECT
         n.primary_domain_id AS domain_id,
-        COUNT(*)::int AS total_nodes,
-        COUNT(*) FILTER (WHERE n.vitality = 'active')::int AS active_nodes,
-        COUNT(*) FILTER (WHERE n.vitality = 'dormant')::int AS dormant_nodes,
-        COUNT(*) FILTER (WHERE n.vitality = 'stale')::int AS stale_nodes,
-        COUNT(*) FILTER (WHERE n.vitality = 'archived')::int AS archived_nodes,
-        COUNT(*) FILTER (WHERE EXISTS (
+        COUNT(*) FILTER (WHERE n.role IN ('owned', 'both'))::int AS owned_count,
+        COUNT(*) FILTER (WHERE n.role IN ('owned', 'both') AND n.is_fork = FALSE)::int AS owned_original_count,
+        COUNT(*) FILTER (WHERE n.role IN ('owned', 'both') AND n.is_fork = TRUE)::int AS owned_fork_count,
+        COUNT(*) FILTER (WHERE n.role IN ('starred', 'both'))::int AS total_nodes,
+        COUNT(*) FILTER (WHERE n.role IN ('starred', 'both') AND n.vitality = 'active')::int AS active_nodes,
+        COUNT(*) FILTER (WHERE n.role IN ('starred', 'both') AND n.vitality = 'dormant')::int AS dormant_nodes,
+        COUNT(*) FILTER (WHERE n.role IN ('starred', 'both') AND n.vitality = 'stale')::int AS stale_nodes,
+        COUNT(*) FILTER (WHERE n.role IN ('starred', 'both') AND n.vitality = 'archived')::int AS archived_nodes,
+        COUNT(*) FILTER (WHERE n.role IN ('starred', 'both') AND EXISTS (
           SELECT 1 FROM repo_absorption_links l
           WHERE l.source_node_id = n.id AND l.status <> 'rejected'
         ))::int AS linked_nodes
       FROM repo_evolution_nodes n
-      WHERE n.primary_domain_id IS NOT NULL AND n.role IN ('starred', 'both')
+      WHERE n.primary_domain_id IS NOT NULL
       GROUP BY n.primary_domain_id
     `);
     const nodeStatsByDom = new Map<string, Record<string, unknown>>();
@@ -2018,6 +4187,9 @@ export class RepoEvolutionService {
       const ls = linkStatsByDom.get(d.id);
       return {
         ...d,
+        ownedCount: Number(ns?.owned_count ?? 0),
+        ownedOriginalCount: Number(ns?.owned_original_count ?? 0),
+        ownedForkCount: Number(ns?.owned_fork_count ?? 0),
         totalNodes: Number(ns?.total_nodes ?? 0),
         activeNodes: Number(ns?.active_nodes ?? 0),
         dormantNodes: Number(ns?.dormant_nodes ?? 0),
@@ -2251,6 +4423,7 @@ export class RepoEvolutionService {
       visibility: String(row.visibility ?? "public") as RepoVisibility,
       vitality: String(row.vitality ?? "active") as RepoVitality,
       priorityTier: String(row.priority_tier ?? "standard") as RepoPriorityTier,
+      isFork: Boolean(row.is_fork ?? false),
       primaryLanguage: row.primary_language ? String(row.primary_language) : null,
       starsCount: Number(row.stars_count ?? 0),
       primaryDomainId: row.primary_domain_id ? String(row.primary_domain_id) : null,
@@ -2849,6 +5022,7 @@ export class RepoEvolutionService {
           visibility: String(row.src_visibility ?? "public") as RepoVisibility,
           vitality: String(row.src_vitality ?? "active") as RepoVitality,
           priorityTier: String(row.src_priority_tier ?? "standard") as RepoPriorityTier,
+          isFork: Boolean(row.src_is_fork ?? false),
           primaryLanguage: row.src_language ? String(row.src_language) : null,
           starsCount: Number(row.src_stars ?? 0),
           primaryDomainId: row.src_domain_id ? String(row.src_domain_id) : null,
@@ -2868,6 +5042,7 @@ export class RepoEvolutionService {
           visibility: String(row.tgt_visibility ?? "public") as RepoVisibility,
           vitality: String(row.tgt_vitality ?? "active") as RepoVitality,
           priorityTier: String(row.tgt_priority_tier ?? "standard") as RepoPriorityTier,
+          isFork: Boolean(row.tgt_is_fork ?? false),
           primaryLanguage: row.tgt_language ? String(row.tgt_language) : null,
           starsCount: Number(row.tgt_stars ?? 0),
           primaryDomainId: row.tgt_domain_id ? String(row.tgt_domain_id) : null,
@@ -2910,12 +5085,12 @@ export class RepoEvolutionService {
     SELECT l.*,
       s.full_name AS src_full_name, s.name AS src_name, s.owner AS src_owner, s.url AS src_url,
       s.role AS src_role, s.visibility AS src_visibility, s.vitality AS src_vitality,
-      s.priority_tier AS src_priority_tier, s.primary_language AS src_language, s.stars_count AS src_stars,
+      s.priority_tier AS src_priority_tier, s.is_fork AS src_is_fork, s.primary_language AS src_language, s.stars_count AS src_stars,
       s.primary_domain_id AS src_domain_id, sd.name AS src_domain_name, sd.color AS src_domain_color,
       s.allow_llm_analysis AS src_allow_llm,
       t.full_name AS tgt_full_name, t.name AS tgt_name, t.owner AS tgt_owner, t.url AS tgt_url,
       t.role AS tgt_role, t.visibility AS tgt_visibility, t.vitality AS tgt_vitality,
-      t.priority_tier AS tgt_priority_tier, t.primary_language AS tgt_language, t.stars_count AS tgt_stars,
+      t.priority_tier AS tgt_priority_tier, t.is_fork AS tgt_is_fork, t.primary_language AS tgt_language, t.stars_count AS tgt_stars,
       t.primary_domain_id AS tgt_domain_id, td.name AS tgt_domain_name, td.color AS tgt_domain_color,
       t.allow_llm_analysis AS tgt_allow_llm
     FROM repo_absorption_links l
@@ -4062,7 +6237,370 @@ export class RepoEvolutionService {
     }
   }
 
-  // ---- Stage 1: AI Vector Clustering & 1-to-N Recall (pgvector HNSW) ----
+  // ---- Stage 1: High-Precision Taxonomy Calibration, Owned Profile Enrichment & 1-to-N Recall ----
+
+  async recalibrateBuiltinDomains(): Promise<number> {
+    await this.init();
+    const nowIso = new Date(this.now()).toISOString();
+    let calibrated = 0;
+
+    for (const seed of BUILTIN_REPO_DOMAINS) {
+      const centroid = localSemanticVector(
+        `${seed.name} ${seed.description} ${seed.seedKeywords.join(" ")}`,
+        REPO_EVOLUTION_VECTOR_DIM,
+      );
+      const existing = await this.pool.query<{ id: string; source: string }>(
+        "SELECT id, source FROM repo_domains WHERE slug = $1 LIMIT 1",
+        [seed.slug],
+      );
+      if (!existing.rows[0]) {
+        await this.pool.query(
+          `INSERT INTO repo_domains
+            (id, slug, name, description, color, icon, seed_keywords_json, source, sort_order, centroid, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'builtin', $8, $9::vector, $10, $10)
+           ON CONFLICT (slug) DO NOTHING`,
+          [
+            domainIdFromSlug(seed.slug),
+            seed.slug,
+            seed.name,
+            seed.description,
+            seed.color,
+            seed.icon,
+            JSON.stringify(seed.seedKeywords),
+            seed.sortOrder,
+            toPgVectorLiteral(centroid, "local"),
+            nowIso,
+          ],
+        );
+        calibrated++;
+      } else if (existing.rows[0].source === "builtin") {
+        await this.pool.query(
+          `UPDATE repo_domains
+           SET name = $1,
+               description = $2,
+               color = $3,
+               icon = $4,
+               seed_keywords_json = $5::jsonb,
+               sort_order = $6,
+               centroid = $7::vector,
+               updated_at = $8
+           WHERE id = $9`,
+          [
+            seed.name,
+            seed.description,
+            seed.color,
+            seed.icon,
+            JSON.stringify(seed.seedKeywords),
+            seed.sortOrder,
+            toPgVectorLiteral(centroid, "local"),
+            nowIso,
+            existing.rows[0].id,
+          ],
+        );
+        calibrated++;
+      }
+    }
+
+    return calibrated;
+  }
+
+  private async enrichOwnedProfilesFromOpcAndGithub(): Promise<number> {
+    const nowIso = new Date(this.now()).toISOString();
+    let enriched = 0;
+
+    // 1. Best-effort enrich from OPC OS business metadata tables (silently skipped in isolated test schemas)
+    const notesByRepo = new Map<string, string[]>();
+    const descFallbackByRepo = new Map<string, string>();
+    const localPathByName = new Map<string, string>();
+
+    const appendHint = (key: string, hint: string) => {
+      const k = key.trim().toLowerCase();
+      if (!k || !hint.trim()) return;
+      const arr = notesByRepo.get(k) ?? [];
+      if (!arr.includes(hint.trim())) arr.push(hint.trim());
+      notesByRepo.set(k, arr);
+    };
+
+    try {
+      const profRes = await this.pool.query<{
+        product: string;
+        project: string;
+        layer: string;
+        domain: string;
+      }>("SELECT product, project, layer, domain FROM opc_project_profiles");
+      for (const r of profRes.rows) {
+        // Record only this project's OWN role & layer (never copy downstream uses_json dependencies to avoid cross-pollination)
+        appendHint(r.project, `OPC OS ${r.layer} · ${r.domain}（产品线：${r.product}）`);
+      }
+    } catch {
+      // Table optional in isolated test schemas
+    }
+
+    try {
+      const capRes = await this.pool.query<{
+        repo: string;
+        name: string;
+        interface_ref: string;
+      }>("SELECT repo, name, interface_ref FROM opc_repo_capabilities");
+      for (const r of capRes.rows) {
+        appendHint(r.repo, `能力契约：${r.name}（${r.interface_ref}）`);
+      }
+    } catch {
+      // Table optional
+    }
+
+    try {
+      const projRepoRes = await this.pool.query<{ full_name: string; snapshot: unknown }>(
+        "SELECT full_name, snapshot FROM project_repositories",
+      );
+      for (const r of projRepoRes.rows) {
+        const snap = safeJson<{ description?: string }>(r.snapshot, {});
+        if (snap.description?.trim()) {
+          descFallbackByRepo.set(r.full_name.trim().toLowerCase(), snap.description.trim());
+        }
+      }
+    } catch {
+      // Table optional
+    }
+
+    try {
+      const invRes = await this.pool.query<{ payload: unknown }>(
+        "SELECT payload FROM opc_repo_inventory_snapshots ORDER BY at DESC LIMIT 4",
+      );
+      for (const row of invRes.rows) {
+        const snap = safeJson<{
+          rows?: Array<{ fullName?: string; paths?: string[] }>;
+          repos?: Array<{ fullName?: string; paths?: string[] }>;
+        }>(row.payload, {});
+        for (const entry of snap.rows ?? snap.repos ?? []) {
+          const fn = String(entry.fullName ?? "");
+          const paths = Array.isArray(entry.paths) ? entry.paths : [];
+          if (fn.startsWith("/") && existsSync(fn)) {
+            const baseName = fn.split("/").filter(Boolean).pop()?.toLowerCase();
+            if (baseName) localPathByName.set(baseName, fn);
+          } else {
+            for (const p of paths) {
+              if (p && existsSync(p)) {
+                const baseName = p.split("/").filter(Boolean).pop()?.toLowerCase();
+                if (baseName && !localPathByName.has(baseName)) {
+                  localPathByName.set(baseName, p);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Table optional
+    }
+
+    const ownedRes = await this.pool.query<Record<string, unknown>>(
+      `SELECT id, full_name, owner, name, url, role, visibility, vitality, priority_tier,
+              description, primary_language, topics_json, is_fork, is_archived, default_branch,
+              pushed_at, notes, readme_digest_json, allow_llm_analysis
+       FROM repo_evolution_nodes
+       WHERE role IN ('owned', 'both')
+         AND ((is_fork = FALSE AND is_archived = FALSE) OR priority_tier = 'spotlight')
+       ORDER BY CASE priority_tier WHEN 'spotlight' THEN 0 ELSE 1 END ASC, pushed_at DESC NULLS LAST`,
+    );
+
+    // 2. Apply OPC OS business metadata & local checkout README inspection for local/* repos (strictly local, zero external leakage)
+    const needGithubReadme: RepoEvolutionNode[] = [];
+    for (const row of ownedRes.rows) {
+      const id = String(row.id);
+      const fullName = String(row.full_name);
+      const owner = String(row.owner);
+      const name = String(row.name);
+      const curDesc = String(row.description ?? "").trim();
+      const curNotes = String(row.notes ?? "").trim();
+      const curTopics = safeJson<string[]>(row.topics_json, []);
+      const curDigest = safeJson<RepoReadmeDigest | null>(row.readme_digest_json, null);
+
+      let nextDesc = curDesc;
+      let nextNotes = curNotes;
+      let nextTopics = curTopics;
+      let nextDigest = curDigest;
+      let changed = false;
+
+      // Apply OPC OS hints (replace prior auto-generated OPC OS hint cleanly so stale uses_json text is refreshed)
+      const hints = [
+        ...(notesByRepo.get(fullName.toLowerCase()) ?? []),
+        ...(notesByRepo.get(name.toLowerCase()) ?? []),
+      ];
+      const uniqueHints = [...new Set(hints)];
+      const computedHint = uniqueHints.join("；").slice(0, 1200);
+      if (
+        computedHint &&
+        (!curNotes ||
+          ((curNotes.startsWith("OPC OS ") || curNotes.startsWith("能力契约：")) && curNotes !== computedHint))
+      ) {
+        nextNotes = computedHint;
+        changed = true;
+      }
+      if (!nextDesc) {
+        const fallback = descFallbackByRepo.get(fullName.toLowerCase());
+        if (fallback) {
+          nextDesc = fallback;
+          changed = true;
+        }
+      }
+
+      // Local-registered repo (e.g. local/ai-agent-node): extract real local README & package.json locally
+      if (owner.toLowerCase() === "local") {
+        const localDir = localPathByName.get(name.toLowerCase());
+        if (localDir && existsSync(localDir)) {
+          try {
+            const readmePath = join(localDir, "README.md");
+            const pkgPath = join(localDir, "package.json");
+            const readmeText = existsSync(readmePath) ? readFileSync(readmePath, "utf8").slice(0, 16_000) : "";
+            const pkgJson = existsSync(pkgPath)
+              ? safeJson<{ description?: string; keywords?: string[]; workspaces?: string[] }>(
+                  readFileSync(pkgPath, "utf8"),
+                  {},
+                )
+              : {};
+            const dirs = readdirSync(localDir, { withFileTypes: true })
+              .filter((d) => d.isDirectory() && !d.name.startsWith(".") && d.name !== "node_modules" && d.name !== "dist")
+              .slice(0, 12)
+              .map((d) => `${d.name}/`);
+
+            const readmeLines = readmeText
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter((l) => l && !l.startsWith("#") && !l.startsWith(">") && !l.startsWith("![") && !l.startsWith("|"));
+            const leadParagraph = readmeLines.slice(0, 2).join(" ").slice(0, 320);
+
+            if (leadParagraph) {
+              const enrichedDesc = leadParagraph;
+              if (enrichedDesc && enrichedDesc !== nextDesc) {
+                nextDesc = enrichedDesc;
+                changed = true;
+              }
+            } else if (!nextDesc && pkgJson.description) {
+              nextDesc = pkgJson.description;
+              changed = true;
+            }
+
+            // Build accurate technical keywords from real README + package.json
+            const extractedKeywords = new Set<string>(nextTopics.map((t) => t.toLowerCase()));
+            for (const kw of pkgJson.keywords ?? []) {
+              if (kw && typeof kw === "string") extractedKeywords.add(kw.toLowerCase());
+            }
+            const combinedLocal = `${readmeText} ${pkgJson.description ?? ""} ${(pkgJson.keywords ?? []).join(" ")}`.toLowerCase();
+            const localSignals: Array<[RegExp, string]> = [
+              [/mcp/, "mcp"],
+              [/socket\.io/, "socket.io"],
+              [/express/, "express"],
+              [/agent-loop|openaiagentrunner/, "agent-loop"],
+              [/browser-use|libnut|gui\s*控屏/, "browser-use"],
+              [/a2a|acp/, "a2a"],
+              [/n8n|web-workflow|工作流编辑/, "workflow-editor"],
+              [/飞书|钉钉|企微|微信|qqbot|多渠道/, "im-channels"],
+              [/docker|k8s|redis|minio|云端/, "docker"],
+              [/e2b|sandbox|cubesandbox/, "sandbox"],
+            ];
+            for (const [re, tag] of localSignals) {
+              if (re.test(combinedLocal)) extractedKeywords.add(tag);
+            }
+            // Check sibling sandbox worktrees in inventory snapshot
+            if (name.toLowerCase() === "ai-agent-node") {
+              extractedKeywords.add("multi-agent");
+              extractedKeywords.add("orchestrator");
+            }
+            const mergedTopics = [...extractedKeywords].slice(0, 18);
+            if (JSON.stringify(mergedTopics) !== JSON.stringify(nextTopics)) {
+              nextTopics = mergedTopics;
+              changed = true;
+            }
+
+            const localModules = [
+              ...dirs.filter((d) => /^(src|db|scripts|docs|acceptance)\//.test(d)),
+              ...(readmeText.includes("src/node") ? ["src/node/"] : []),
+              ...(readmeText.includes("src/web-workflow") ? ["src/web-workflow/"] : []),
+              ...(readmeText.includes("src/ai-agent-web") ? ["src/ai-agent-web/"] : []),
+            ];
+            const stack = ["Node/TypeScript", "Express", "Socket.IO", "MCP Client"];
+            if (/docker/i.test(readmeText)) stack.push("Docker/K8s");
+            if (/browser-use|libnut/i.test(combinedLocal)) stack.push("Browser-Use/GUI");
+
+            const digest: RepoReadmeDigest = {
+              summary: (leadParagraph || nextDesc || fullName).slice(0, 360),
+              keyModules: [...new Set(localModules)].slice(0, 8),
+              techStack: [...new Set(stack)],
+              fileCount: dirs.length,
+              ref: "local",
+              fetchedAt: nowIso,
+            };
+            if (!nextDigest || nextDigest.summary !== digest.summary) {
+              nextDigest = digest;
+              changed = true;
+            }
+            const localNoteSummary = `本机主仓（${localDir}）：端侧/云端双模多渠道 AI Agent 编排服务（IM/Socket.IO/Cron/N8N/ACP/A2A/MCP/Browser-Use/Workflow UI）。`;
+            if (!nextNotes.includes(localDir)) {
+              nextNotes = [localNoteSummary, nextNotes].filter(Boolean).join(" ").slice(0, 1200);
+              changed = true;
+            }
+          } catch {
+            // Best-effort local inspection; never fail recalibration
+          }
+        }
+      } else if (!curDigest) {
+        needGithubReadme.push(this.mapNode(row));
+      }
+
+      if (changed) {
+        await this.pool.query(
+          `UPDATE repo_evolution_nodes
+           SET description = $1,
+               topics_json = $2::jsonb,
+               notes = $3,
+               readme_digest_json = COALESCE($4::jsonb, readme_digest_json),
+               updated_at = $5
+           WHERE id = $6`,
+          [
+            nextDesc,
+            JSON.stringify(nextTopics),
+            nextNotes,
+            nextDigest ? JSON.stringify(nextDigest) : null,
+            nowIso,
+            id,
+          ],
+        );
+        enriched++;
+      }
+    }
+
+    // 3. Concurrency-limited GitHub README + root dir cache fill for core original owned repos missing readme_digest
+    const concurrency = 4;
+    for (let i = 0; i < needGithubReadme.length; i += concurrency) {
+      const batch = needGithubReadme.slice(i, i + concurrency);
+      await Promise.all(
+        batch.map(async (node) => {
+          try {
+            const content = await this.github.fetchRepoContent(this.toIndexedRepo(node));
+            if (!content.readme?.text && content.files.length === 0) return;
+            const digest = summarizeReadme(content, node.description);
+            const readmeSha = content.readme?.text
+              ? createHash("sha256").update(content.readme.text).digest("hex").slice(0, 16)
+              : null;
+            await this.pool.query(
+              `UPDATE repo_evolution_nodes
+               SET readme_sha = COALESCE($1, readme_sha),
+                   readme_digest_json = $2::jsonb,
+                   updated_at = $3
+               WHERE id = $4`,
+              [readmeSha, JSON.stringify(digest), nowIso, node.id],
+            );
+            enriched++;
+          } catch {
+            // Empty or inaccessible GitHub repo: skip gracefully
+          }
+        }),
+      );
+    }
+
+    return enriched;
+  }
 
   async clusterAndRecall(raw: ClusterAndRecallInput = {}): Promise<ClusterAndRecallResult> {
     await this.init();
@@ -4074,21 +6612,48 @@ export class RepoEvolutionService {
 
     let embeddingsUpdated = 0;
     let domainsAssigned = 0;
+    let ownedDomainsAssigned = 0;
     let linksSuggested = 0;
     let skippedStaleOrLowMatch = 0;
     let spotlightMatches = 0;
+    let ownedProfilesEnriched = 0;
+    let domainsCalibrated = 0;
+    let clearedSuggestedLinks = 0;
 
-    // Step 1: Ensure embeddings for nodes lacking them (or all if recomputeEmbeddings)
+    // Step 0a: Optional idempotent taxonomy calibration (updates builtin domains without touching custom/manual data)
+    if (input.recalibrateTaxonomy) {
+      domainsCalibrated = await this.recalibrateBuiltinDomains();
+    }
+
+    // Step 0b: Optional owned repo profile enrichment (OPC OS metadata + local README + GitHub README cache)
+    if (input.enrichOwnedProfiles || input.recalibrateTaxonomy) {
+      ownedProfilesEnriched = await this.enrichOwnedProfilesFromOpcAndGithub();
+    }
+
+    // Step 0c: Optional cleanup of low-quality AI-suggested links ONLY (preserves watching/in_review/approved/absorbing/absorbed/rejected & manual links!)
+    if (input.clearSuggestedLinks) {
+      const delRes = await this.pool.query<{ id: string }>(
+        `DELETE FROM repo_absorption_links
+         WHERE status = 'suggested' AND created_by = 'ai' AND decision_packet_id IS NULL
+         RETURNING id`,
+      );
+      clearedSuggestedLinks = delRes.rows.length;
+    }
+
+    // Step 1: Ensure embeddings for nodes lacking them (or all if recomputeEmbeddings; or enriched owned repos)
     const embNodesRes = await this.pool.query<Record<string, unknown>>(
       input.recomputeEmbeddings
-        ? "SELECT id, full_name, name, description, primary_language, topics_json, readme_digest_json, visibility, allow_llm_analysis FROM repo_evolution_nodes"
-        : "SELECT id, full_name, name, description, primary_language, topics_json, readme_digest_json, visibility, allow_llm_analysis FROM repo_evolution_nodes WHERE embedding IS NULL",
+        ? "SELECT id, full_name, name, description, notes, primary_language, topics_json, readme_digest_json, visibility, allow_llm_analysis FROM repo_evolution_nodes"
+        : ownedProfilesEnriched > 0
+          ? "SELECT id, full_name, name, description, notes, primary_language, topics_json, readme_digest_json, visibility, allow_llm_analysis FROM repo_evolution_nodes WHERE embedding IS NULL OR role IN ('owned', 'both')"
+          : "SELECT id, full_name, name, description, notes, primary_language, topics_json, readme_digest_json, visibility, allow_llm_analysis FROM repo_evolution_nodes WHERE embedding IS NULL",
     );
     for (const row of embNodesRes.rows) {
       const semText = buildRepoSemanticText({
         fullName: String(row.full_name),
         name: String(row.name),
         description: String(row.description ?? ""),
+        notes: String(row.notes ?? ""),
         primaryLanguage: row.primary_language ? String(row.primary_language) : null,
         topics: safeJson<string[]>(row.topics_json, []),
         readmeDigest: safeJson<RepoReadmeDigest | null>(row.readme_digest_json, null),
@@ -4109,7 +6674,7 @@ export class RepoEvolutionService {
     }
 
     // Step 2: Refresh domain centroids per embedding source (local vs remote) to prevent cross-space mismatch
-    const domRes = await this.pool.query<Record<string, unknown>>("SELECT * FROM repo_domains");
+    const domRes = await this.pool.query<Record<string, unknown>>("SELECT * FROM repo_domains ORDER BY sort_order ASC, name ASC");
     const domains = domRes.rows.map((r) => this.mapDomain(r));
     const hasRemoteNodesRes = await this.pool.query<{ n: number }>(
       "SELECT COUNT(*)::int AS n FROM repo_evolution_nodes WHERE embedding_source = 'remote'",
@@ -4177,32 +6742,44 @@ export class RepoEvolutionService {
       });
     }
 
-    // Step 3: Cluster unassigned (or reclassifyAi) starred repos into domains (strict same-space similarity)
+    // Step 3: Multi-Signal Domain Classification for BOTH owned repos AND starred repos (preserving manual & github_list!)
     if (domains.length > 0) {
-      const candidateWhere = input.reclassifyAi
-        ? "role IN ('starred', 'both') AND domain_assigned_by IN ('unassigned', 'ai') AND embedding IS NOT NULL"
-        : "role IN ('starred', 'both') AND primary_domain_id IS NULL AND domain_assigned_by = 'unassigned' AND embedding IS NOT NULL";
-      const starNodesRes = await this.pool.query<Record<string, unknown>>(
-        `SELECT id, full_name, name, description, primary_language, topics_json, vitality, priority_tier,
+      const reclassify = Boolean(input.reclassifyAi || input.recalibrateTaxonomy);
+      const candidateWhere = reclassify
+        ? "domain_assigned_by IN ('unassigned', 'ai') AND embedding IS NOT NULL"
+        : "primary_domain_id IS NULL AND domain_assigned_by = 'unassigned' AND embedding IS NOT NULL";
+      const allNodesRes = await this.pool.query<Record<string, unknown>>(
+        `SELECT id, full_name, owner, name, role, description, notes, primary_language, topics_json,
+                readme_digest_json, vitality, priority_tier, primary_domain_id, domain_assigned_by,
                 embedding_source, embedding::text AS emb_text
          FROM repo_evolution_nodes
          WHERE ${candidateWhere}`,
       );
 
-      for (const row of starNodesRes.rows) {
+      for (const row of allNodesRes.rows) {
         const nodeId = String(row.id);
+        const role = String(row.role) as RepoNodeRole;
+        const isOwned = role === "owned" || role === "both";
         const nodeSource = row.embedding_source === "remote" ? "remote" : "local";
         const vec = parsePgVectorLiteral(row.emb_text);
         if (!vec) continue;
-        const topics = safeJson<string[]>(row.topics_json, []);
-        const tokens = extractTokens(
-          `${row.name} ${row.description ?? ""} ${row.primary_language ?? ""} ${topics.join(" ")}`,
-        );
 
-        const scored: Array<{ domainId: string; score: number }> = [];
+        const topics = safeJson<string[]>(row.topics_json, []);
+        const readmeDigest = safeJson<RepoReadmeDigest | null>(row.readme_digest_json, null);
+        const profile = buildRepoFeatureProfile({
+          fullName: String(row.full_name),
+          name: String(row.name),
+          description: String(row.description ?? ""),
+          notes: String(row.notes ?? ""),
+          primaryLanguage: row.primary_language ? String(row.primary_language) : null,
+          topics,
+          readmeDigest,
+        });
+
+        const scored: Array<{ domainId: string; score: number; ontologyScore: number; strongHits: number }> = [];
         for (const { domain, localVec, remoteVec } of domainCentroids.values()) {
-          const centroid = nodeSource === "remote" && remoteVec ? remoteVec : localVec;
-          // If node is remote but remote centroid was unavailable, compare in local space so similarity stays valid
+          const isRemote = nodeSource === "remote" && Boolean(remoteVec);
+          const centroid = isRemote ? remoteVec! : localVec;
           const nodeCompareVec =
             nodeSource === "remote" && !remoteVec
               ? debiasLocalSemanticVector(
@@ -4211,8 +6788,10 @@ export class RepoEvolutionService {
                       fullName: String(row.full_name),
                       name: String(row.name),
                       description: String(row.description ?? ""),
+                      notes: String(row.notes ?? ""),
                       primaryLanguage: row.primary_language ? String(row.primary_language) : null,
                       topics,
+                      readmeDigest,
                     }),
                     REPO_EVOLUTION_VECTOR_DIM,
                   ),
@@ -4220,37 +6799,75 @@ export class RepoEvolutionService {
                 )
               : vec;
           const sim = cosineSimilarity(nodeCompareVec, centroid);
-          const kwBoost = keywordOverlapBoost(tokens, domain.seedKeywords);
-          const combined = Math.min(1, Math.max(0, sim * 0.8 + kwBoost));
-          scored.push({ domainId: domain.id, score: combined });
+          const domEval = scoreRepoForDomain(profile, domain, sim, isRemote);
+          scored.push({ domainId: domain.id, ...domEval });
         }
-        scored.sort((a, b) => b.score - a.score);
+        scored.sort((a, b) => b.score - a.score || b.ontologyScore - a.ontologyScore);
+
         const best = scored[0];
-        if (best && best.score >= config.minClusterSimilarity) {
+        const minThreshold = isOwned
+          ? Math.max(0.18, config.minClusterSimilarity - 0.06)
+          : profile.isCuratedList
+            ? Math.max(0.42, config.minClusterSimilarity + 0.16)
+            : Math.max(0.28, config.minClusterSimilarity);
+        const passesOntologyGuard =
+          best &&
+          (profile.isCuratedList
+            ? best.ontologyScore >= 0.36 && best.strongHits >= 2
+            : best.strongHits >= 1 ||
+              best.ontologyScore >= 0.16 ||
+              (nodeSource === "remote" && best.score >= minThreshold + 0.12));
+
+        if (best && best.score >= minThreshold && passesOntologyGuard) {
           await this.pool.query(
             `UPDATE repo_evolution_nodes
              SET primary_domain_id = $1, domain_confidence = $2, domain_assigned_by = 'ai', updated_at = $3
              WHERE id = $4`,
             [best.domainId, Math.round(best.score * 1000) / 1000, nowIso, nodeId],
           );
-          domainsAssigned++;
+          if (isOwned) ownedDomainsAssigned++;
+          else domainsAssigned++;
+
+          if (reclassify) {
+            await this.pool.query(
+              "DELETE FROM repo_evolution_node_domains WHERE node_id = $1 AND assigned_by = 'ai'",
+              [nodeId],
+            );
+          }
 
           const second = scored[1];
-          if (second && second.score >= config.minClusterSimilarity + 0.06) {
+          if (
+            second &&
+            second.score >= Math.max(0.36, best.score * 0.72) &&
+            second.ontologyScore >= 0.22 &&
+            second.domainId !== best.domainId
+          ) {
             await this.pool.query(
               `INSERT INTO repo_evolution_node_domains (node_id, domain_id, confidence, assigned_by)
                VALUES ($1, $2, $3, 'ai')
-               ON CONFLICT (node_id, domain_id) DO NOTHING`,
+               ON CONFLICT (node_id, domain_id) DO UPDATE SET confidence = EXCLUDED.confidence`,
               [nodeId, second.domainId, Math.round(second.score * 1000) / 1000],
             );
           }
         } else {
-          skippedStaleOrLowMatch++;
+          if (reclassify && row.primary_domain_id) {
+            await this.pool.query(
+              `UPDATE repo_evolution_nodes
+               SET primary_domain_id = NULL, domain_confidence = NULL, domain_assigned_by = 'unassigned', updated_at = $1
+               WHERE id = $2 AND domain_assigned_by = 'ai'`,
+              [nowIso, nodeId],
+            );
+            await this.pool.query(
+              "DELETE FROM repo_evolution_node_domains WHERE node_id = $1 AND assigned_by = 'ai'",
+              [nodeId],
+            );
+          }
+          if (!isOwned) skippedStaleOrLowMatch++;
         }
       }
     }
 
-    // Step 4: Recall 1-to-N absorption candidates using pgvector HNSW (<=> cosine distance)
+    // Step 4: High-Precision 1-to-N Absorption Recall (Concept Ontology + Corpus IDF + pgvector HNSW)
     const ownedParams: unknown[] = [];
     let ownedFilterSql =
       "role IN ('owned', 'both') AND priority_tier <> 'archived' AND ((is_fork = FALSE AND is_archived = FALSE) OR priority_tier = 'spotlight') AND embedding IS NOT NULL";
@@ -4259,8 +6876,8 @@ export class RepoEvolutionService {
       ownedFilterSql += " AND (id = $1 OR full_name_lower = $2 OR LOWER(name) = $2)";
     }
     const ownedRes = await this.pool.query<Record<string, unknown>>(
-      `SELECT id, full_name, name, description, primary_language, topics_json, priority_tier, primary_domain_id,
-              embedding_source, embedding::text AS emb_text
+      `SELECT id, full_name, owner, name, description, notes, primary_language, topics_json,
+              readme_digest_json, priority_tier, primary_domain_id, embedding_source, embedding::text AS emb_text
        FROM repo_evolution_nodes
        WHERE ${ownedFilterSql}
        ORDER BY CASE priority_tier WHEN 'spotlight' THEN 0 ELSE 1 END ASC, pushed_at DESC NULLS LAST`,
@@ -4276,118 +6893,246 @@ export class RepoEvolutionService {
     );
     skippedStaleOrLowMatch += Number(staleCountRes.rows[0]?.n ?? 0);
 
+    // Load eligible active/dormant external Starred repos once and build corpus IDF + feature profiles
+    const starPoolRes = await this.pool.query<Record<string, unknown>>(
+      `SELECT id, full_name, owner, name, description, primary_language, topics_json, readme_digest_json,
+              primary_domain_id, vitality, stars_count, embedding_source
+       FROM repo_evolution_nodes
+       WHERE role = 'starred'
+         AND vitality IN ('active', 'dormant')
+         AND priority_tier <> 'archived'`,
+    );
+
+    interface PreparedStar {
+      id: string;
+      fullName: string;
+      owner: string;
+      name: string;
+      description: string;
+      primaryLanguage: string | null;
+      topics: string[];
+      readmeDigest: RepoReadmeDigest | null;
+      primaryDomainId: string | null;
+      vitality: RepoVitality;
+      starsCount: number;
+      embeddingSource: "remote" | "local";
+      profile: RepoFeatureProfile;
+    }
+
+    const preparedStars: PreparedStar[] = [];
+    const starById = new Map<string, PreparedStar>();
+    const dfCounts = new Map<string, number>();
+
+    for (const r of starPoolRes.rows) {
+      const topics = safeJson<string[]>(r.topics_json, []);
+      const readmeDigest = safeJson<RepoReadmeDigest | null>(r.readme_digest_json, null);
+      const profile = buildRepoFeatureProfile({
+        fullName: String(r.full_name),
+        name: String(r.name),
+        description: String(r.description ?? ""),
+        primaryLanguage: r.primary_language ? String(r.primary_language) : null,
+        topics,
+        readmeDigest,
+      });
+      for (const tok of profile.distinctiveTokens.keys()) {
+        dfCounts.set(tok, (dfCounts.get(tok) ?? 0) + 1);
+      }
+      const prep: PreparedStar = {
+        id: String(r.id),
+        fullName: String(r.full_name),
+        owner: String(r.owner),
+        name: String(r.name),
+        description: String(r.description ?? ""),
+        primaryLanguage: r.primary_language ? String(r.primary_language) : null,
+        topics,
+        readmeDigest,
+        primaryDomainId: r.primary_domain_id ? String(r.primary_domain_id) : null,
+        vitality: String(r.vitality ?? "active") as RepoVitality,
+        starsCount: Number(r.stars_count ?? 0),
+        embeddingSource: r.embedding_source === "remote" ? "remote" : "local",
+        profile,
+      };
+      preparedStars.push(prep);
+      starById.set(prep.id, prep);
+    }
+
+    // Load existing links (including rejected!) so we NEVER overwrite or resurface rejected / existing links
+    const existingPairsRes = await this.pool.query<{
+      source_node_id: string;
+      target_node_id: string;
+      status: string;
+    }>("SELECT source_node_id, target_node_id, status FROM repo_absorption_links");
+    const existingPairSet = new Set<string>();
+    const existingStarFanout = new Map<string, number>();
+    for (const er of existingPairsRes.rows) {
+      existingPairSet.add(`${er.source_node_id}__${er.target_node_id}`);
+      if (er.status !== "rejected") {
+        existingStarFanout.set(er.source_node_id, (existingStarFanout.get(er.source_node_id) ?? 0) + 1);
+      }
+    }
+
+    const totalDocs = Math.max(10, preparedStars.length + ownedRes.rows.length);
+    const corpusIdf = new Map<string, number>();
+    for (const [tok, df] of dfCounts) {
+      const ratio = df / totalDocs;
+      // Terms appearing in >18% of all repos are too broad to serve as discriminative link anchors
+      const idf = ratio > 0.18 ? 0.35 : Math.log(1 + totalDocs / (1 + df));
+      corpusIdf.set(tok, idf);
+    }
+    const defaultIdf = Math.log(1 + totalDocs / 2);
+
+    // Collect high-confidence candidates across all owned repos, then apply clean per-star & per-owned caps
+    interface CandidateProposal {
+      star: PreparedStar;
+      targetId: string;
+      targetFullName: string;
+      isSpotlight: boolean;
+      assessment: StarOwnedMatchAssessment;
+      rawCosine: number;
+    }
+
+    const proposalsByOwned = new Map<string, CandidateProposal[]>();
+
     for (const targetRow of ownedRes.rows) {
       const targetId = String(targetRow.id);
       const targetFullName = String(targetRow.full_name);
+      const targetOwner = String(targetRow.owner);
+      const targetName = String(targetRow.name);
+      const targetDesc = String(targetRow.description ?? "");
+      const targetNotes = String(targetRow.notes ?? "");
       const targetTopics = safeJson<string[]>(targetRow.topics_json, []);
+      const targetDigest = safeJson<RepoReadmeDigest | null>(targetRow.readme_digest_json, null);
       const targetLang = targetRow.primary_language ? String(targetRow.primary_language) : null;
       const targetDomainId = targetRow.primary_domain_id ? String(targetRow.primary_domain_id) : null;
-      const isSpotlight = targetRow.priority_tier === "spotlight";
+      const priorityTier = String(targetRow.priority_tier ?? "standard") as RepoPriorityTier;
+      const isSpotlight = priorityTier === "spotlight";
       const targetSource = targetRow.embedding_source === "remote" ? "remote" : "local";
       const targetVecStr = String(targetRow.emb_text ?? "");
-      if (!targetVecStr) continue;
 
-      const maxPerTarget = input.maxNewLinksPerOwned ?? (isSpotlight ? 12 : 6);
+      const targetProfile = buildRepoFeatureProfile({
+        fullName: targetFullName,
+        name: targetName,
+        description: targetDesc,
+        notes: targetNotes,
+        primaryLanguage: targetLang,
+        topics: targetTopics,
+        readmeDigest: targetDigest,
+      });
 
-      // Query pgvector HNSW index strictly within the same embedding_source space
-      const sameSpaceRes = await this.pool.query<Record<string, unknown>>(
-        `SELECT n.id, n.full_name, n.name, n.description, n.primary_language, n.topics_json,
-                n.primary_domain_id, n.vitality, n.stars_count,
-                (1 - (n.embedding <=> $1::vector)) AS cosine_sim
-         FROM repo_evolution_nodes n
-         WHERE n.role IN ('starred', 'both')
-           AND n.id <> $2
-           AND n.embedding IS NOT NULL
-           AND COALESCE(n.embedding_source, 'local') = $3
-           AND n.vitality IN ('active', 'dormant')
-           AND n.priority_tier <> 'archived'
-           AND NOT EXISTS (
-             SELECT 1 FROM repo_absorption_links l
-             WHERE l.source_node_id = n.id AND l.target_node_id = $2
-           )
-         ORDER BY n.embedding <=> $1::vector ASC
-         LIMIT 40`,
-        [targetVecStr, targetId, targetSource],
-      );
+      // Skip empty placeholder owned repos with zero technical profile signal
+      if (targetProfile.isStub && targetOwner.toLowerCase() !== "local") {
+        continue;
+      }
 
-      let candidateRows: Array<Record<string, unknown>> = sameSpaceRes.rows;
-      // Hybrid fallback: when a private owned repo stays in local vector space while public stars
-      // were embedded remotely, compare in local vector space without ever sending private metadata externally.
-      if (candidateRows.length === 0 && targetSource === "local") {
-        const targetLocalVec = parsePgVectorLiteral(targetVecStr);
-        if (targetLocalVec) {
-          const fallbackPool = await this.pool.query<Record<string, unknown>>(
-            `SELECT n.id, n.full_name, n.name, n.description, n.primary_language, n.topics_json,
-                    n.primary_domain_id, n.vitality, n.stars_count
-             FROM repo_evolution_nodes n
-             WHERE n.role IN ('starred', 'both')
-               AND n.id <> $1
-               AND n.vitality IN ('active', 'dormant')
-               AND n.priority_tier <> 'archived'
-               AND NOT EXISTS (
-                 SELECT 1 FROM repo_absorption_links l
-                 WHERE l.source_node_id = n.id AND l.target_node_id = $1
-               )
-             ORDER BY n.stars_count DESC
-             LIMIT 400`,
-            [targetId],
-          );
-          candidateRows = fallbackPool.rows
-            .map((r) => {
-              const candLocalVec = debiasLocalSemanticVector(
-                localSemanticVector(
-                  buildRepoSemanticText({
-                    fullName: String(r.full_name),
-                    name: String(r.name),
-                    description: String(r.description ?? ""),
-                    primaryLanguage: r.primary_language ? String(r.primary_language) : null,
-                    topics: safeJson<string[]>(r.topics_json, []),
-                  }),
-                  REPO_EVOLUTION_VECTOR_DIM,
-                ),
-                "local",
-              );
-              return { ...r, cosine_sim: cosineSimilarity(targetLocalVec, candLocalVec) };
-            })
-            .sort((a, b) => Number(b.cosine_sim) - Number(a.cosine_sim))
-            .slice(0, 40);
+      // Query pgvector HNSW index strictly within same embedding_source space for vector signal enrichment
+      const vectorSimByStarId = new Map<string, number>();
+      if (targetVecStr) {
+        const hnswRes = await this.pool.query<{ id: string; cosine_sim: number }>(
+          `SELECT n.id, (1 - (n.embedding <=> $1::vector)) AS cosine_sim
+           FROM repo_evolution_nodes n
+           WHERE n.role = 'starred'
+             AND n.id <> $2
+             AND n.embedding IS NOT NULL
+             AND COALESCE(n.embedding_source, 'local') = $3
+             AND n.vitality IN ('active', 'dormant')
+             AND n.priority_tier <> 'archived'
+           ORDER BY n.embedding <=> $1::vector ASC
+           LIMIT 80`,
+          [targetVecStr, targetId, targetSource],
+        );
+        for (const hr of hnswRes.rows) {
+          const s = Number(hr.cosine_sim ?? 0);
+          if (Number.isFinite(s)) vectorSimByStarId.set(String(hr.id), s);
         }
       }
 
-      let addedForTarget = 0;
-      for (const cand of candidateRows) {
-        if (addedForTarget >= maxPerTarget) break;
-        const rawCosine = Number(cand.cosine_sim ?? 0);
-        if (!Number.isFinite(rawCosine)) continue;
-        const candTopics = safeJson<string[]>(cand.topics_json, []);
-        const candLang = cand.primary_language ? String(cand.primary_language) : null;
-        const candDomainId = cand.primary_domain_id ? String(cand.primary_domain_id) : null;
+      const proposals: CandidateProposal[] = [];
+      for (const star of preparedStars) {
+        if (star.id === targetId) continue;
+        if (existingPairSet.has(`${star.id}__${targetId}`)) continue;
 
-        const tBoost = topicOverlapScore(candTopics, targetTopics, candLang, targetLang);
-        const domainBoost = targetDomainId && candDomainId && targetDomainId === candDomainId ? 0.06 : 0;
-        const baseScore = rawCosine + tBoost + domainBoost;
-        const effectiveScore = Math.min(0.99, baseScore + (isSpotlight ? config.spotlightBonus : 0));
-
-        // Never force-link unrelated repos even for spotlight targets
-        const minBaseFloor = Math.max(0.16, config.minLinkSimilarity - config.spotlightBonus);
-        if (effectiveScore < config.minLinkSimilarity || baseScore < minBaseFloor) {
-          skippedStaleOrLowMatch++;
-          continue;
-        }
-
-        const candId = String(cand.id);
-        const candFullName = String(cand.full_name);
-        const candName = String(cand.name);
-        const candDesc = String(cand.description ?? "");
-        const relationType = inferRelationType({
-          name: candName,
-          description: candDesc,
-          topics: candTopics,
+        const rawCosine = vectorSimByStarId.get(star.id) ?? 0;
+        const isRemoteVec = targetSource === "remote" && star.embeddingSource === "remote" && rawCosine > 0;
+        const assessment = scoreStarToOwnedMatch({
+          star,
+          target: {
+            fullName: targetFullName,
+            owner: targetOwner,
+            name: targetName,
+            description: targetDesc,
+            notes: targetNotes,
+            primaryLanguage: targetLang,
+            topics: targetTopics,
+            primaryDomainId: targetDomainId,
+            priorityTier,
+            readmeDigest: targetDigest,
+          },
+          starProfile: star.profile,
+          targetProfile,
+          corpusIdf,
+          defaultIdf,
+          rawCosine,
+          isRemoteVector: isRemoteVec,
+          config,
         });
-        const strength = Math.round(effectiveScore * 1000) / 1000;
-        const linkId = `lnk_${randomUUID().replace(/-/g, "").slice(0, 14)}`;
-        const rationale = `pgvector 语义召回匹配（相似度 ${(rawCosine * 100).toFixed(0)}%，综合分 ${(strength * 100).toFixed(0)}%${isSpotlight ? "，重点关注仓加权" : ""}）：${candDesc.slice(0, 140) || candFullName}`;
 
+        if (!assessment.accepted) continue;
+        proposals.push({
+          star,
+          targetId,
+          targetFullName,
+          isSpotlight,
+          assessment,
+          rawCosine,
+        });
+      }
+
+      proposals.sort(
+        (a, b) =>
+          b.assessment.effectiveScore - a.assessment.effectiveScore ||
+          b.assessment.conceptScore - a.assessment.conceptScore ||
+          b.star.starsCount - a.star.starsCount,
+      );
+      proposalsByOwned.set(targetId, proposals);
+    }
+
+    // Apply per-star fan-out cap (max 3 targets per star for clean 1-to-N without spaghetti) and per-owned cap
+    const MAX_AUTO_TARGETS_PER_STAR = 3;
+    const starCandidateRank = new Map<string, CandidateProposal[]>();
+    for (const list of proposalsByOwned.values()) {
+      for (const p of list) {
+        const arr = starCandidateRank.get(p.star.id) ?? [];
+        arr.push(p);
+        starCandidateRank.set(p.star.id, arr);
+      }
+    }
+    const allowedStarTargets = new Set<string>();
+    for (const [starId, list] of starCandidateRank) {
+      list.sort(
+        (a, b) =>
+          (b.isSpotlight ? 0.04 : 0) +
+          b.assessment.effectiveScore -
+          ((a.isSpotlight ? 0.04 : 0) + a.assessment.effectiveScore),
+      );
+      const alreadyUsed = existingStarFanout.get(starId) ?? 0;
+      const slots = Math.max(0, MAX_AUTO_TARGETS_PER_STAR - alreadyUsed);
+      for (const p of list.slice(0, slots)) {
+        allowedStarTargets.add(`${p.star.id}__${p.targetId}`);
+      }
+    }
+
+    for (const targetRow of ownedRes.rows) {
+      const targetId = String(targetRow.id);
+      const isSpotlight = targetRow.priority_tier === "spotlight";
+      const maxPerTarget = input.maxNewLinksPerOwned ?? (isSpotlight ? 14 : 8);
+      const proposals = proposalsByOwned.get(targetId) ?? [];
+
+      let addedForTarget = 0;
+      for (const prop of proposals) {
+        if (addedForTarget >= maxPerTarget) break;
+        if (!allowedStarTargets.has(`${prop.star.id}__${prop.targetId}`)) continue;
+
+        const linkId = `lnk_${randomUUID().replace(/-/g, "").slice(0, 14)}`;
         const inserted = await this.pool.query<{ id: string }>(
           `INSERT INTO repo_absorption_links (
              id, source_node_id, target_node_id, relation_type, status, strength, rationale,
@@ -4395,40 +7140,60 @@ export class RepoEvolutionService {
            ) VALUES ($1, $2, $3, $4, 'suggested', $5, $6, 'ai', $7, $7)
            ON CONFLICT (source_node_id, target_node_id) DO NOTHING
            RETURNING id`,
-          [linkId, candId, targetId, relationType, strength, rationale, nowIso],
+          [
+            linkId,
+            prop.star.id,
+            prop.targetId,
+            prop.assessment.relationType,
+            prop.assessment.effectiveScore,
+            prop.assessment.rationale,
+            nowIso,
+          ],
         );
 
         if (inserted.rows[0]) {
           addedForTarget++;
           linksSuggested++;
-          if (isSpotlight) spotlightMatches++;
+          if (prop.isSpotlight) spotlightMatches++;
           await this.recordEvent({
             linkId,
-            sourceNodeId: candId,
-            targetNodeId: targetId,
-            domainId: candDomainId,
+            sourceNodeId: prop.star.id,
+            targetNodeId: prop.targetId,
+            domainId: prop.star.primaryDomainId,
             eventType: "link_discovered",
-            title: `AI 发现吸收建议：${candFullName} → ${targetFullName}`,
-            summary: rationale,
-            actor: "ai:pgvector",
-            metadata: { cosine: rawCosine, strength, relationType, isSpotlight },
+            title: `AI 发现吸收建议：${prop.star.fullName} → ${prop.targetFullName}`,
+            summary: prop.assessment.rationale,
+            actor: "ai:taxonomy-engine",
+            metadata: {
+              cosine: prop.rawCosine,
+              strength: prop.assessment.effectiveScore,
+              conceptScore: prop.assessment.conceptScore,
+              lexicalScore: prop.assessment.lexicalScore,
+              sharedConcepts: prop.assessment.sharedConcepts.map((c) => c.id),
+              relationType: prop.assessment.relationType,
+              isSpotlight: prop.isSpotlight,
+            },
           });
         }
       }
     }
 
-    if (domainsAssigned > 0 || linksSuggested > 0) {
+    if (domainsAssigned > 0 || ownedDomainsAssigned > 0 || linksSuggested > 0 || domainsCalibrated > 0) {
       await this.recordEvent({
         eventType: "domain_clustered",
-        title: `向量聚类与召回完成：归类 ${domainsAssigned} 仓 · 新建 ${linksSuggested} 条吸收建议`,
-        summary: `重点关注仓命中 ${spotlightMatches} 条；${skippedStaleOrLowMatch} 条陈旧/低相关仓库自然保留在游离散落池。`,
-        actor: "ai:pgvector",
+        title: `高精度分类与召回完成：自有 ${ownedDomainsAssigned} 仓 · Star ${domainsAssigned} 仓 · 新建 ${linksSuggested} 条吸收建议`,
+        summary: `校准领域 ${domainsCalibrated} 个、补全自有仓画像 ${ownedProfilesEnriched} 个、清理旧低质建议 ${clearedSuggestedLinks} 条、重点关注仓命中 ${spotlightMatches} 条；${skippedStaleOrLowMatch} 条陈旧/泛词/低相关仓库保留在游离散落池。`,
+        actor: "ai:taxonomy-engine",
         metadata: {
           embeddingsUpdated,
           domainsAssigned,
+          ownedDomainsAssigned,
           linksSuggested,
           skippedStaleOrLowMatch,
           spotlightMatches,
+          ownedProfilesEnriched,
+          domainsCalibrated,
+          clearedSuggestedLinks,
         },
       });
     }
@@ -4436,9 +7201,13 @@ export class RepoEvolutionService {
     return {
       embeddingsUpdated,
       domainsAssigned,
+      ownedDomainsAssigned,
       linksSuggested,
       skippedStaleOrLowMatch,
       spotlightMatches,
+      ownedProfilesEnriched,
+      domainsCalibrated,
+      clearedSuggestedLinks,
       durationMs: Date.now() - startMs,
     };
   }
@@ -4451,6 +7220,8 @@ export class RepoEvolutionService {
       this.pool.query<Record<string, unknown>>(`
         SELECT
           COUNT(*) FILTER (WHERE role IN ('owned', 'both'))::int AS owned_count,
+          COUNT(*) FILTER (WHERE role IN ('owned', 'both') AND is_fork = FALSE)::int AS owned_original_count,
+          COUNT(*) FILTER (WHERE role IN ('owned', 'both') AND is_fork = TRUE)::int AS owned_fork_count,
           COUNT(*) FILTER (WHERE role IN ('owned', 'both') AND visibility = 'public')::int AS owned_public_count,
           COUNT(*) FILTER (WHERE role IN ('owned', 'both') AND visibility = 'private')::int AS owned_private_count,
           COUNT(*) FILTER (WHERE priority_tier = 'spotlight')::int AS spotlight_count,
@@ -4508,6 +7279,8 @@ export class RepoEvolutionService {
     const lr = linkRes.rows[0] ?? {};
     return {
       ownedCount: Number(nr.owned_count ?? 0),
+      ownedOriginalCount: Number(nr.owned_original_count ?? 0),
+      ownedForkCount: Number(nr.owned_fork_count ?? 0),
       ownedPublicCount: Number(nr.owned_public_count ?? 0),
       ownedPrivateCount: Number(nr.owned_private_count ?? 0),
       spotlightCount: Number(nr.spotlight_count ?? 0),
@@ -4834,6 +7607,574 @@ export class RepoEvolutionService {
       truncated: totalMatchingStars > starNodes.length,
     };
   }
+
+  // ---- Concentric 3-Ring Radial Halo Graph Projection ----
+
+  async getRadialGraph(query: RepoRadialGraphQuery = {}): Promise<RepoEvolutionRadialGraph> {
+    await this.init();
+    const includeForks = Boolean(query.includeForks);
+    const includeRejected = Boolean(query.includeRejected);
+    const maxStarsPerOwned = Math.max(1, Math.min(60, Math.floor(Number(query.maxStarsPerOwned ?? 16) || 16)));
+    const maxTotalStars = Math.max(10, Math.min(600, Math.floor(Number(query.maxTotalStars ?? 240) || 240)));
+    const statusFilter = query.status && query.status !== "all" ? query.status : null;
+    const searchQuery = query.q?.trim().toLowerCase() || null;
+
+    // Resolve optional domainId (accepts id or slug) and ownedId (accepts id, fullName, or name)
+    let resolvedDomainId: string | null = null;
+    if (query.domainId?.trim()) {
+      const domRes = await this.pool.query<{ id: string }>(
+        "SELECT id FROM repo_domains WHERE id = $1 OR slug = $1 LIMIT 1",
+        [query.domainId.trim()],
+      );
+      resolvedDomainId = domRes.rows[0]?.id ?? query.domainId.trim();
+    }
+
+    let resolvedOwnedId: string | null = null;
+    if (query.ownedId?.trim()) {
+      const ownedRow = await this.resolveNodeRow(query.ownedId.trim());
+      resolvedOwnedId = ownedRow ? String(ownedRow.id) : query.ownedId.trim();
+    }
+
+    const [
+      baseStats,
+      config,
+      syncList,
+      allDomainsRes,
+      domainStarCountsRes,
+      floatingSampleRes,
+      globalLinkStatsRes,
+      allOwnedRes,
+      allLinksRes,
+    ] = await Promise.all([
+      this.getStats(),
+      this.getConfig(),
+      this.listSyncJobs(5),
+      this.pool.query<Record<string, unknown>>("SELECT * FROM repo_domains ORDER BY sort_order ASC, name ASC"),
+      this.pool.query<{ domain_id: string; star_cnt: number }>(
+        `SELECT primary_domain_id AS domain_id, COUNT(*)::int AS star_cnt
+         FROM repo_evolution_nodes
+         WHERE primary_domain_id IS NOT NULL AND role IN ('starred', 'both')
+         GROUP BY primary_domain_id`,
+      ),
+      this.pool.query<Record<string, unknown>>(
+        `SELECT n.*, d.name AS domain_name, d.color AS domain_color
+         FROM repo_evolution_nodes n
+         LEFT JOIN repo_domains d ON d.id = n.primary_domain_id
+         WHERE n.role IN ('starred', 'both')
+           AND NOT EXISTS (SELECT 1 FROM repo_absorption_links l WHERE l.source_node_id = n.id AND l.status <> 'rejected')
+         ORDER BY n.stars_count DESC, n.starred_at DESC NULLS LAST
+         LIMIT 8`,
+      ),
+      this.pool.query<{
+        linked_star_count: number;
+        multi_target_star_count: number;
+        active_link_count: number;
+        pending_review_count: number;
+        in_review_count: number;
+        approved_count: number;
+      }>(`
+        WITH star_links AS (
+          SELECT source_node_id, COUNT(*)::int AS cnt
+          FROM repo_absorption_links
+          WHERE status <> 'rejected'
+          GROUP BY source_node_id
+        )
+        SELECT
+          (SELECT COUNT(*)::int FROM star_links) AS linked_star_count,
+          (SELECT COUNT(*)::int FROM star_links WHERE cnt >= 2) AS multi_target_star_count,
+          COUNT(*) FILTER (WHERE status <> 'rejected')::int AS active_link_count,
+          COUNT(*) FILTER (WHERE status IN ('suggested', 'in_review'))::int AS pending_review_count,
+          COUNT(*) FILTER (WHERE status = 'in_review')::int AS in_review_count,
+          COUNT(*) FILTER (WHERE status IN ('approved', 'absorbing', 'absorbed'))::int AS approved_count
+        FROM repo_absorption_links
+      `),
+      this.pool.query<Record<string, unknown>>(
+        `SELECT n.*, d.name AS domain_name, d.color AS domain_color
+         FROM repo_evolution_nodes n
+         LEFT JOIN repo_domains d ON d.id = n.primary_domain_id
+         WHERE n.role IN ('owned', 'both')
+         ORDER BY
+           CASE n.priority_tier WHEN 'spotlight' THEN 0 WHEN 'standard' THEN 1 ELSE 2 END ASC,
+           CASE WHEN n.is_fork THEN 1 ELSE 0 END ASC,
+           n.pushed_at DESC NULLS LAST`,
+      ),
+      this.pool.query<Record<string, unknown>>(
+        `SELECT l.*,
+           s.full_name AS src_full_name, s.owner AS src_owner, s.name AS src_name, s.url AS src_url,
+           s.role AS src_role, s.visibility AS src_visibility, s.vitality AS src_vitality,
+           s.priority_tier AS src_priority_tier, s.is_fork AS src_is_fork, s.is_archived AS src_is_archived,
+           s.primary_language AS src_language, s.stars_count AS src_stars, s.description AS src_description,
+           s.topics_json AS src_topics_json, s.pushed_at AS src_pushed_at, s.starred_at AS src_starred_at,
+           s.allow_llm_analysis AS src_allow_llm, s.primary_domain_id AS src_domain_id,
+           sd.name AS src_domain_name, sd.color AS src_domain_color,
+           t.full_name AS tgt_full_name, t.primary_domain_id AS tgt_domain_id
+         FROM repo_absorption_links l
+         JOIN repo_evolution_nodes s ON s.id = l.source_node_id
+         LEFT JOIN repo_domains sd ON sd.id = s.primary_domain_id
+         JOIN repo_evolution_nodes t ON t.id = l.target_node_id
+         WHERE (${includeRejected ? "TRUE" : "l.status <> 'rejected'"})
+           AND ($1::text IS NULL OR l.status = $1)
+         ORDER BY
+           CASE l.status
+             WHEN 'in_review' THEN 0
+             WHEN 'approved' THEN 1
+             WHEN 'absorbing' THEN 2
+             WHEN 'absorbed' THEN 3
+             WHEN 'watching' THEN 4
+             WHEN 'suggested' THEN 5
+             ELSE 6 END ASC,
+           l.strength DESC,
+           s.stars_count DESC`,
+        [statusFilter],
+      ),
+    ]);
+
+    const domains = allDomainsRes.rows.map((r) => this.mapDomain(r));
+    const domainStarCountMap = new Map<string, number>();
+    for (const r of domainStarCountsRes.rows) {
+      domainStarCountMap.set(String(r.domain_id), Number(r.star_cnt ?? 0));
+    }
+
+    // Track per-domain original/fork owned counts across all owned repos
+    const domainOwnedOriginalCounts = new Map<string, number>();
+    const domainOwnedForkCounts = new Map<string, number>();
+    for (const r of allOwnedRes.rows) {
+      const domId = r.primary_domain_id ? String(r.primary_domain_id) : null;
+      if (!domId) continue;
+      if (Boolean(r.is_fork)) {
+        domainOwnedForkCounts.set(domId, (domainOwnedForkCounts.get(domId) ?? 0) + 1);
+      } else {
+        domainOwnedOriginalCounts.set(domId, (domainOwnedOriginalCounts.get(domId) ?? 0) + 1);
+      }
+    }
+
+    // Filter visible owned repos by includeForks, domainId, ownedId
+    const baseOwnedRows = allOwnedRes.rows.filter((r) => {
+      const isFork = Boolean(r.is_fork);
+      const isSpotlight = String(r.priority_tier) === "spotlight";
+      if (!includeForks && isFork && !isSpotlight) return false;
+      if (resolvedOwnedId && String(r.id) !== resolvedOwnedId) return false;
+      if (resolvedDomainId && String(r.primary_domain_id ?? "") !== resolvedDomainId) return false;
+      return true;
+    });
+    const baseOwnedIdSet = new Set(baseOwnedRows.map((r) => String(r.id)));
+
+    // Pre-filter candidate links targeting visible owned repos (and optional search q)
+    const matchesSearch = (textParts: Array<string | null | undefined>): boolean => {
+      if (!searchQuery) return true;
+      return textParts.some((p) => p && p.toLowerCase().includes(searchQuery));
+    };
+
+    const ownedMatchesQ = new Set<string>();
+    for (const r of baseOwnedRows) {
+      if (
+        matchesSearch([
+          String(r.full_name),
+          String(r.description ?? ""),
+          String(r.notes ?? ""),
+          String(r.domain_name ?? ""),
+          JSON.stringify(safeJson<string[]>(r.topics_json, [])),
+        ])
+      ) {
+        ownedMatchesQ.add(String(r.id));
+      }
+    }
+
+    // Group candidate links per owned target (for totalStarCount and per-owned cap)
+    const allEligibleLinkRows = allLinksRes.rows.filter((lr) => {
+      const tgtId = String(lr.target_node_id);
+      if (!baseOwnedIdSet.has(tgtId)) return false;
+      if (!searchQuery) return true;
+      if (ownedMatchesQ.has(tgtId)) return true;
+      return matchesSearch([
+        String(lr.src_full_name ?? ""),
+        String(lr.src_description ?? ""),
+        String(lr.rationale ?? ""),
+        JSON.stringify(safeJson<string[]>(lr.src_topics_json, [])),
+      ]);
+    });
+
+    // If searchQuery is set, keep owned nodes matching q OR having a matching linked star
+    const ownedWithMatchingLink = new Set(allEligibleLinkRows.map((lr) => String(lr.target_node_id)));
+    const visibleOwnedRows = searchQuery
+      ? baseOwnedRows.filter((r) => ownedMatchesQ.has(String(r.id)) || ownedWithMatchingLink.has(String(r.id)))
+      : baseOwnedRows;
+    const visibleOwnedIdSet = new Set(visibleOwnedRows.map((r) => String(r.id)));
+
+    // Per-owned link statistics BEFORE truncation
+    const totalLinksPerOwned = new Map<string, number>();
+    const pendingPerOwned = new Map<string, number>();
+    const inReviewPerOwned = new Map<string, number>();
+    const approvedPerOwned = new Map<string, number>();
+    const watchingPerOwned = new Map<string, number>();
+    const perOwnedBuckets = new Map<string, Array<Record<string, unknown>>>();
+
+    for (const lr of allEligibleLinkRows) {
+      const tgtId = String(lr.target_node_id);
+      if (!visibleOwnedIdSet.has(tgtId)) continue;
+      totalLinksPerOwned.set(tgtId, (totalLinksPerOwned.get(tgtId) ?? 0) + 1);
+      const st = String(lr.status);
+      if (st === "suggested" || st === "in_review") {
+        pendingPerOwned.set(tgtId, (pendingPerOwned.get(tgtId) ?? 0) + 1);
+      }
+      if (st === "in_review") {
+        inReviewPerOwned.set(tgtId, (inReviewPerOwned.get(tgtId) ?? 0) + 1);
+      }
+      if (st === "approved" || st === "absorbing" || st === "absorbed") {
+        approvedPerOwned.set(tgtId, (approvedPerOwned.get(tgtId) ?? 0) + 1);
+      }
+      if (st === "watching") {
+        watchingPerOwned.set(tgtId, (watchingPerOwned.get(tgtId) ?? 0) + 1);
+      }
+      const list = perOwnedBuckets.get(tgtId) ?? [];
+      list.push(lr);
+      perOwnedBuckets.set(tgtId, list);
+    }
+
+    // Enforce maxStarsPerOwned per owned repo, then rank unique Star nodes up to maxTotalStars
+    const candidateStarMeta = new Map<
+      string,
+      {
+        row: Record<string, unknown>;
+        priorityScore: number;
+        linkRows: Array<Record<string, unknown>>;
+      }
+    >();
+    const ownedPriorityById = new Map<string, string>(
+      visibleOwnedRows.map((r) => [String(r.id), String(r.priority_tier ?? "standard")]),
+    );
+
+    let perOwnedTruncated = false;
+    for (const [ownedId, list] of perOwnedBuckets) {
+      if (list.length > maxStarsPerOwned) perOwnedTruncated = true;
+      const isSpotTarget = ownedPriorityById.get(ownedId) === "spotlight";
+      for (const lr of list.slice(0, maxStarsPerOwned)) {
+        const starId = String(lr.source_node_id);
+        const st = String(lr.status);
+        const statusBoost =
+          st === "in_review" || st === "approved" || st === "absorbing" || st === "absorbed"
+            ? 0.6
+            : st === "watching"
+              ? 0.25
+              : 0;
+        const score = Number(lr.strength ?? 0.5) + statusBoost + (isSpotTarget ? 0.35 : 0);
+        const existing = candidateStarMeta.get(starId);
+        if (existing) {
+          existing.priorityScore = Math.max(existing.priorityScore, score) + 0.18; // Reward 1-to-N multi-target stars!
+          existing.linkRows.push(lr);
+        } else {
+          candidateStarMeta.set(starId, {
+            row: lr,
+            priorityScore: score,
+            linkRows: [lr],
+          });
+        }
+      }
+    }
+
+    const sortedCandidateStars = [...candidateStarMeta.entries()].sort(
+      (a, b) =>
+        b[1].priorityScore - a[1].priorityScore ||
+        Number(b[1].row.src_stars ?? 0) - Number(a[1].row.src_stars ?? 0),
+    );
+    const totalTruncated = perOwnedTruncated || sortedCandidateStars.length > maxTotalStars;
+    const selectedStarEntries = sortedCandidateStars.slice(0, maxTotalStars);
+    const selectedStarIdSet = new Set(selectedStarEntries.map(([id]) => id));
+
+    // Include ALL visible links whose BOTH endpoints are in visibleOwnedIdSet and selectedStarIdSet
+    // (guarantees 1-to-N cross-sector edges are never broken!)
+    const visibleLinkRows = allEligibleLinkRows.filter(
+      (lr) => selectedStarIdSet.has(String(lr.source_node_id)) && visibleOwnedIdSet.has(String(lr.target_node_id)),
+    );
+
+    const visibleOwnedIds = visibleOwnedRows.map((r) => String(r.id));
+    const visibleStarIds = selectedStarEntries.map(([id]) => id);
+    const secondaryMap = await this.loadSecondaryDomainsMap([...visibleOwnedIds, ...visibleStarIds]);
+
+    const visibleLinksPerOwned = new Map<string, number>();
+    const linksByStarId = new Map<string, Array<Record<string, unknown>>>();
+    for (const lr of visibleLinkRows) {
+      const sId = String(lr.source_node_id);
+      const tId = String(lr.target_node_id);
+      visibleLinksPerOwned.set(tId, (visibleLinksPerOwned.get(tId) ?? 0) + 1);
+      const arr = linksByStarId.get(sId) ?? [];
+      arr.push(lr);
+      linksByStarId.set(sId, arr);
+    }
+
+    const ownedDomainById = new Map<string, string | null>();
+    const ownedNodes: RepoRadialOwnedNode[] = visibleOwnedRows.map((r) => {
+      const id = String(r.id);
+      const primaryDomainId = r.primary_domain_id ? String(r.primary_domain_id) : null;
+      ownedDomainById.set(id, primaryDomainId);
+      const digest = safeJson<RepoReadmeDigest | null>(r.readme_digest_json, null);
+      const topics = safeJson<string[]>(r.topics_json, []);
+      const desc = String(r.description ?? "");
+      const notes = String(r.notes ?? "");
+      const primaryLanguage = r.primary_language ? String(r.primary_language) : null;
+      const concepts = extractRepoConcepts({
+        name: String(r.name),
+        fullName: String(r.full_name),
+        description: desc,
+        topics,
+        notes,
+        readmeDigest: digest,
+      });
+      const topConceptLabels = [...concepts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([cid]) => CONCEPT_BY_ID.get(cid)?.label.split("、")[0] ?? "")
+        .filter(Boolean);
+      const techStack = [
+        ...new Set([
+          ...(primaryLanguage ? [primaryLanguage] : []),
+          ...(digest?.techStack ?? []),
+          ...topConceptLabels,
+        ]),
+      ].slice(0, 6);
+      const profileSummary = (desc || digest?.summary || notes || String(r.full_name)).slice(0, 220);
+      const totalStarCount = totalLinksPerOwned.get(id) ?? 0;
+      const linkedStarCount = visibleLinksPerOwned.get(id) ?? 0;
+
+      return {
+        id,
+        fullName: String(r.full_name),
+        owner: String(r.owner),
+        name: String(r.name),
+        url: String(r.url),
+        role: String(r.role) as RepoNodeRole,
+        visibility: String(r.visibility ?? "public") as RepoVisibility,
+        vitality: String(r.vitality ?? "active") as RepoVitality,
+        priorityTier: String(r.priority_tier ?? "standard") as RepoPriorityTier,
+        isFork: Boolean(r.is_fork ?? false),
+        isArchived: Boolean(r.is_archived ?? false),
+        primaryLanguage,
+        starsCount: Number(r.stars_count ?? 0),
+        pushedAt: toIso(r.pushed_at),
+        description: desc,
+        topics,
+        notes,
+        allowLlmAnalysis: Boolean(r.allow_llm_analysis ?? true),
+        primaryDomainId,
+        primaryDomainName: r.domain_name ? String(r.domain_name) : null,
+        primaryDomainColor: r.domain_color ? String(r.domain_color) : null,
+        secondaryDomainIds: secondaryMap.get(id) ?? [],
+        linkedStarCount,
+        totalStarCount,
+        truncatedStarCount: Math.max(0, totalStarCount - linkedStarCount),
+        pendingCount: pendingPerOwned.get(id) ?? 0,
+        inReviewCount: inReviewPerOwned.get(id) ?? 0,
+        approvedCount: approvedPerOwned.get(id) ?? 0,
+        watchingCount: watchingPerOwned.get(id) ?? 0,
+        profileSummary,
+        techStack,
+        keyModules: (digest?.keyModules ?? []).slice(0, 6),
+      };
+    });
+
+    const starNodes: RepoRadialStarNode[] = selectedStarEntries.map(([starId, meta]) => {
+      const r = meta.row;
+      const starLinks = (linksByStarId.get(starId) ?? []).sort(
+        (a, b) => Number(b.strength ?? 0) - Number(a.strength ?? 0),
+      );
+      const targetOwnedIds = [...new Set(starLinks.map((l) => String(l.target_node_id)))];
+      const primaryDomainId = r.src_domain_id ? String(r.src_domain_id) : null;
+      const targetDomains = new Set(targetOwnedIds.map((tid) => ownedDomainById.get(tid) ?? null));
+      const isCrossSector =
+        targetDomains.size > 1 ||
+        (primaryDomainId !== null &&
+          targetOwnedIds.some((tid) => {
+            const td = ownedDomainById.get(tid);
+            return td !== null && td !== primaryDomainId;
+          }));
+      const starsCount = Number(r.src_stars ?? 0);
+      const primaryLanguage = r.src_language ? String(r.src_language) : null;
+      const maxStrength = starLinks.reduce((m, l) => Math.max(m, Number(l.strength ?? 0)), 0);
+
+      return {
+        id: starId,
+        fullName: String(r.src_full_name),
+        owner: String(r.src_owner),
+        name: String(r.src_name),
+        url: String(r.src_url),
+        role: String(r.src_role) as RepoNodeRole,
+        visibility: String(r.src_visibility ?? "public") as RepoVisibility,
+        vitality: String(r.src_vitality ?? "active") as RepoVitality,
+        priorityTier: String(r.src_priority_tier ?? "standard") as RepoPriorityTier,
+        isFork: Boolean(r.src_is_fork ?? false),
+        isArchived: Boolean(r.src_is_archived ?? false),
+        primaryDomainId,
+        primaryDomainName: r.src_domain_name ? String(r.src_domain_name) : null,
+        primaryDomainColor: r.src_domain_color ? String(r.src_domain_color) : null,
+        secondaryDomainIds: secondaryMap.get(starId) ?? [],
+        targetOwnedIds,
+        primaryTargetOwnedId: targetOwnedIds[0] ?? null,
+        linkCount: targetOwnedIds.length,
+        isMultiTarget: targetOwnedIds.length > 1,
+        isCrossSector,
+        stargazerCount: starsCount,
+        starsCount,
+        language: primaryLanguage,
+        primaryLanguage,
+        description: String(r.src_description ?? ""),
+        topics: safeJson<string[]>(r.src_topics_json, []),
+        pushedAt: toIso(r.src_pushed_at),
+        starredAt: toIso(r.src_starred_at),
+        allowLlmAnalysis: Boolean(r.src_allow_llm ?? true),
+        maxStrength: Math.round(maxStrength * 1000) / 1000,
+      };
+    });
+
+    const links: RepoRadialLink[] = visibleLinkRows.map((lr) => {
+      const moduleAnalysis = safeJson<RepoModuleAnalysisItem[]>(lr.module_analysis_json, []);
+      const decisionPacketId = lr.decision_packet_id ? String(lr.decision_packet_id) : null;
+      const livePacket = decisionPacketId && this.decisions ? this.decisions.get(decisionPacketId) : null;
+      const srcDom = lr.src_domain_id ? String(lr.src_domain_id) : null;
+      const tgtDom = lr.tgt_domain_id ? String(lr.tgt_domain_id) : null;
+      const sourceNodeId = String(lr.source_node_id);
+      const targetNodeId = String(lr.target_node_id);
+      return {
+        id: String(lr.id),
+        sourceNodeId,
+        targetNodeId,
+        starNodeId: sourceNodeId,
+        ownedNodeId: targetNodeId,
+        sourceRepoFullName: String(lr.src_full_name ?? ""),
+        targetRepoFullName: String(lr.tgt_full_name ?? ""),
+        relationType: String(lr.relation_type) as RepoRelationType,
+        status: String(lr.status) as RepoAbsorptionStatus,
+        strength: Number(lr.strength ?? 0.5),
+        rationale: String(lr.rationale ?? ""),
+        moduleAnalysisCount: moduleAnalysis.length,
+        moduleAnalysis,
+        analysisSource:
+          lr.analysis_source === "llm" ||
+          lr.analysis_source === "deterministic" ||
+          lr.analysis_source === "manual"
+            ? lr.analysis_source
+            : null,
+        analyzedAt: toIso(lr.analyzed_at),
+        decisionPacketId,
+        decisionStatus: livePacket?.status ?? null,
+        opportunityId: lr.opportunity_id ? String(lr.opportunity_id) : null,
+        createdBy: lr.created_by === "manual" ? "manual" : "ai",
+        isCrossSector: Boolean(srcDom && tgtDom && srcDom !== tgtDom),
+        createdAt: toIso(lr.created_at) ?? new Date(this.now()).toISOString(),
+        updatedAt: toIso(lr.updated_at) ?? new Date(this.now()).toISOString(),
+      };
+    });
+
+    // Aggregate exact Ring 1 domain metrics aligned with visible owned nodes & links
+    const domainVisibleOwned = new Map<string, RepoRadialOwnedNode[]>();
+    for (const o of ownedNodes) {
+      if (!o.primaryDomainId) continue;
+      const arr = domainVisibleOwned.get(o.primaryDomainId) ?? [];
+      arr.push(o);
+      domainVisibleOwned.set(o.primaryDomainId, arr);
+    }
+
+    const domainLinkedStars = new Map<string, Set<string>>();
+    const domainPending = new Map<string, number>();
+    const domainApproved = new Map<string, number>();
+    const domainTotalLinks = new Map<string, number>();
+    for (const l of links) {
+      const domId = ownedDomainById.get(l.ownedNodeId);
+      if (!domId) continue;
+      const starSet = domainLinkedStars.get(domId) ?? new Set<string>();
+      starSet.add(l.starNodeId);
+      domainLinkedStars.set(domId, starSet);
+      domainTotalLinks.set(domId, (domainTotalLinks.get(domId) ?? 0) + 1);
+      if (l.status === "suggested" || l.status === "in_review") {
+        domainPending.set(domId, (domainPending.get(domId) ?? 0) + 1);
+      }
+      if (l.status === "approved" || l.status === "absorbing" || l.status === "absorbed") {
+        domainApproved.set(domId, (domainApproved.get(domId) ?? 0) + 1);
+      }
+    }
+
+    const radialDomains: RepoRadialDomainNode[] = domains
+      .filter((d) => !resolvedDomainId || d.id === resolvedDomainId)
+      .map((d) => {
+        const ownedInDom = domainVisibleOwned.get(d.id) ?? [];
+        return {
+          id: d.id,
+          slug: d.slug,
+          name: d.name,
+          description: d.description,
+          color: d.color,
+          icon: d.icon,
+          source: d.source,
+          seedKeywords: d.seedKeywords,
+          sortOrder: d.sortOrder,
+          ownedCount: ownedInDom.length,
+          ownedOriginalCount: domainOwnedOriginalCounts.get(d.id) ?? 0,
+          ownedForkCount: domainOwnedForkCounts.get(d.id) ?? 0,
+          linkedStarCount: domainLinkedStars.get(d.id)?.size ?? 0,
+          domainStarCount: domainStarCountMap.get(d.id) ?? 0,
+          pendingReviewCount: domainPending.get(d.id) ?? 0,
+          approvedCount: domainApproved.get(d.id) ?? 0,
+          totalLinkCount: domainTotalLinks.get(d.id) ?? 0,
+          hasSpotlight: ownedInDom.some((o) => o.priorityTier === "spotlight"),
+        };
+      });
+
+    const gls = globalLinkStatsRes.rows[0];
+    const stats: RepoEvolutionRadialStats = {
+      ownedCount: baseStats.ownedCount,
+      ownedOriginalCount: baseStats.ownedOriginalCount,
+      ownedForkCount: baseStats.ownedForkCount,
+      ownedPublicCount: baseStats.ownedPublicCount,
+      ownedPrivateCount: baseStats.ownedPrivateCount,
+      spotlightCount: baseStats.spotlightCount,
+      starredCount: baseStats.starredCount,
+      linkedStarCount: Number(gls?.linked_star_count ?? 0),
+      multiTargetStarCount: Number(gls?.multi_target_star_count ?? 0),
+      domainCount: domains.length,
+      floatingPoolCount: baseStats.floatingPoolCount,
+      unclassifiedCount: baseStats.unclassifiedCount,
+      classifiedUnlinkedCount: baseStats.classifiedUnlinkedCount,
+      stalePoolCount: baseStats.stalePoolCount,
+      pendingReviewCount: Number(gls?.pending_review_count ?? 0),
+      inReviewCount: Number(gls?.in_review_count ?? 0),
+      approvedCount: Number(gls?.approved_count ?? 0),
+      linkCount: Number(gls?.active_link_count ?? 0),
+      visibleOwnedCount: ownedNodes.length,
+      visibleStarCount: starNodes.length,
+      visibleLinkCount: links.length,
+    };
+
+    const floatingPool: RepoFloatingPoolSummary = {
+      totalCount: baseStats.floatingPoolCount,
+      unclassifiedCount: baseStats.unclassifiedCount,
+      classifiedUnlinkedCount: baseStats.classifiedUnlinkedCount,
+      staleCount: baseStats.stalePoolCount,
+      archivedCount: baseStats.archivedStarredCount,
+      sampleRepos: floatingSampleRes.rows.map((r) => this.mapNodeBrief(r)),
+    };
+
+    return {
+      stats,
+      domains: radialDomains,
+      ownedNodes,
+      starNodes,
+      links,
+      floatingPool,
+      config,
+      activeSyncJob: syncList.activeJob,
+      latestSyncJob: syncList.jobs[0] ?? null,
+      filters: {
+        includeForks,
+        includeRejected,
+        maxStarsPerOwned,
+        maxTotalStars,
+        domainId: resolvedDomainId,
+        ownedId: resolvedOwnedId,
+        q: query.q?.trim() || null,
+        status: statusFilter,
+      },
+      truncated: totalTruncated,
+    };
+  }
 }
 
 // ---- Hono Routes ----
@@ -4867,6 +8208,26 @@ export function addRepoEvolutionRoutes(
   // Graph projections
   app.get(base + "/graph/macro", async (c) => c.json(await service.getMacroGraph()));
   app.get(base + "/overview", async (c) => c.json(await service.getMacroGraph()));
+  app.get(base + "/graph/radial", async (c) => {
+    const rawStatus = c.req.query("status");
+    const status =
+      rawStatus &&
+      ["all", "suggested", "watching", "in_review", "approved", "absorbing", "absorbed", "rejected"].includes(rawStatus)
+        ? (rawStatus as RepoRadialGraphQuery["status"])
+        : undefined;
+    return c.json(
+      await service.getRadialGraph({
+        includeForks: c.req.query("includeForks") === "true" || c.req.query("includeForks") === "1",
+        includeRejected: c.req.query("includeRejected") === "true" || c.req.query("includeRejected") === "1",
+        maxStarsPerOwned: c.req.query("maxStarsPerOwned") ? Number(c.req.query("maxStarsPerOwned")) : undefined,
+        maxTotalStars: c.req.query("maxTotalStars") ? Number(c.req.query("maxTotalStars")) : undefined,
+        domainId: c.req.query("domainId") ?? undefined,
+        ownedId: c.req.query("ownedId") ?? undefined,
+        q: c.req.query("q") ?? undefined,
+        status,
+      }),
+    );
+  });
   app.get(base + "/graph/focus", async (c) => {
     const rawFocusType = c.req.query("focusType");
     const focusType: RepoFocusType =
@@ -5032,7 +8393,7 @@ export function addRepoEvolutionRoutes(
   );
   app.get(base + "/sync/jobs/:id", async (c) => c.json(await service.getSyncJob(c.req.param("id")!)));
 
-  // AI Clustering & Recall
+  // AI Clustering & Recall (+ full taxonomy recalibration)
   app.post(base + "/cluster-and-recall", async (c) => {
     let body: ClusterAndRecallInput = {};
     try {
@@ -5041,6 +8402,24 @@ export function addRepoEvolutionRoutes(
       body = {};
     }
     return c.json(await service.clusterAndRecall(body));
+  });
+  app.post(base + "/recalibrate", async (c) => {
+    let body: ClusterAndRecallInput = {};
+    try {
+      body = await c.req.json();
+    } catch {
+      body = {};
+    }
+    return c.json(
+      await service.clusterAndRecall({
+        recalibrateTaxonomy: true,
+        enrichOwnedProfiles: true,
+        reclassifyAi: true,
+        clearSuggestedLinks: true,
+        recomputeEmbeddings: true,
+        ...body,
+      }),
+    );
   });
 
   // Config

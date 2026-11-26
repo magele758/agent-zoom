@@ -16,6 +16,8 @@ import {
   computePoolBucket,
   computeRepoVitality,
   createRepoEvolutionPool,
+  extractRepoConcepts,
+  isCuratedListOrTutorial,
   matchesSpotlightRepo,
   normalizeVectorToDim,
   parsePgVectorLiteral,
@@ -26,6 +28,7 @@ import {
   type GitHubRepoSnapshot,
   type PgPoolLike,
 } from "./server/repo-evolution.ts";
+import type { RepoEvolutionRadialGraph } from "./repo-evolution-types.ts";
 
 const FIXED_NOW = Date.parse("2026-11-26T12:00:00.000Z");
 
@@ -350,6 +353,60 @@ describe("repo-evolution pure logic", () => {
     // Zero vector must never produce NaN or zero norm (breaks pgvector cosine <=>)
     const safeZero = normalizeVectorToDim([0, 0, 0], REPO_EVOLUTION_VECTOR_DIM);
     assert.equal(safeZero[0], 1);
+  });
+
+  it("identifies curated awesome lists / tutorials and extracts high-precision engineering concepts", () => {
+    assert.equal(
+      isCuratedListOrTutorial({
+        fullName: "EvoMap/awesome-agent-evolution",
+        name: "awesome-agent-evolution",
+        description: "A curated list of AI Agent evolution, memory systems, and multi-agent architectures",
+        topics: ["awesome-list", "ai-agents"],
+      }),
+      true,
+    );
+    assert.equal(
+      isCuratedListOrTutorial({
+        fullName: "ZJU-LLMs/Foundations-of-LLMs",
+        name: "Foundations-of-LLMs",
+        description: "A book for Learning the Foundations of LLMs",
+        topics: [],
+      }),
+      true,
+    );
+    assert.equal(
+      isCuratedListOrTutorial({
+        fullName: "browser-use/browser-use",
+        name: "browser-use",
+        description: "Make websites accessible for AI agents with Playwright DOM automation",
+        topics: ["playwright", "browser-automation"],
+      }),
+      false,
+    );
+
+    const quantConcepts = extractRepoConcepts({
+      name: "stock-research",
+      description: "QuantLab Pro V2.0 quantitative research platform with Barra CNE6, cvxpy, A-share backtest",
+      topics: [],
+    });
+    assert.ok(quantConcepts.has("quant-backtest-factors"));
+    assert.ok(quantConcepts.has("financial-trading-agents"));
+
+    const genericConcepts = extractRepoConcepts({
+      name: "ai-cli-tool",
+      description: "An open-source AI LLM CLI app tool framework for developers",
+      topics: ["ai", "llm", "cli", "tool", "open-source"],
+    });
+    assert.equal(genericConcepts.size, 0, "generic buzzwords alone must not trigger specific mechanism concepts");
+
+    const negatedConcepts = extractRepoConcepts({
+      name: "pagelens-agent",
+      description: "PageLens agent side panel without interpretation, dubbing, ASR, or TTS.",
+      topics: ["chrome-extension"],
+    });
+    assert.ok(negatedConcepts.has("chrome-mv3-extension"));
+    assert.equal(negatedConcepts.has("asr-subtitle-dubbing"), false, "negated 'without dubbing/ASR' must not trigger ASR concept");
+    assert.equal(negatedConcepts.has("tts-voice-synthesis"), false, "negated 'without TTS' must not trigger TTS concept");
   });
 });
 
@@ -962,6 +1019,179 @@ describe("repo-evolution PostgreSQL 18 + pgvector end-to-end", async () => {
     } finally {
       await pool2.end?.();
       await pgHandle.adminPool.query(`DROP SCHEMA IF EXISTS ${schema2} CASCADE`);
+    }
+  });
+
+  it("isolates forks/awesome-lists/generic-buzzwords and serves concentric 3-ring /graph/radial with 1-to-N cross-sector edges", async () => {
+    const schema3 = `test_repo_evo_rad_${randomUUID().replace(/-/g, "").slice(0, 10)}`;
+    await pgHandle.adminPool.query(`CREATE SCHEMA ${schema3}`);
+    const pool3 = await createRepoEvolutionPool(PG_URL, { schema: schema3, max: 4 });
+
+    try {
+      const gh3 = makeMockGithubFetcher();
+      // Add a forked owned repo + an awesome-list star + a generic-buzzword star + a cross-sector browser-use star
+      gh3.ownedRepos.push({
+        fullName: "magele758/forked-old-editor",
+        url: "https://github.com/magele758/forked-old-editor",
+        visibility: "public",
+        description: "Forked rich text editor framework with React SVG canvas",
+        isArchived: false,
+        isFork: true,
+        starsCount: 0,
+        forksCount: 0,
+        pushedAt: monthsAgoIso(1),
+        repoUpdatedAt: monthsAgoIso(1),
+        defaultBranch: "main",
+        primaryLanguage: "TypeScript",
+        topics: ["react", "svg", "canvas"],
+      });
+      gh3.starredRepos.push(
+        {
+          fullName: "curated/awesome-mcp-agents",
+          url: "https://github.com/curated/awesome-mcp-agents",
+          visibility: "public",
+          description: "A curated list of awesome AI agent MCP servers, workflows, and multi-agent orchestrators",
+          isArchived: false,
+          isFork: false,
+          starsCount: 45000,
+          forksCount: 3000,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          starredAt: "2026-11-25T11:00:00.000Z",
+          defaultBranch: "main",
+          primaryLanguage: "Markdown",
+          topics: ["awesome", "awesome-list", "mcp", "ai-agent"],
+        },
+        {
+          fullName: "noise/generic-ai-cli-tool",
+          url: "https://github.com/noise/generic-ai-cli-tool",
+          visibility: "public",
+          description: "An open-source AI LLM CLI app tool framework library for developers",
+          isArchived: false,
+          isFork: false,
+          starsCount: 1200,
+          forksCount: 80,
+          pushedAt: monthsAgoIso(0.5),
+          repoUpdatedAt: monthsAgoIso(0.5),
+          starredAt: "2026-11-25T10:30:00.000Z",
+          defaultBranch: "main",
+          primaryLanguage: "TypeScript",
+          topics: ["ai", "llm", "cli", "tool", "open-source"],
+        },
+      );
+
+      const svc3 = new RepoEvolutionService({
+        pool: pool3,
+        github: gh3.fetcher,
+        now: () => FIXED_NOW,
+      });
+      await svc3.init();
+      await svc3.runSyncNow({ mode: "full" });
+      const recallRes = await svc3.clusterAndRecall({
+        recalibrateTaxonomy: true,
+        enrichOwnedProfiles: true,
+        reclassifyAi: true,
+      });
+
+      assert.ok(recallRes.ownedDomainsAssigned >= 3, "owned repos must be classified into Ring 1 domains");
+      assert.ok(recallRes.ownedProfilesEnriched >= 3, "core original owned repos should cache README profiles");
+
+      // 1. Fork owned repo must NEVER receive auto-suggested links
+      const forkedOwned = await svc3.getNode("magele758/forked-old-editor");
+      assert.equal(forkedOwned.isFork, true);
+      const forkLinks = await svc3.listLinks({ targetNodeId: forkedOwned.id });
+      assert.equal(forkLinks.length, 0, "forked owned repo must not grab auto-suggested absorption links");
+
+      // 2. Awesome list & generic buzzword star must NEVER be auto-linked
+      const awesomeStar = await svc3.getNode("curated/awesome-mcp-agents");
+      const awesomeLinks = await svc3.listLinks({ sourceNodeId: awesomeStar.id });
+      assert.equal(awesomeLinks.length, 0, "curated awesome-* list must not auto-link to engineering repos");
+
+      const genericStar = await svc3.getNode("noise/generic-ai-cli-tool");
+      const genericLinks = await svc3.listLinks({ sourceNodeId: genericStar.id });
+      assert.equal(genericLinks.length, 0, "generic buzzword repo must not auto-link");
+
+      // 3. Valid links must carry concrete mechanism rationale (not generic cosine similarity text)
+      const validLinks = await svc3.listLinks({ limit: 50 });
+      assert.ok(validLinks.length >= 2);
+      for (const l of validLinks) {
+        assert.match(l.rationale, /机制重合|共同技术点/);
+        assert.doesNotMatch(l.rationale, /pgvector 语义召回匹配/);
+      }
+
+      // 4. Create an explicit approved cross-sector link & test recalibrate preserves approved while refreshing suggested
+      const starMulti = await svc3.getNode("openorg/multi-agent-orchestrator");
+      const canvasOwned = await svc3.getNode("magele758/web-canvas-kit");
+      const approvedManual = await svc3.createLink({
+        sourceNodeId: starMulti.id,
+        targetNodeId: canvasOwned.id,
+        relationType: "ux_workflow",
+        status: "approved",
+        strength: 0.88,
+        rationale: "人工批准跨扇区借鉴其可视化编排画布",
+      });
+
+      const recalRes = await svc3.clusterAndRecall({
+        recalibrateTaxonomy: true,
+        clearSuggestedLinks: true,
+        reclassifyAi: true,
+      });
+      assert.ok(recalRes.clearedSuggestedLinks >= 1);
+      const preservedApproved = await svc3.getLink(approvedManual.id);
+      assert.equal(preservedApproved.status, "approved", "recalibrate must preserve approved links");
+
+      // 5. Verify GET /api/opc/repo-evolution/graph/radial contract & filters
+      const app3 = new Hono();
+      addRepoEvolutionRoutes(app3, svc3, () => ({ id: "u1", name: "founder" }));
+
+      const radDefaultRes = await app3.request("/api/opc/repo-evolution/graph/radial");
+      assert.equal(radDefaultRes.status, 200);
+      const rad = (await radDefaultRes.json()) as RepoEvolutionRadialGraph;
+      assert.equal(rad.filters.includeForks, false);
+      assert.equal(rad.stats.ownedOriginalCount, 3);
+      assert.equal(rad.stats.ownedForkCount, 1);
+      assert.equal(rad.ownedNodes.some((o) => o.isFork), false, "includeForks=false must hide forked owned repos");
+      assert.ok(rad.ownedNodes.every((o) => Boolean(o.primaryDomainId)), "all original owned repos should have a Ring 1 domain");
+      assert.ok(rad.domains.some((d) => d.ownedCount > 0 && d.linkedStarCount > 0));
+      assert.ok(rad.starNodes.length >= 2);
+      assert.ok(rad.links.length >= 2);
+
+      // Verify strict graph integrity: every link endpoint exists in starNodes & ownedNodes
+      const ownedSet = new Set(rad.ownedNodes.map((o) => o.id));
+      const starSet = new Set(rad.starNodes.map((s) => s.id));
+      for (const l of rad.links) {
+        assert.ok(starSet.has(l.starNodeId), `link starNodeId ${l.starNodeId} missing in starNodes`);
+        assert.ok(ownedSet.has(l.ownedNodeId), `link ownedNodeId ${l.ownedNodeId} missing in ownedNodes`);
+      }
+
+      // Verify 1-to-N multi-target & cross-sector flags on openorg/multi-agent-orchestrator
+      const multiNode = rad.starNodes.find((s) => s.fullName === "openorg/multi-agent-orchestrator");
+      assert.ok(multiNode, "multi-agent-orchestrator should appear in Ring 3");
+      assert.equal(multiNode.isMultiTarget, true);
+      assert.ok(multiNode.targetOwnedIds.length >= 2);
+      assert.equal(multiNode.isCrossSector, true);
+      assert.equal(multiNode.stargazerCount, multiNode.starsCount);
+
+      // Verify includeForks=true reveals forked owned repo
+      const radForksRes = await app3.request("/api/opc/repo-evolution/graph/radial?includeForks=true");
+      assert.equal(radForksRes.status, 200);
+      const radForks = (await radForksRes.json()) as RepoEvolutionRadialGraph;
+      assert.equal(radForks.ownedNodes.some((o) => o.fullName === "magele758/forked-old-editor"), true);
+
+      // Verify maxStarsPerOwned truncation reports truncatedStarCount cleanly
+      const radCapRes = await app3.request("/api/opc/repo-evolution/graph/radial?maxStarsPerOwned=1");
+      assert.equal(radCapRes.status, 200);
+      const radCap = (await radCapRes.json()) as RepoEvolutionRadialGraph;
+      assert.ok(radCap.ownedNodes.some((o) => o.totalStarCount >= 1 && o.linkedStarCount <= 1));
+
+      // Verify POST /recalibrate HTTP route works cleanly
+      const recalHttpRes = await app3.request("/api/opc/repo-evolution/recalibrate", { method: "POST" });
+      assert.equal(recalHttpRes.status, 200);
+      const recalBody = (await recalHttpRes.json()) as { domainsCalibrated: number };
+      assert.ok(recalBody.domainsCalibrated >= BUILTIN_REPO_DOMAINS.length);
+    } finally {
+      await pool3.end?.();
+      await pgHandle.adminPool.query(`DROP SCHEMA IF EXISTS ${schema3} CASCADE`);
     }
   });
 });
