@@ -116,6 +116,7 @@ export interface RepoNodeBrief {
   visibility: RepoVisibility;
   vitality: RepoVitality;
   priorityTier: RepoPriorityTier;
+  isFork: boolean;
   primaryLanguage: string | null;
   starsCount: number;
   primaryDomainId: string | null;
@@ -241,6 +242,8 @@ export interface RepoEvolutionConfig {
 
 export interface RepoEvolutionStats {
   ownedCount: number;
+  ownedOriginalCount: number;
+  ownedForkCount: number;
   ownedPublicCount: number;
   ownedPrivateCount: number;
   spotlightCount: number;
@@ -266,6 +269,9 @@ export interface RepoEvolutionStats {
 }
 
 export interface RepoDomainCluster extends RepoDomain {
+  ownedCount: number;
+  ownedOriginalCount: number;
+  ownedForkCount: number;
   totalNodes: number;
   activeNodes: number;
   dormantNodes: number;
@@ -340,6 +346,180 @@ export interface RepoEvolutionFocusGraph {
   ownedNodes: RepoEvolutionNode[];
   links: RepoAbsorptionLink[];
   totalMatchingStars: number;
+  truncated: boolean;
+}
+
+// ---- Concentric 3-Ring Radial Halo Graph ----
+
+export interface RepoRadialGraphQuery {
+  includeForks?: boolean;
+  includeRejected?: boolean;
+  maxStarsPerOwned?: number;
+  maxTotalStars?: number;
+  domainId?: string;
+  ownedId?: string;
+  q?: string;
+  status?: RepoAbsorptionStatus | "all";
+}
+
+export interface RepoEvolutionRadialStats {
+  ownedCount: number;
+  ownedOriginalCount: number;
+  ownedForkCount: number;
+  ownedPublicCount: number;
+  ownedPrivateCount: number;
+  spotlightCount: number;
+  starredCount: number;
+  linkedStarCount: number;
+  multiTargetStarCount: number;
+  domainCount: number;
+  floatingPoolCount: number;
+  unclassifiedCount: number;
+  classifiedUnlinkedCount: number;
+  stalePoolCount: number;
+  pendingReviewCount: number;
+  inReviewCount: number;
+  approvedCount: number;
+  linkCount: number;
+  visibleOwnedCount: number;
+  visibleStarCount: number;
+  visibleLinkCount: number;
+}
+
+export interface RepoRadialDomainNode {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  color: string;
+  icon: string;
+  source: RepoDomainSource;
+  seedKeywords: string[];
+  sortOrder: number;
+  ownedCount: number;
+  ownedOriginalCount: number;
+  ownedForkCount: number;
+  linkedStarCount: number;
+  domainStarCount: number;
+  pendingReviewCount: number;
+  approvedCount: number;
+  totalLinkCount: number;
+  hasSpotlight: boolean;
+}
+
+export interface RepoRadialOwnedNode {
+  id: string;
+  fullName: string;
+  owner: string;
+  name: string;
+  url: string;
+  role: RepoNodeRole;
+  visibility: RepoVisibility;
+  vitality: RepoVitality;
+  priorityTier: RepoPriorityTier;
+  isFork: boolean;
+  isArchived: boolean;
+  primaryLanguage: string | null;
+  starsCount: number;
+  pushedAt: string | null;
+  description: string;
+  topics: string[];
+  notes: string;
+  allowLlmAnalysis: boolean;
+  primaryDomainId: string | null;
+  primaryDomainName: string | null;
+  primaryDomainColor: string | null;
+  secondaryDomainIds: string[];
+  linkedStarCount: number;
+  totalStarCount: number;
+  truncatedStarCount: number;
+  pendingCount: number;
+  inReviewCount: number;
+  approvedCount: number;
+  watchingCount: number;
+  profileSummary: string;
+  techStack: string[];
+  keyModules: string[];
+}
+
+export interface RepoRadialStarNode {
+  id: string;
+  fullName: string;
+  owner: string;
+  name: string;
+  url: string;
+  role: RepoNodeRole;
+  visibility: RepoVisibility;
+  vitality: RepoVitality;
+  priorityTier: RepoPriorityTier;
+  isFork: boolean;
+  isArchived: boolean;
+  primaryDomainId: string | null;
+  primaryDomainName: string | null;
+  primaryDomainColor: string | null;
+  secondaryDomainIds: string[];
+  targetOwnedIds: string[];
+  primaryTargetOwnedId: string | null;
+  linkCount: number;
+  isMultiTarget: boolean;
+  isCrossSector: boolean;
+  stargazerCount: number;
+  starsCount: number;
+  language: string | null;
+  primaryLanguage: string | null;
+  description: string;
+  topics: string[];
+  pushedAt: string | null;
+  starredAt: string | null;
+  allowLlmAnalysis: boolean;
+  maxStrength: number;
+}
+
+export interface RepoRadialLink {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  starNodeId: string;
+  ownedNodeId: string;
+  sourceRepoFullName: string;
+  targetRepoFullName: string;
+  relationType: RepoRelationType;
+  status: RepoAbsorptionStatus;
+  strength: number;
+  rationale: string;
+  moduleAnalysisCount: number;
+  moduleAnalysis: RepoModuleAnalysisItem[];
+  analysisSource: "llm" | "deterministic" | "manual" | null;
+  analyzedAt: string | null;
+  decisionPacketId: string | null;
+  decisionStatus: string | null;
+  opportunityId: string | null;
+  createdBy: "ai" | "manual";
+  isCrossSector: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RepoEvolutionRadialGraph {
+  stats: RepoEvolutionRadialStats;
+  domains: RepoRadialDomainNode[];
+  ownedNodes: RepoRadialOwnedNode[];
+  starNodes: RepoRadialStarNode[];
+  links: RepoRadialLink[];
+  floatingPool: RepoFloatingPoolSummary;
+  config: RepoEvolutionConfig;
+  activeSyncJob: RepoEvolutionSyncJob | null;
+  latestSyncJob: RepoEvolutionSyncJob | null;
+  filters: {
+    includeForks: boolean;
+    includeRejected: boolean;
+    maxStarsPerOwned: number;
+    maxTotalStars: number;
+    domainId: string | null;
+    ownedId: string | null;
+    q: string | null;
+    status: string | null;
+  };
   truncated: boolean;
 }
 
@@ -488,6 +668,9 @@ export interface TriggerSyncInput {
 export interface ClusterAndRecallInput {
   recomputeEmbeddings?: boolean;
   reclassifyAi?: boolean;
+  recalibrateTaxonomy?: boolean;
+  clearSuggestedLinks?: boolean;
+  enrichOwnedProfiles?: boolean;
   maxNewLinksPerOwned?: number;
   focusOwnedNodeId?: string;
 }
@@ -495,9 +678,13 @@ export interface ClusterAndRecallInput {
 export interface ClusterAndRecallResult {
   embeddingsUpdated: number;
   domainsAssigned: number;
+  ownedDomainsAssigned: number;
   linksSuggested: number;
   skippedStaleOrLowMatch: number;
   spotlightMatches: number;
+  ownedProfilesEnriched: number;
+  domainsCalibrated: number;
+  clearedSuggestedLinks: number;
   durationMs: number;
 }
 
