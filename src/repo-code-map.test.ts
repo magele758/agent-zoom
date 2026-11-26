@@ -10,7 +10,8 @@ import type { RepoContent } from "./activity-index-types.ts";
 import { DecisionGateway } from "./kernel/decisions.ts";
 import { DomainEventBus } from "./kernel/events.ts";
 import { AssetRegistry } from "./kernel/registry.ts";
-import { ApiError } from "./server/logic.ts";
+import { createApp } from "./server/http.ts";
+import { ApiError, openStore } from "./server/logic.ts";
 import {
   buildCodeMapFromMemory,
   classifyFileLayer,
@@ -800,5 +801,67 @@ export class OpenAIAgentRunner { runLoop(tool: ToolContract) {} }`,
     assert.equal(delRes.status, 200);
     const listAfter = await service.listArchitecturePrimitives();
     assert.equal(listAfter.total, 1);
+
+    // 10. Verify createApp wires real KnowledgeCanvasStore end-to-end & gracefully handles deleted canvas re-projection
+    const fullStore = openStore(":memory:");
+    const { app: wiredApp, knowledgeCanvas, close: closeWired } = createApp(fullStore, { repoEvolution: service });
+    try {
+      const sessRes = await wiredApp.request("/api/session", { method: "POST" });
+      const cookie = (sessRes.headers.get("set-cookie") ?? "").split(";")[0];
+      const headers = { cookie, "content-type": "application/json" };
+
+      const liveProjRes = await wiredApp.request(
+        `/api/opc/repo-evolution/architecture/primitives/${prim.id}/project-canvas`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ canvasName: "实机投射验证画布" }),
+        },
+      );
+      assert.equal(liveProjRes.status, 200);
+      const liveProjected = (await liveProjRes.json()) as ProjectPrimitiveToCanvasResult;
+      assert.ok(liveProjected.canvasId);
+      assert.equal(liveProjected.canvasName, "实机投射验证画布");
+      assert.ok(liveProjected.nodeCount >= 6);
+      assert.ok(liveProjected.edgeCount >= 5);
+
+      const canvasDetailRes = await wiredApp.request(`/api/opc/canvases/${encodeURIComponent(liveProjected.canvasId)}`, {
+        headers: { cookie },
+      });
+      assert.equal(canvasDetailRes.status, 200);
+      const canvasDetail = (await canvasDetailRes.json()) as {
+        canvas: { id: string; name: string };
+        nodes: Array<{ id: string; type: string; title: string; content: Record<string, unknown> }>;
+        edges: Array<{ id: string }>;
+      };
+      assert.equal(canvasDetail.canvas.id, liveProjected.canvasId);
+      assert.equal(canvasDetail.nodes.length, liveProjected.nodeCount);
+      assert.equal(canvasDetail.edges.length, liveProjected.edgeCount);
+      const briefingNodes = canvasDetail.nodes.filter((n) => n.type === "briefing");
+      assert.ok(briefingNodes.length >= 2, "projected canvas should contain L0/L2 briefing nodes");
+      assert.ok(
+        briefingNodes.every((n) => typeof n.content.summary === "string" && n.content.summary.length > 20),
+        "briefing nodes must carry summary for KnowledgeCanvas card rendering",
+      );
+
+      // Deleting the canvas and re-projecting with the stale canvasId must gracefully recreate a new canvas
+      knowledgeCanvas.deleteCanvas(liveProjected.canvasId);
+      const reprojRes = await wiredApp.request(
+        `/api/opc/repo-evolution/architecture/primitives/${prim.id}/project-canvas`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ canvasId: liveProjected.canvasId, canvasName: "重投恢复画布" }),
+        },
+      );
+      assert.equal(reprojRes.status, 200);
+      const reprojected = (await reprojRes.json()) as ProjectPrimitiveToCanvasResult;
+      assert.notEqual(reprojected.canvasId, liveProjected.canvasId);
+      assert.equal(reprojected.canvasName, "重投恢复画布");
+      assert.ok(reprojected.nodeCount >= 6);
+    } finally {
+      await closeWired();
+      fullStore.db.close();
+    }
   });
 });

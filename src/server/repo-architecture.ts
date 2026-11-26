@@ -76,13 +76,18 @@ export function createKnowledgeCanvasProjector(
   canvasStore: KnowledgeCanvasStoreLike,
 ): ArchitectureCanvasProjector {
   return async (payload) => {
-    let canvasId = payload.canvasId;
+    let canvasId = "";
     let canvasName = payload.canvasName;
-    if (canvasId && canvasStore.getCanvas) {
-      const existing = canvasStore.getCanvas(canvasId);
-      canvasId = existing.canvas.id;
-      canvasName = existing.canvas.name;
-    } else {
+    if (payload.canvasId && canvasStore.getCanvas) {
+      try {
+        const existing = canvasStore.getCanvas(payload.canvasId);
+        canvasId = existing.canvas.id;
+        canvasName = existing.canvas.name;
+      } catch {
+        canvasId = "";
+      }
+    }
+    if (!canvasId) {
       const created = canvasStore.createCanvas({
         name: payload.canvasName,
         description: payload.canvasDescription,
@@ -101,6 +106,9 @@ export function createKnowledgeCanvasProjector(
         content: {
           markdown: node.markdown,
           text: node.markdown,
+          summary: node.markdown,
+          description: node.markdown,
+          source: "架构原语台 · 第一性原理蒸馏",
         },
         position: node.position,
         size: node.size,

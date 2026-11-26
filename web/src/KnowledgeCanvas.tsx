@@ -91,7 +91,7 @@ function parseHashCanvasParams(): { canvasId: string; nodeId: string } {
   const rawQuery = location.hash.split("?")[1] ?? "";
   const params = new URLSearchParams(rawQuery);
   return {
-    canvasId: params.get("id") ?? "",
+    canvasId: params.get("id") ?? params.get("canvasId") ?? "",
     nodeId: params.get("node") ?? "",
   };
 }

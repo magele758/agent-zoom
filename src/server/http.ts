@@ -19,6 +19,7 @@ import { agentDelegationRoutes, type AgentDelegations } from "./delegated-agent.
 import { addActivityIndex } from "./company-activity-index.ts";
 import { addZoomRoutes } from "./zoom-http.ts";
 import { createPgPool, isPgDatabase, resolvePgUrl } from "./pg-db.ts";
+import { createKnowledgeCanvasProjector } from "./repo-architecture.ts";
 import { addRepoEvolutionRoutes, RepoEvolutionService, type PgPoolLike } from "./repo-evolution.ts";
 
 const COOKIE = process.env.KUNLUN_SESSION_COOKIE || "ac_session";
@@ -104,6 +105,7 @@ export function createApp(store: Store, options: CreateAppOptions = {}) {
     repoEvolution.attachDecisionGateway(company.kernel.decisions);
     repoEvolution.attachProvidersStore(providers);
     repoEvolution.attachOpportunityStore(opportunities);
+    repoEvolution.attachCanvasProjector(createKnowledgeCanvasProjector(knowledgeCanvas));
   } else {
     let pool: PgPoolLike | null = options.pgPool ?? null;
     if (!pool) {
@@ -128,6 +130,7 @@ export function createApp(store: Store, options: CreateAppOptions = {}) {
         decisions: company.kernel.decisions,
         providers,
         opportunities,
+        projectToCanvas: createKnowledgeCanvasProjector(knowledgeCanvas),
       });
     }
   }
