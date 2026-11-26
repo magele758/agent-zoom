@@ -1113,7 +1113,7 @@ export class ExecutiveBotService {
     }
     const save = this.db.prepare(`INSERT INTO opc_executive_mail_history(user_id,connection,mail_id,snapshot) VALUES(?,?,?,?)
       ON CONFLICT(user_id,connection,mail_id) DO UPDATE SET snapshot=excluded.snapshot
-      WHERE snapshot<>excluded.snapshot`);
+      WHERE opc_executive_mail_history.snapshot<>excluded.snapshot`);
     const result = new Map<string, ExecutiveMailItem>();
     for (const item of live) {
       const trace = item.trace;

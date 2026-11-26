@@ -275,8 +275,8 @@ function tagsMatch(wanted: string[], have: string[]) {
   return wanted.some((tag) => have.includes(tag));
 }
 
-export function openStore(path: string, options: { demo?: boolean } = {}) {
-  return new Store(openDatabase(path), options.demo === true);
+export function openStore(path: string, options: { demo?: boolean; pgUrl?: string; schema?: string } = {}) {
+  return new Store(openDatabase(path, { pgUrl: options.pgUrl, schema: options.schema }), options.demo === true);
 }
 
 export class Store {
@@ -1399,7 +1399,10 @@ export class Store {
           .run(uuid(), taskId, agent.id, text, nowIso());
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
-        if (message.includes("UNIQUE")) throw new ApiError(409, "already_bid", "你已经投过这条");
+        const code = error && typeof error === "object" ? (error as { code?: string }).code : undefined;
+        if (code === "23505" || message.includes("UNIQUE") || message.toLowerCase().includes("unique constraint")) {
+          throw new ApiError(409, "already_bid", "你已经投过这条");
+        }
         throw error;
       }
       this.insertMessage({
@@ -1791,7 +1794,7 @@ export class Store {
     const previous = this.db.prepare("SELECT room_id,thread_id FROM desktop_bridges WHERE agent_id=?").get(agent.id) as {room_id:string;thread_id:string}|undefined;
     const same = previous?.room_id===input.roomId && previous.thread_id===input.threadId;
     const baseline = (this.db.prepare("SELECT COALESCE(MAX(id),0) AS id FROM inbox WHERE recipient_id=?").get(agent.id) as {id:number}).id;
-    this.db.prepare(`INSERT INTO desktop_bridges(agent_id,room_id,thread_id,enabled,after_id,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET room_id=excluded.room_id,thread_id=excluded.thread_id,enabled=excluded.enabled,after_id=CASE WHEN ? THEN desktop_bridges.after_id ELSE excluded.after_id END`).run(agent.id,input.roomId,input.threadId,input.enabled?1:0,baseline,nowIso(),same?1:0);
+    this.db.prepare(`INSERT INTO desktop_bridges(agent_id,room_id,thread_id,enabled,after_id,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET room_id=excluded.room_id,thread_id=excluded.thread_id,enabled=excluded.enabled,after_id=CASE WHEN ? <> 0 THEN desktop_bridges.after_id ELSE excluded.after_id END`).run(agent.id,input.roomId,input.threadId,input.enabled?1:0,baseline,nowIso(),same?1:0);
     return this.desktopInbox(agent,false);
   }
 
@@ -1907,11 +1910,12 @@ export class Store {
       last_seen_at: string | null;
     }>;
     const sharedRooms = this.db.prepare(
-      `SELECT DISTINCT r.id, r.name
+      `SELECT r.id, r.name
        FROM rooms r
        JOIN room_members mine ON mine.room_id = r.id AND mine.principal_type = 'agent' AND mine.principal_id = ?
        JOIN room_members theirs ON theirs.room_id = r.id AND theirs.principal_type = 'agent' AND theirs.principal_id = ?
        WHERE r.direct = 0 AND r.archived = 0
+       GROUP BY r.id, r.name, r.created_at
        ORDER BY r.created_at`,
     );
     const working = this.db.prepare(

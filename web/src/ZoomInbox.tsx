@@ -24,6 +24,7 @@ import { HomeRoom } from "./HomeRoom";
 import { StageDesk } from "./StageDesk";
 import { CompanyIdeas } from "./CompanyIdeas";
 import { RepositoryCapabilities } from "./RepositoryCapabilities";
+import { RepoEvolution } from "./RepoEvolution";
 import { KnowledgeCanvas } from "./KnowledgeCanvas";
 import { DarkFactory } from "./DarkFactory";
 import { TaskPlanning } from "./TaskPlanning";
@@ -90,6 +91,7 @@ const icons = {
   metabolism: "M4 6h16 M4 12h10 M4 18h7 M17 11l3 3-3 3 M14 14h6",
   planning: "M4 5h4v14H4z M10 5h4v10h-4z M16 5h4v7h-4z",
   factory: "M3 20h18v-8l-5 3v-3l-5 3v-3l-8 4z M6 11V4h3v5",
+  evolution: "M5 6a2.5 2.5 0 1 0 0 .01 M5 18a2.5 2.5 0 1 0 0 .01 M19 12a2.5 2.5 0 1 0 0 .01 M7.4 7.2 16.6 11 M7.4 16.8 16.6 13",
 };
 function Icon({ name }: { name: keyof typeof icons }) {
   return <svg className="zo-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65"
@@ -153,6 +155,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   const opportunitiesView = !workflowView && routeName === "opportunities";
   const businessView = !workflowView && routeName === "business-lines";
   const capabilitiesView = !workflowView && routeName === "capabilities";
+  const repoEvolutionView = !workflowView && routeName === "repo-evolution";
   const ideasView = !workflowView && routeName === "ideas";
   const canvasView = !workflowView && routeName === "canvas";
   const metabolismView = !workflowView && routeName === "metabolism";
@@ -332,7 +335,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
   const folders = useMemo(() => folderEntries(views.all, projects), [views.all, projects]);
   const productNames = folders.filter(entry => !entry.depth).map(entry => entry.path);
 
-  const openPage = (target: DepartmentPage | "overview" | "company-architecture" | "strategy-hub" | "cli-ledger" | "digital-twin" | "mailbox" | "executive" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "canvas" | "metabolism" | "planning" | "dark-factory" | "capabilities" | "activity-index" | "delegations") => {
+  const openPage = (target: DepartmentPage | "overview" | "company-architecture" | "strategy-hub" | "cli-ledger" | "digital-twin" | "mailbox" | "executive" | "product" | "growth" | "projects" | "opportunities" | "business-lines" | "worklog" | "home-room" | "ideas" | "canvas" | "metabolism" | "planning" | "dark-factory" | "capabilities" | "repo-evolution" | "activity-index" | "delegations") => {
     setMobileView("list");
     location.hash = target;
   };
@@ -417,6 +420,7 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
 
           <span className="zo-nav-section" aria-hidden="true">高频手操直达</span>
           <button type="button" aria-label="组织数字孪生" aria-pressed={twinView} onClick={() => openPage("digital-twin")}><Icon name="twin" /><span>组织数字孪生</span></button>
+          <button type="button" aria-label="开源进化图谱" aria-pressed={repoEvolutionView} onClick={() => openPage("repo-evolution")}><Icon name="evolution" /><span>开源进化图谱</span></button>
           <button type="button" aria-label="Agent Home 群聊与 Bot" aria-pressed={homeView} onClick={() => openPage("home-room")}><Icon name="channel" /><span>Agent Home 群聊</span></button>
           <button type="button" aria-label="信息与想法" aria-pressed={ideasView} onClick={() => openPage("ideas")}><Icon name="all" /><span>信息与想法</span></button>
           <button type="button" aria-label="项目目录" aria-pressed={projectsView} onClick={() => openPage("projects")}><Icon name="folder" /><span>项目目录</span></button>
@@ -474,6 +478,18 @@ export function ZoomInbox({ workflowEnabled, workflowId }: {
       : activityView ? <ActivityPage index={activityIndex} params={pageParams} nav={openNav} />
       : opportunitiesView ? <Opportunities nav={openNav} knownProjects={projects} />
       : capabilitiesView ? <RepositoryCapabilities nav={openNav} />
+      : repoEvolutionView ? (
+          <RepoEvolution
+            nav={openNav}
+            hashQuery={hash.split("?")[1] ?? ""}
+            initialTab={(["graph", "domains", "timeline"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "graph" | "domains" | "timeline" : undefined)}
+            initialLinkId={pageParams.get("link") ?? undefined}
+            initialRepo={pageParams.get("repo") ?? undefined}
+            initialDomainId={pageParams.get("domain") ?? undefined}
+            initialNodeId={pageParams.get("node") ?? undefined}
+            initialBucket={pageParams.get("bucket") ?? undefined}
+          />
+        )
       : ideasView ? <CompanyIdeas nav={openNav} />
       : canvasView ? <KnowledgeCanvas nav={openNav} initialCanvasId={pageParams.get("id") ?? undefined} />
       : metabolismView ? <MetabolismHub nav={openNav} initialTab={(["briefings", "pm", "commercial", "providers"].includes(pageParams.get("tab") ?? "") ? pageParams.get("tab") as "briefings" | "pm" | "commercial" | "providers" : undefined)} />

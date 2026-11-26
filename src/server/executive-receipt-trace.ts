@@ -67,8 +67,8 @@ export class ExecutiveReceiptTracer {
     if (!audit || !audit.notified_zoom) return true;
     if (!exactEvent) {
       if (question.at.slice(0, 10) !== day) return true;
-      const count = this.db.prepare("SELECT COUNT(*) AS n FROM zoom_messages WHERE task_id=? AND kind='question' AND event_key GLOB ?")
-        .get(question.taskId, "patrol-report-" + day + "-*");
+      const count = this.db.prepare("SELECT COUNT(*) AS n FROM zoom_messages WHERE task_id=? AND kind='question' AND event_key LIKE ?")
+        .get(question.taskId, "patrol-report-" + day + "-%");
       if (Number(count?.n) !== 1) return true;
     }
     const alerts = parsed(alertList, audit.alerts_json);

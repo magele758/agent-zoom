@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { startDemo } from "./demo.ts";
 import { createApp } from "./http.ts";
 import { openStore } from "./logic.ts";
+import { isPgDatabase } from "./pg-db.ts";
 import { poke } from "./wait.ts";
 import { repositoryInterval } from "./company-activity-index.ts";
 import { configureWorkflow } from "./workflow/http.ts";
@@ -29,6 +30,8 @@ const {
   taskTriage,
   botArbitrator,
   plannotatorBridge,
+  repoEvolution,
+  close: closeApp,
 } = createApp(store, { workflow, activityIndexEnabled });
 
 store.hooks = {
@@ -49,9 +52,38 @@ if (demoEnabled) {
 }
 
 const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
-  console.log(`工位服务 http://127.0.0.1:${info.port}`);
+  const storageLabel = isPgDatabase(store.db) ? `PostgreSQL (schema=${store.db.schema})` : `SQLite (${dataPath})`;
+  console.log(
+    `工位服务 http://127.0.0.1:${info.port} [storage=${storageLabel}, repoEvolution=${repoEvolution ? "enabled" : "disabled"}]`,
+  );
 });
 injectWebSocket(server);
+
+let shuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`收到 ${signal}，正在优雅关闭 OPC OS 服务...`);
+  try {
+    company.kernel.stopAll();
+  } catch (error) {
+    console.error("停止微内核部门失败", error);
+  }
+  try {
+    await closeApp();
+  } catch (error) {
+    console.error("关闭 PostgreSQL 连接池失败", error);
+  }
+  try {
+    store.db.close();
+  } catch {
+    // ignore
+  }
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+};
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
 // Start Micro-Kernel & 6 Functional Departments lifecycle
 company.kernel.startAll();
