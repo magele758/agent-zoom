@@ -149,6 +149,7 @@ export interface RepoEvolutionServiceOptions {
   opportunities?: OpportunityStore;
   github?: GitHubEvolutionFetcher;
   llmCaller?: typeof callConfiguredLLM;
+  vectorCaller?: typeof computeSemanticVector;
   now?: () => number;
 }
 
@@ -1398,6 +1399,7 @@ export class RepoEvolutionService {
   private opportunities?: OpportunityStore;
   private github: GitHubEvolutionFetcher;
   private llmCaller: typeof callConfiguredLLM;
+  private vectorCaller: typeof computeSemanticVector;
   private now: () => number;
   private initPromise: Promise<void> | null = null;
   private activeSyncPromise: Promise<RepoEvolutionSyncJob> | null = null;
@@ -1410,10 +1412,23 @@ export class RepoEvolutionService {
     this.opportunities = options.opportunities;
     this.github = options.github ?? createGhCliFetcher();
     this.llmCaller = options.llmCaller ?? callConfiguredLLM;
+    this.vectorCaller = options.vectorCaller ?? computeSemanticVector;
     this.now = options.now ?? (() => Date.now());
     if (this.decisions) {
       this.registerDecisionHandlers(this.decisions);
     }
+  }
+
+  private async computeSafeVector(
+    text: string,
+    privacy: { visibility: RepoVisibility; allowLlmAnalysis: boolean },
+    providersCfg?: ProvidersConfig,
+  ): Promise<{ vector: number[]; source: "local" | "remote"; dimensions: number }> {
+    if (privacy.visibility === "private" && !privacy.allowLlmAnalysis) {
+      const vector = localSemanticVector(text, REPO_EVOLUTION_VECTOR_DIM);
+      return { vector, source: "local", dimensions: vector.length };
+    }
+    return this.vectorCaller(text, providersCfg);
   }
 
   attachDecisionGateway(decisions: DecisionGateway): void {
@@ -2353,7 +2368,11 @@ export class RepoEvolutionService {
       primaryLanguage: input.primaryLanguage,
       topics: input.topics,
     });
-    const emb = await computeSemanticVector(semText, this.providers?.get());
+    const emb = await this.computeSafeVector(
+      semText,
+      { visibility: input.visibility, allowLlmAnalysis: allowLlm },
+      this.providers?.get(),
+    );
 
     await this.pool.query(
       `INSERT INTO repo_evolution_nodes (
@@ -3021,13 +3040,23 @@ export class RepoEvolutionService {
     const links: RepoAbsorptionLink[] = [];
     for (const targetRef of [...new Set(input.targetNodeIds)]) {
       if (targetRef === source.id || targetRef.toLowerCase() === source.fullName.toLowerCase()) continue;
+      const target = await this.getNode(targetRef);
+      if (target.id === source.id) continue;
+      const existing = await this.pool.query<{ id: string; status: string }>(
+        "SELECT id, status FROM repo_absorption_links WHERE source_node_id = $1 AND target_node_id = $2",
+        [source.id, target.id],
+      );
+      if (existing.rows[0] && existing.rows[0].status !== "rejected") {
+        // Preserve already-established non-rejected edges (e.g. approved / in_review / absorbed) untouched.
+        links.push(await this.getLink(existing.rows[0].id));
+        continue;
+      }
       const link = await this.createLink(
         {
           sourceNodeId: source.id,
-          targetNodeId: targetRef,
+          targetNodeId: target.id,
           relationType: input.relationType,
           rationale: input.rationale,
-          status: "watching",
         },
         actor,
       );
@@ -3655,12 +3684,14 @@ export class RepoEvolutionService {
     const existingRes = await this.pool.query<{
       id: string;
       role: string;
+      visibility: string;
+      allow_llm_analysis: boolean;
       priority_tier: string;
       description: string;
       topics_json: unknown;
       has_embedding: boolean;
     }>(
-      "SELECT id, role, priority_tier, description, topics_json, (embedding IS NOT NULL) AS has_embedding FROM repo_evolution_nodes WHERE full_name_lower = $1",
+      "SELECT id, role, visibility, allow_llm_analysis, priority_tier, description, topics_json, (embedding IS NOT NULL) AS has_embedding FROM repo_evolution_nodes WHERE full_name_lower = $1",
       [repo.fullName.toLowerCase()],
     );
     const existing = existingRes.rows[0];
@@ -3684,6 +3715,11 @@ export class RepoEvolutionService {
 
     const allowLlmDefault =
       repo.visibility === "private" ? config.allowPrivateLlmByDefault : true;
+    const effectiveAllowLlm = !existing
+      ? allowLlmDefault
+      : existing.visibility !== "private" && repo.visibility === "private"
+        ? allowLlmDefault
+        : Boolean(existing.allow_llm_analysis);
 
     const existingTopics = existing ? JSON.stringify(safeJson<string[]>(existing.topics_json, [])) : "";
     const nextTopics = JSON.stringify(repo.topics);
@@ -3703,8 +3739,12 @@ export class RepoEvolutionService {
         primaryLanguage: repo.primaryLanguage,
         topics: repo.topics,
       });
-      // For bulk star sync, use local semantic vector if no remote key; if remote key exists, computeSemanticVector handles it gracefully
-      const emb = await computeSemanticVector(semText, providersCfg);
+      // Enforce private-repo privacy gate: unauthorized private repos never call remote Embedding API.
+      const emb = await this.computeSafeVector(
+        semText,
+        { visibility: repo.visibility, allowLlmAnalysis: effectiveAllowLlm },
+        providersCfg,
+      );
       embeddingLiteral = toPgVectorLiteral(emb.vector, emb.source);
       embeddingSource = emb.source;
     }
@@ -4017,8 +4057,8 @@ export class RepoEvolutionService {
     // Step 1: Ensure embeddings for nodes lacking them (or all if recomputeEmbeddings)
     const embNodesRes = await this.pool.query<Record<string, unknown>>(
       input.recomputeEmbeddings
-        ? "SELECT id, full_name, name, description, primary_language, topics_json, readme_digest_json FROM repo_evolution_nodes"
-        : "SELECT id, full_name, name, description, primary_language, topics_json, readme_digest_json FROM repo_evolution_nodes WHERE embedding IS NULL",
+        ? "SELECT id, full_name, name, description, primary_language, topics_json, readme_digest_json, visibility, allow_llm_analysis FROM repo_evolution_nodes"
+        : "SELECT id, full_name, name, description, primary_language, topics_json, readme_digest_json, visibility, allow_llm_analysis FROM repo_evolution_nodes WHERE embedding IS NULL",
     );
     for (const row of embNodesRes.rows) {
       const semText = buildRepoSemanticText({
@@ -4029,7 +4069,14 @@ export class RepoEvolutionService {
         topics: safeJson<string[]>(row.topics_json, []),
         readmeDigest: safeJson<RepoReadmeDigest | null>(row.readme_digest_json, null),
       });
-      const emb = await computeSemanticVector(semText, providersCfg);
+      const emb = await this.computeSafeVector(
+        semText,
+        {
+          visibility: String(row.visibility ?? "public") as RepoVisibility,
+          allowLlmAnalysis: Boolean(row.allow_llm_analysis ?? true),
+        },
+        providersCfg,
+      );
       await this.pool.query(
         "UPDATE repo_evolution_nodes SET embedding = $1::vector, embedding_source = $2, updated_at = $3 WHERE id = $4",
         [toPgVectorLiteral(emb.vector, emb.source), emb.source, nowIso, String(row.id)],
@@ -4037,60 +4084,90 @@ export class RepoEvolutionService {
       embeddingsUpdated++;
     }
 
-    // Step 2: Refresh domain centroids (blending keyword centroid + manual exemplars)
+    // Step 2: Refresh domain centroids per embedding source (local vs remote) to prevent cross-space mismatch
     const domRes = await this.pool.query<Record<string, unknown>>("SELECT * FROM repo_domains");
     const domains = domRes.rows.map((r) => this.mapDomain(r));
-    const domainCentroids = new Map<string, { domain: RepoDomain; vec: number[] }>();
+    const hasRemoteNodesRes = await this.pool.query<{ n: number }>(
+      "SELECT COUNT(*)::int AS n FROM repo_evolution_nodes WHERE embedding_source = 'remote'",
+    );
+    const hasRemoteNodes = Number(hasRemoteNodesRes.rows[0]?.n ?? 0) > 0;
+    const domainCentroids = new Map<
+      string,
+      { domain: RepoDomain; localVec: number[]; remoteVec: number[] | null }
+    >();
+
+    const blendExemplars = (baseVec: number[], exemplars: number[][]): number[] => {
+      if (exemplars.length === 0) return baseVec;
+      const sum = new Float64Array(REPO_EVOLUTION_VECTOR_DIM);
+      for (const ex of exemplars) {
+        for (let i = 0; i < REPO_EVOLUTION_VECTOR_DIM; i++) sum[i] += ex[i]!;
+      }
+      const blended = new Array<number>(REPO_EVOLUTION_VECTOR_DIM);
+      for (let i = 0; i < REPO_EVOLUTION_VECTOR_DIM; i++) {
+        blended[i] = baseVec[i]! * 0.65 + (sum[i]! / exemplars.length) * 0.35;
+      }
+      return normalizeVectorToDim(blended);
+    };
 
     for (const dom of domains) {
-      const baseVec = debiasLocalSemanticVector(
-        localSemanticVector(`${dom.name} ${dom.description} ${dom.seedKeywords.join(" ")}`, REPO_EVOLUTION_VECTOR_DIM),
+      const domText = `${dom.name} ${dom.description} ${dom.seedKeywords.join(" ")}`;
+      const localBase = debiasLocalSemanticVector(
+        localSemanticVector(domText, REPO_EVOLUTION_VECTOR_DIM),
         "local",
       );
-      const manualRes = await this.pool.query<{ emb_text: string }>(
-        `SELECT embedding::text AS emb_text FROM repo_evolution_nodes
+      let remoteBase: number[] | null = null;
+      if (hasRemoteNodes) {
+        const remoteRes = await this.vectorCaller(domText, providersCfg);
+        if (remoteRes.source === "remote") {
+          remoteBase = debiasLocalSemanticVector(remoteRes.vector, "remote");
+        }
+      }
+
+      const manualRes = await this.pool.query<{ emb_text: string; embedding_source: string | null }>(
+        `SELECT embedding::text AS emb_text, embedding_source FROM repo_evolution_nodes
          WHERE primary_domain_id = $1 AND domain_assigned_by IN ('manual', 'github_list') AND embedding IS NOT NULL
          LIMIT 50`,
         [dom.id],
       );
-      let finalVec = baseVec;
-      if (manualRes.rows.length > 0) {
-        const sum = new Float64Array(REPO_EVOLUTION_VECTOR_DIM);
-        let count = 0;
-        for (const mr of manualRes.rows) {
-          const parsed = parsePgVectorLiteral(mr.emb_text);
-          if (!parsed) continue;
-          for (let i = 0; i < REPO_EVOLUTION_VECTOR_DIM; i++) sum[i] += parsed[i]!;
-          count++;
-        }
-        if (count > 0) {
-          const blended = new Array<number>(REPO_EVOLUTION_VECTOR_DIM);
-          for (let i = 0; i < REPO_EVOLUTION_VECTOR_DIM; i++) {
-            blended[i] = baseVec[i]! * 0.65 + (sum[i]! / count) * 0.35;
-          }
-          finalVec = normalizeVectorToDim(blended);
-        }
+      const localExemplars: number[][] = [];
+      const remoteExemplars: number[][] = [];
+      for (const mr of manualRes.rows) {
+        const parsed = parsePgVectorLiteral(mr.emb_text);
+        if (!parsed) continue;
+        if (mr.embedding_source === "remote") remoteExemplars.push(parsed);
+        else localExemplars.push(parsed);
       }
+
+      const finalLocalVec = blendExemplars(localBase, localExemplars);
+      const finalRemoteVec = remoteBase ? blendExemplars(remoteBase, remoteExemplars) : null;
+      const storedCentroid = finalRemoteVec ?? finalLocalVec;
+
       await this.pool.query(
         "UPDATE repo_domains SET centroid = $1::vector WHERE id = $2",
-        [toPgVectorLiteral(finalVec), dom.id],
+        [toPgVectorLiteral(storedCentroid), dom.id],
       );
-      domainCentroids.set(dom.id, { domain: dom, vec: finalVec });
+      domainCentroids.set(dom.id, {
+        domain: dom,
+        localVec: finalLocalVec,
+        remoteVec: finalRemoteVec,
+      });
     }
 
-    // Step 3: Cluster unassigned (or reclassifyAi) starred repos into domains
+    // Step 3: Cluster unassigned (or reclassifyAi) starred repos into domains (strict same-space similarity)
     if (domains.length > 0) {
       const candidateWhere = input.reclassifyAi
         ? "role IN ('starred', 'both') AND domain_assigned_by IN ('unassigned', 'ai') AND embedding IS NOT NULL"
         : "role IN ('starred', 'both') AND primary_domain_id IS NULL AND domain_assigned_by = 'unassigned' AND embedding IS NOT NULL";
       const starNodesRes = await this.pool.query<Record<string, unknown>>(
-        `SELECT id, full_name, name, description, primary_language, topics_json, vitality, priority_tier, embedding::text AS emb_text
+        `SELECT id, full_name, name, description, primary_language, topics_json, vitality, priority_tier,
+                embedding_source, embedding::text AS emb_text
          FROM repo_evolution_nodes
          WHERE ${candidateWhere}`,
       );
 
       for (const row of starNodesRes.rows) {
         const nodeId = String(row.id);
+        const nodeSource = row.embedding_source === "remote" ? "remote" : "local";
         const vec = parsePgVectorLiteral(row.emb_text);
         if (!vec) continue;
         const topics = safeJson<string[]>(row.topics_json, []);
@@ -4099,8 +4176,26 @@ export class RepoEvolutionService {
         );
 
         const scored: Array<{ domainId: string; score: number }> = [];
-        for (const { domain, vec: centroid } of domainCentroids.values()) {
-          const sim = cosineSimilarity(vec, centroid);
+        for (const { domain, localVec, remoteVec } of domainCentroids.values()) {
+          const centroid = nodeSource === "remote" && remoteVec ? remoteVec : localVec;
+          // If node is remote but remote centroid was unavailable, compare in local space so similarity stays valid
+          const nodeCompareVec =
+            nodeSource === "remote" && !remoteVec
+              ? debiasLocalSemanticVector(
+                  localSemanticVector(
+                    buildRepoSemanticText({
+                      fullName: String(row.full_name),
+                      name: String(row.name),
+                      description: String(row.description ?? ""),
+                      primaryLanguage: row.primary_language ? String(row.primary_language) : null,
+                      topics,
+                    }),
+                    REPO_EVOLUTION_VECTOR_DIM,
+                  ),
+                  "local",
+                )
+              : vec;
+          const sim = cosineSimilarity(nodeCompareVec, centroid);
           const kwBoost = keywordOverlapBoost(tokens, domain.seedKeywords);
           const combined = Math.min(1, Math.max(0, sim * 0.8 + kwBoost));
           scored.push({ domainId: domain.id, score: combined });
@@ -4140,7 +4235,8 @@ export class RepoEvolutionService {
       ownedFilterSql += " AND (id = $1 OR full_name_lower = $2 OR LOWER(name) = $2)";
     }
     const ownedRes = await this.pool.query<Record<string, unknown>>(
-      `SELECT id, full_name, name, description, primary_language, topics_json, priority_tier, primary_domain_id, embedding::text AS emb_text
+      `SELECT id, full_name, name, description, primary_language, topics_json, priority_tier, primary_domain_id,
+              embedding_source, embedding::text AS emb_text
        FROM repo_evolution_nodes
        WHERE ${ownedFilterSql}
        ORDER BY CASE priority_tier WHEN 'spotlight' THEN 0 ELSE 1 END ASC, pushed_at DESC NULLS LAST`,
@@ -4163,13 +4259,14 @@ export class RepoEvolutionService {
       const targetLang = targetRow.primary_language ? String(targetRow.primary_language) : null;
       const targetDomainId = targetRow.primary_domain_id ? String(targetRow.primary_domain_id) : null;
       const isSpotlight = targetRow.priority_tier === "spotlight";
+      const targetSource = targetRow.embedding_source === "remote" ? "remote" : "local";
       const targetVecStr = String(targetRow.emb_text ?? "");
       if (!targetVecStr) continue;
 
       const maxPerTarget = input.maxNewLinksPerOwned ?? (isSpotlight ? 12 : 6);
 
-      // Query pgvector HNSW index for closest active/dormant Star repos not already linked (nor rejected!)
-      const candidatesRes = await this.pool.query<Record<string, unknown>>(
+      // Query pgvector HNSW index strictly within the same embedding_source space
+      const sameSpaceRes = await this.pool.query<Record<string, unknown>>(
         `SELECT n.id, n.full_name, n.name, n.description, n.primary_language, n.topics_json,
                 n.primary_domain_id, n.vitality, n.stars_count,
                 (1 - (n.embedding <=> $1::vector)) AS cosine_sim
@@ -4177,6 +4274,7 @@ export class RepoEvolutionService {
          WHERE n.role IN ('starred', 'both')
            AND n.id <> $2
            AND n.embedding IS NOT NULL
+           AND COALESCE(n.embedding_source, 'local') = $3
            AND n.vitality IN ('active', 'dormant')
            AND n.priority_tier <> 'archived'
            AND NOT EXISTS (
@@ -4185,11 +4283,55 @@ export class RepoEvolutionService {
            )
          ORDER BY n.embedding <=> $1::vector ASC
          LIMIT 40`,
-        [targetVecStr, targetId],
+        [targetVecStr, targetId, targetSource],
       );
 
+      let candidateRows: Array<Record<string, unknown>> = sameSpaceRes.rows;
+      // Hybrid fallback: when a private owned repo stays in local vector space while public stars
+      // were embedded remotely, compare in local vector space without ever sending private metadata externally.
+      if (candidateRows.length === 0 && targetSource === "local") {
+        const targetLocalVec = parsePgVectorLiteral(targetVecStr);
+        if (targetLocalVec) {
+          const fallbackPool = await this.pool.query<Record<string, unknown>>(
+            `SELECT n.id, n.full_name, n.name, n.description, n.primary_language, n.topics_json,
+                    n.primary_domain_id, n.vitality, n.stars_count
+             FROM repo_evolution_nodes n
+             WHERE n.role IN ('starred', 'both')
+               AND n.id <> $1
+               AND n.vitality IN ('active', 'dormant')
+               AND n.priority_tier <> 'archived'
+               AND NOT EXISTS (
+                 SELECT 1 FROM repo_absorption_links l
+                 WHERE l.source_node_id = n.id AND l.target_node_id = $1
+               )
+             ORDER BY n.stars_count DESC
+             LIMIT 400`,
+            [targetId],
+          );
+          candidateRows = fallbackPool.rows
+            .map((r) => {
+              const candLocalVec = debiasLocalSemanticVector(
+                localSemanticVector(
+                  buildRepoSemanticText({
+                    fullName: String(r.full_name),
+                    name: String(r.name),
+                    description: String(r.description ?? ""),
+                    primaryLanguage: r.primary_language ? String(r.primary_language) : null,
+                    topics: safeJson<string[]>(r.topics_json, []),
+                  }),
+                  REPO_EVOLUTION_VECTOR_DIM,
+                ),
+                "local",
+              );
+              return { ...r, cosine_sim: cosineSimilarity(targetLocalVec, candLocalVec) };
+            })
+            .sort((a, b) => Number(b.cosine_sim) - Number(a.cosine_sim))
+            .slice(0, 40);
+        }
+      }
+
       let addedForTarget = 0;
-      for (const cand of candidatesRes.rows) {
+      for (const cand of candidateRows) {
         if (addedForTarget >= maxPerTarget) break;
         const rawCosine = Number(cand.cosine_sim ?? 0);
         if (!Number.isFinite(rawCosine)) continue;

@@ -850,4 +850,117 @@ describe("repo-evolution PostgreSQL 18 + pgvector end-to-end", async () => {
       await new Promise((r) => setTimeout(r, 30));
     }
   });
+
+  it("preserves existing approved/in_review links untouched during bulkLinkTargets when appending new targets", async () => {
+    const star = await service.getNode("openorg/mcp-tool-runtime");
+    const target1 = await service.getNode("magele758/ai-agent-node");
+    const target2 = await service.getNode("magele758/web-canvas-kit");
+
+    // Create & approve link1 with custom relationType & strength
+    const link1 = await service.createLink({
+      sourceNodeId: star.id,
+      targetNodeId: target1.id,
+      relationType: "direct_module",
+      status: "approved",
+      strength: 0.91,
+      rationale: "已批准的核心 MCP 沙箱模块",
+    });
+    assert.equal(link1.status, "approved");
+
+    // Re-submit checkbox selection [target1, target2] via bulkLinkTargets
+    const res = await service.bulkLinkTargets(star.id, {
+      targetNodeIds: [target1.id, target2.id],
+      relationType: "inspiration",
+      rationale: "批量新增勾选",
+    });
+    assert.equal(res.links.length, 2);
+
+    const preserved = await service.getLink(link1.id);
+    assert.equal(preserved.status, "approved", "bulkLinkTargets must NOT downgrade existing approved link");
+    assert.equal(preserved.relationType, "direct_module", "bulkLinkTargets must NOT clobber existing relationType");
+    assert.equal(preserved.strength, 0.91, "bulkLinkTargets must NOT clobber existing strength");
+    assert.equal(preserved.rationale, "已批准的核心 MCP 沙箱模块");
+
+    const added = res.links.find((l) => l.targetNodeId === target2.id);
+    assert.ok(added);
+    assert.equal(added.status, "watching");
+  });
+
+  it("enforces private-repo embedding privacy and aligns remote/local vector spaces in clusterAndRecall", async () => {
+    const schema2 = `test_repo_evo_rem_${randomUUID().replace(/-/g, "").slice(0, 10)}`;
+    await pgHandle.adminPool.query(`CREATE SCHEMA ${schema2}`);
+    const pool2 = await createRepoEvolutionPool(PG_URL, { schema: schema2, max: 4 });
+    const remoteCalls: string[] = [];
+
+    // Deterministic mock remote embedding space (orthogonal basis per topic family)
+    const mockRemoteVector = (text: string): number[] => {
+      const vec = new Array<number>(REPO_EVOLUTION_VECTOR_DIM).fill(0);
+      const lower = text.toLowerCase();
+      if (/(agent|mcp|orchestrat|workflow|swarm|tool|编排)/.test(lower)) vec[10] = 1;
+      if (/(canvas|svg|react|diagram|前端|画布)/.test(lower)) vec[20] = 1;
+      if (/(rag|vector|pgvector|retrieval|知识图谱|检索)/.test(lower)) vec[30] = 1;
+      if (!vec.some((v) => v !== 0)) vec[99] = 1;
+      return vec;
+    };
+
+    try {
+      const gh2 = makeMockGithubFetcher();
+      const svc2 = new RepoEvolutionService({
+        pool: pool2,
+        github: gh2.fetcher,
+        now: () => FIXED_NOW,
+        vectorCaller: async (text) => {
+          remoteCalls.push(text);
+          return { vector: mockRemoteVector(text), source: "remote", dimensions: REPO_EVOLUTION_VECTOR_DIM };
+        },
+      });
+      await svc2.init();
+
+      // 1. Sync & register: private repo (allowLlmAnalysis=false) MUST NOT leak to remote vectorCaller!
+      await svc2.runSyncNow({ mode: "full" });
+      await svc2.registerOwnedOrSpotlightNode({
+        fullName: "magele758/secret-private-vault",
+        visibility: "private",
+        priorityTier: "standard",
+        description: "TOP_SECRET_PRIVATE_CODEWORD_XYZ987 internal agent vault",
+      });
+
+      assert.equal(
+        remoteCalls.some((t) => t.includes("private-core-engine") || t.includes("TOP_SECRET_PRIVATE_CODEWORD_XYZ987")),
+        false,
+        "unauthorized private repo metadata must NEVER be sent to remote embedding API",
+      );
+
+      const privSynced = await svc2.getNode("magele758/private-core-engine");
+      assert.equal(privSynced.embeddingSource, "local");
+      const pubStar = await svc2.getNode("openorg/mcp-tool-runtime");
+      assert.equal(pubStar.embeddingSource, "remote");
+
+      // 2. Cluster & recall with recomputeEmbeddings=true:
+      //    - private repos still stay strictly local (never leaked)
+      //    - public remote stars match remote domain centroids in the SAME vector space
+      //    - private local owned repo still recalls public remote stars via local hybrid fallback!
+      await svc2.clusterAndRecall({ recomputeEmbeddings: true, reclassifyAi: true });
+
+      assert.equal(
+        remoteCalls.some((t) => t.includes("private-core-engine") || t.includes("TOP_SECRET_PRIVATE_CODEWORD_XYZ987")),
+        false,
+        "recomputeEmbeddings must still block unauthorized private repos from remote embedding API",
+      );
+
+      const pubStarAfter = await svc2.getNode("openorg/mcp-tool-runtime");
+      assert.equal(pubStarAfter.primaryDomainName, "AI Agent 与编排框架");
+      const svgStarAfter = await svc2.getNode("vizlab/svg-flow-canvas");
+      assert.equal(svgStarAfter.primaryDomainName, "前端交互与可视化");
+
+      const privIncoming = await svc2.listLinks({ targetNodeId: privSynced.id });
+      assert.ok(
+        privIncoming.length >= 1,
+        "private local owned repo should still recall matching public stars via local hybrid fallback",
+      );
+    } finally {
+      await pool2.end?.();
+      await pgHandle.adminPool.query(`DROP SCHEMA IF EXISTS ${schema2} CASCADE`);
+    }
+  });
 });
