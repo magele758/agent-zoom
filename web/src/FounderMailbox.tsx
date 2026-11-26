@@ -24,7 +24,7 @@ import { messageText } from "./zoom-view";
 import "./founder-mailbox.css";
 
 type MailFilter = "pending" | "working" | "decisions" | "all" | "executive" | "handled";
-type DecisionKindFilter = "all" | "feature_admission" | "production_release" | "ops" | "warning";
+type DecisionKindFilter = "all" | "feature_admission" | "production_release" | "repo_absorption" | "ops" | "warning";
 type BotArbitratorMode = "off" | "advisory" | "delegated_safe" | "full_delegated";
 
 interface BotArbitratorPolicyView {
@@ -195,6 +195,12 @@ const KIND_META: Record<string, { label: string; short: string; effect: string; 
     effect: "红线级操作：临时放行非主线或外围项目准入",
     tone: "warn",
   },
+  repo_absorption: {
+    label: "开源吸收评估",
+    short: "吸收评估",
+    effect: "批准后写入进化图谱与时间线；V1 仅人工留痕不自动改代码",
+    tone: "info",
+  },
 };
 
 const RISK_LABELS: Record<string, string> = {
@@ -254,11 +260,77 @@ function plainPreview(text: string, maxLen = 110): string {
   return stripped.length > maxLen ? `${stripped.slice(0, maxLen - 1)}…` : stripped;
 }
 
+function packetEvolutionMeta(pkt: DecisionPacket): {
+  deepLink: string | null;
+  timelineLink: string | null;
+  sourceRepo: string | null;
+  targetRepo: string | null;
+} {
+  let deepLink: string | null = null;
+  let linkId: string | null = null;
+  let sourceRepo: string | null = null;
+  let targetRepo: string | null = null;
+
+  for (const opt of pkt.options) {
+    const payload = opt.payload;
+    if (!payload) continue;
+    if (!deepLink && typeof payload.deepLink === "string" && payload.deepLink.startsWith("#repo-evolution")) {
+      deepLink = payload.deepLink;
+    }
+    if (!linkId && typeof payload.linkId === "string" && payload.linkId) {
+      linkId = payload.linkId;
+    }
+    if (!sourceRepo && typeof payload.sourceRepoFullName === "string" && payload.sourceRepoFullName) {
+      sourceRepo = payload.sourceRepoFullName;
+    }
+    if (!targetRepo && typeof payload.targetRepoFullName === "string" && payload.targetRepoFullName) {
+      targetRepo = payload.targetRepoFullName;
+    }
+  }
+
+  for (const tag of pkt.tags ?? []) {
+    if (!linkId && tag.startsWith("link:")) linkId = tag.slice(5);
+    if (!sourceRepo && tag.startsWith("source:")) sourceRepo = tag.slice(7);
+    if (!targetRepo && tag.startsWith("target:")) targetRepo = tag.slice(7);
+  }
+
+  if (!linkId) {
+    const dedupeMatch = /^product:repo_absorption:([^:]+)/.exec(pkt.dedupeKey);
+    if (dedupeMatch?.[1]) linkId = dedupeMatch[1];
+  }
+
+  if (!deepLink && pkt.diffOrEvidence) {
+    const evidenceMatch = /#repo-evolution\?[^\s)\]"']+/.exec(pkt.diffOrEvidence);
+    if (evidenceMatch?.[0]) deepLink = evidenceMatch[0];
+  }
+
+  if (!deepLink && linkId) {
+    deepLink = `#repo-evolution?tab=graph&link=${encodeURIComponent(linkId)}`;
+  }
+
+  if (!deepLink && (pkt.kind === "repo_absorption" || pkt.tags?.includes("repo_evolution"))) {
+    deepLink = "#repo-evolution";
+  }
+
+  const timelineLink =
+    deepLink && targetRepo
+      ? `#repo-evolution?tab=timeline&repo=${encodeURIComponent(targetRepo)}`
+      : deepLink
+        ? "#repo-evolution?tab=timeline"
+        : null;
+
+  return { deepLink, timelineLink, sourceRepo, targetRepo };
+}
+
 function packetTargetLabel(pkt: DecisionPacket): string {
   const t = pkt.targetSummary;
   if (t?.assetName) return t.repoFullName ? `${t.assetName}` : t.assetName;
   if (t?.productName) return t.productName;
   if (t?.mainlineName) return t.mainlineName;
+  if (pkt.kind === "repo_absorption") {
+    const evo = packetEvolutionMeta(pkt);
+    if (evo.targetRepo) return evo.targetRepo;
+  }
   const m = /关联项目[:：]\s*([^\s·\n]+)/.exec(pkt.backgroundSummary);
   if (m && m[1] && m[1] !== "default") return m[1];
   return "未绑定仓库";
@@ -269,6 +341,11 @@ function packetFullTargetChain(pkt: DecisionPacket): string {
   const parts = [t?.mainlineName, t?.productName, t?.assetName ? (t.repoFullName ? `${t.assetName} (${t.repoFullName})` : t.assetName) : null]
     .filter((v): v is string => Boolean(v));
   if (parts.length > 0) return parts.join(" → ");
+  if (pkt.kind === "repo_absorption") {
+    const evo = packetEvolutionMeta(pkt);
+    if (evo.sourceRepo && evo.targetRepo) return `${evo.sourceRepo} → ${evo.targetRepo}`;
+    if (evo.targetRepo) return evo.targetRepo;
+  }
   return "未绑定具体产品或代码仓库";
 }
 
@@ -684,6 +761,7 @@ export function FounderMailbox({
     all: pendingDecisionPackets.length,
     feature_admission: pendingDecisionPackets.filter((p) => p.kind === "feature_admission").length,
     production_release: pendingDecisionPackets.filter((p) => p.kind === "production_release").length,
+    repo_absorption: pendingDecisionPackets.filter((p) => p.kind === "repo_absorption").length,
     ops: pendingDecisionPackets.filter((p) => p.domain === "ops" || p.kind === "patrol_alert").length,
     warning: pendingDecisionPackets.filter((p) => Boolean(p.admissionWarning)).length,
   }), [pendingDecisionPackets]);
@@ -1307,6 +1385,15 @@ export function FounderMailbox({
                     需求立项 ({kindCounts.feature_admission})
                   </button>
                 )}
+                {kindCounts.repo_absorption > 0 && (
+                  <button
+                    type="button"
+                    aria-pressed={kindFilter === "repo_absorption"}
+                    onClick={() => setKindFilter("repo_absorption")}
+                  >
+                    吸收评估 ({kindCounts.repo_absorption})
+                  </button>
+                )}
                 {kindCounts.ops > 0 && (
                   <button type="button" aria-pressed={kindFilter === "ops"} onClick={() => setKindFilter("ops")}>
                     运维告警 ({kindCounts.ops})
@@ -1624,6 +1711,7 @@ export function FounderMailbox({
             ) : selected?.kind === "decision" ? (() => {
               const pkt = selected.item;
               const meta = KIND_META[pkt.kind];
+              const evolutionMeta = packetEvolutionMeta(pkt);
               const recOpt = pkt.options.find((o) => o.id === pkt.recommendedOptionId) ?? pkt.options[0];
               const isResolved = pkt.status !== "pending";
               const highRisk = isPacketHighRisk(pkt, policy);
@@ -1649,6 +1737,18 @@ export function FounderMailbox({
                       <time>{formatTime(pkt.updatedAt)}</time>
                     </div>
                     <h2>{cleanDisplayTitle(pkt.title)}</h2>
+                    {evolutionMeta.deepLink && (
+                      <div className="mb-letterhead-actions">
+                        <a className="mb-link-btn" href={evolutionMeta.deepLink}>
+                          在开源进化图谱中查看该边 ↗
+                        </a>
+                        {evolutionMeta.timelineLink && (
+                          <a className="mb-link-btn" href={evolutionMeta.timelineLink}>
+                            查看进化时间线 ↗
+                          </a>
+                        )}
+                      </div>
+                    )}
                   </header>
 
                   {(() => {
@@ -1727,7 +1827,7 @@ export function FounderMailbox({
                       <span className="mb-step-num">3</span>
                       <div>
                         <strong>确定性执行</strong>
-                        <small>{meta?.short === "需求立项" ? "仅建任务不改代码" : meta?.short === "代码发布" ? "合并分支并跑测" : "自动触发回调"}</small>
+                        <small>{meta?.short === "需求立项" ? "仅建任务不改代码" : meta?.short === "代码发布" ? "合并分支并跑测" : meta?.short === "吸收评估" ? "写入图谱与时间线" : "自动触发回调"}</small>
                       </div>
                     </li>
                     <li data-state={isResolved ? "done" : "idle"}>
