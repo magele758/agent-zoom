@@ -411,8 +411,18 @@ export const BUILTIN_REPO_DOMAINS: readonly SeedDomainSpec[] = [
       "quant",
       "chrome-extension",
       "video-editor",
+      "video-production",
+      "promo-video",
+      "product-video",
+      "avatar-video",
+      "remotion",
+      "motion-graphics",
       "tts",
       "audiobook",
+      "music-generation",
+      "patent",
+      "job-search",
+      "resume",
       "pgvector",
       "milvus",
       "firecracker",
@@ -712,6 +722,13 @@ export const BUILTIN_REPO_DOMAINS: readonly SeedDomainSpec[] = [
       "video-editor",
       "video-editing",
       "video-generation",
+      "video-production",
+      "promo-video",
+      "product-video",
+      "avatar-video",
+      "motion-graphics",
+      "motion-design",
+      "heygen",
       "moneyprinter",
       "manim",
       "comfyui",
@@ -909,7 +926,7 @@ export const BUILTIN_REPO_DOMAINS: readonly SeedDomainSpec[] = [
       "ghostty",
       "waveterm",
       "cmux",
-      "warp",
+      "warp-terminal",
       "tmux",
       "microvm",
       "firecracker",
@@ -932,7 +949,7 @@ export const BUILTIN_REPO_DOMAINS: readonly SeedDomainSpec[] = [
       "ghostty",
       "waveterm",
       "cmux",
-      "warp",
+      "warp-terminal",
       "alacritty",
       "wezterm",
       "tmux",
@@ -1709,6 +1726,7 @@ export const GENERIC_STOP_WORDS = new Set<string>([
   "the", "and", "for", "with", "from", "that", "this", "your", "into", "over", "using", "uses",
   "is", "in", "to", "an", "on", "it", "or", "no", "by", "at", "of", "as", "be", "do", "go",
   "if", "me", "my", "so", "up", "us", "we", "he", "ag", "md", "os", "ts", "js", "py", "ui",
+  "v1", "v2", "v3", "v4", "v5", "commercial", "stays", "turns",
   "tsconfig", "tsconfig.json", "package.json", "makefile", "dockerfile", "readme", "readme.md",
   "used", "built", "based", "make", "makes", "made", "build", "building", "create", "creating",
   "simple", "fast", "modern", "powerful", "easy", "free", "best", "real", "time", "full", "new",
@@ -1883,8 +1901,8 @@ export const REPO_CONCEPT_PATTERNS: readonly RepoConceptPattern[] = [
     domainSlug: "rag-knowledge",
     specificity: 0.96,
     relationHint: "algorithm_idea",
-    exactTokens: ["context-graph", "kv-cache", "prefix-cache", "context-engineering", "context-assembly", "context-compression", "property-dag", "long-horizon"],
-    phrases: ["context graph", "kv-cache", "kv cache", "prefix cache", "context assembly", "context engineering", "context rot", "long-horizon agent", "图结构上下文"],
+    exactTokens: ["context-graph", "kv-cache", "prefix-cache", "context-engineering", "context-assembly", "context-compression", "property-dag"],
+    phrases: ["context graph", "kv-cache", "kv cache", "prefix cache", "context assembly", "context engineering", "context rot", "context compression", "long-horizon context", "month-long single sessions", "图结构上下文"],
   },
   {
     id: "knowledge-graph-rag",
@@ -1966,8 +1984,8 @@ export const REPO_CONCEPT_PATTERNS: readonly RepoConceptPattern[] = [
     domainSlug: "browser-automation",
     specificity: 0.95,
     relationHint: "direct_module",
-    exactTokens: ["web-translator", "page-translator", "immersive-translate", "bilingual", "translator"],
-    phrases: ["translate web", "webpage translation", "page translator", "网页翻译", "翻译插件", "划词翻译"],
+    exactTokens: ["web-translator", "page-translator", "immersive-translate", "bilingual-translation", "translate-extension", "translator"],
+    phrases: ["translate web", "webpage translation", "page translator", "bilingual translation", "bilingual web", "双语对照", "双语翻译", "网页翻译", "翻译插件", "划词翻译"],
   },
 
   // ---- Media, Speech & Multimodal Creative ----
@@ -2004,8 +2022,8 @@ export const REPO_CONCEPT_PATTERNS: readonly RepoConceptPattern[] = [
     domainSlug: "media-creative",
     specificity: 0.90,
     relationHint: "architecture_pattern",
-    exactTokens: ["remotion", "ffmpeg", "opencut", "video-editor", "video-editing", "video-generation", "moneyprinter", "manim", "comfyui", "stable-diffusion", "diffusion", "storyboard", "aigc"],
-    phrases: ["video editor", "video editing", "video generation", "image generation", "stable diffusion", "text to video", "剧本", "分镜", "剪辑", "影视"],
+    exactTokens: ["remotion", "ffmpeg", "opencut", "video-editor", "video-editing", "video-generation", "video-production", "promo-video", "product-video", "avatar-video", "motion-graphics", "heygen", "moneyprinter", "manim", "comfyui", "stable-diffusion", "diffusion", "storyboard", "aigc"],
+    phrases: ["video editor", "video editing", "video generation", "video production", "product promos", "avatar creation", "image generation", "stable diffusion", "text to video", "video skill", "剧本", "分镜", "剪辑", "影视"],
   },
 
   // ---- Quant Finance & Data Analytics ----
@@ -2053,8 +2071,8 @@ export const REPO_CONCEPT_PATTERNS: readonly RepoConceptPattern[] = [
     domainSlug: "dev-infra",
     specificity: 0.94,
     relationHint: "ux_workflow",
-    exactTokens: ["terminal-emulator", "ghostty", "waveterm", "cmux", "warp", "alacritty", "wezterm", "tmux", "pty", "crt", "pip-boy", "macos-terminal"],
-    phrases: ["macos terminal", "terminal emulator", "wave terminal", "nested splits", "vertical tabs", "terminal theme", "ghostty-based", "原生终端", "终端驾驶舱"],
+    exactTokens: ["terminal-emulator", "ghostty", "waveterm", "cmux", "warp-terminal", "alacritty", "wezterm", "tmux", "pty", "crt", "pip-boy", "macos-terminal"],
+    phrases: ["macos terminal", "terminal emulator", "wave terminal", "warp terminal", "born out of the terminal", "nested splits", "vertical tabs", "terminal theme", "ghostty-based", "原生终端", "终端驾驶舱"],
   },
   {
     id: "transactional-db-engine",
@@ -2138,7 +2156,7 @@ export const REPO_CONCEPT_PATTERNS: readonly RepoConceptPattern[] = [
     domainSlug: "ops-security-growth",
     specificity: 0.95,
     relationHint: "direct_module",
-    exactTokens: ["credential", "credentials", "secret-management", "secrets", "vault", "password-manager", "bitwarden", "1password", "guardrails", "prompt-injection", "ssrf", "red-team", "trivy", "oauth", "rbac"],
+    exactTokens: ["credential", "credentials", "secret-management", "secrets", "secret-vault", "password-vault", "openbao", "vaultwarden", "infisical", "password-manager", "bitwarden", "1password", "guardrails", "prompt-injection", "ssrf", "red-team", "trivy", "oauth", "rbac"],
     phrases: ["credential broker", "secret management", "password manager", "prompt injection", "output scrubbing", "never sees secrets", "盲凭据", "密钥隔离", "零知识"],
   },
   {
@@ -2148,7 +2166,7 @@ export const REPO_CONCEPT_PATTERNS: readonly RepoConceptPattern[] = [
     specificity: 0.95,
     relationHint: "direct_module",
     exactTokens: ["payment", "payments", "billing", "stripe", "lemonsqueezy", "paddle", "merchant-of-record", "licensing", "license-key", "ed25519", "finops", "checkout", "invoicing"],
-    phrases: ["merchant of record", "offline license", "license key", "license sdk", "unit economics", "online payments", "billing", "stripe", "离线授权", "验签", "收银"],
+    phrases: ["merchant of record", "offline license", "license key", "license sdk", "unit economics", "online payments", "usage billing", "subscription billing", "stripe project", "stripe checkout", "离线授权", "验签", "收银"],
   },
   {
     id: "gtm-storefront-publishing",
@@ -2318,6 +2336,12 @@ export function extractDistinctiveTokens(text: string): Map<string, number> {
   return counts;
 }
 
+interface ConceptHitDetail {
+  strength: number;
+  nameOrDescGrounded: boolean;
+  textGrounded: boolean;
+}
+
 interface RepoFeatureProfile {
   nameTokens: Set<string>;
   topicTokens: Set<string>;
@@ -2327,8 +2351,44 @@ interface RepoFeatureProfile {
   nameLower: string;
   descLower: string;
   concepts: Map<string, number>; // conceptId -> strength (0..1)
+  conceptDetails: Map<string, ConceptHitDetail>;
   isCuratedList: boolean;
   isStub: boolean;
+  isVerticalConsumerSkill: boolean;
+}
+
+function isAsciiWordChar(code: number): boolean {
+  return (code >= 48 && code <= 57) || (code >= 97 && code <= 122);
+}
+
+/**
+ * Matches a phrase against a lowercased haystack with ASCII alphanumeric word boundaries
+ * (preventing substring collisions such as "interactive learning" matching "active learning").
+ */
+function matchesPhrase(haystack: string, phraseLower: string): boolean {
+  if (!haystack || !phraseLower) return false;
+  if (/[\u4e00-\u9fff]/.test(phraseLower)) {
+    return haystack.includes(phraseLower);
+  }
+  const checkStart = isAsciiWordChar(phraseLower.charCodeAt(0));
+  const checkEnd = isAsciiWordChar(phraseLower.charCodeAt(phraseLower.length - 1));
+  let idx = haystack.indexOf(phraseLower);
+  while (idx !== -1) {
+    const startOk = !checkStart || idx === 0 || !isAsciiWordChar(haystack.charCodeAt(idx - 1));
+    const endPos = idx + phraseLower.length;
+    const endOk = !checkEnd || endPos >= haystack.length || !isAsciiWordChar(haystack.charCodeAt(endPos));
+    if (startOk && endOk) return true;
+    idx = haystack.indexOf(phraseLower, idx + 1);
+  }
+  return false;
+}
+
+function isVerticalConsumerSkillRepo(nameLower: string, descLower: string, rawDescription: string): boolean {
+  return (
+    /\b(video skill|avatar creation|video production|product promos|job search agent|job finder|cover-letter)\b/.test(
+      `${nameLower} ${descLower}`,
+    ) || /(中国专利|专利点挖掘|交底书|求职简历)/.test(rawDescription)
+  );
 }
 
 function matchesTermInBag(term: string, rawTokens: Set<string>, bagLower: string): boolean {
@@ -2350,27 +2410,31 @@ function matchesTermInBag(term: string, rawTokens: Set<string>, bagLower: string
 
 /**
  * Removes explicit exclusion/negation clauses (e.g. "without dubbing, ASR, or TTS",
- * "只去掉同声传译和音频", "下文若仍写配音、同传") before feature extraction so negative
- * scope statements never trigger false domain/concept matches.
+ * "只去掉同声传译和音频", "下文若仍写配音、同传") and shared org-chart layer prefixes
+ * before feature extraction so negative scope statements or company org banners never
+ * trigger false domain/concept matches.
  */
 function stripNegatedClauses(text: string): string {
   if (!text) return "";
   return text
+    .replace(/OPC\s+OS\s+L\d+\s*·[^·；;\n]+·\s*/gi, " ")
+    .replace(/（产品线：[^）]+）/g, " ")
     .replace(/\bwithout\s+[^.;!?\n]+/gi, " ")
     .replace(/(?:只去掉|去掉了?|不含|不包含|去除|排除|非|并非|下文若仍写|不再包含)[^。；，,;!?\n]+/g, " ");
 }
 
-export function extractRepoConcepts(repo: {
+function extractRepoConceptHits(repo: {
   name: string;
   fullName?: string;
   description: string;
   topics: string[];
   notes?: string;
   readmeDigest?: RepoReadmeDigest | null;
-}): Map<string, number> {
+}): Map<string, ConceptHitDetail> {
   const nameLower = `${repo.name} ${repo.name.replace(/[-_./]+/g, " ")}`.toLowerCase();
   const topicList = repo.topics.map((t) => t.trim().toLowerCase()).filter(Boolean);
   const topicSet = new Set(topicList);
+  const descOnly = stripNegatedClauses(repo.description).toLowerCase();
   const descAndNotes = stripNegatedClauses(`${repo.description} ${repo.notes ?? ""}`).toLowerCase();
   const readmeBag = stripNegatedClauses(
     [
@@ -2381,6 +2445,7 @@ export function extractRepoConcepts(repo: {
   ).toLowerCase();
 
   const nameTokens = new Set(extractRawTokens(nameLower));
+  const descOnlyTokens = new Set(extractRawTokens(descOnly));
   const descTokens = new Set(extractRawTokens(descAndNotes));
   const readmeTokens = new Set(extractRawTokens(readmeBag));
   const allTokens = new Set<string>([...nameTokens, ...topicSet, ...descTokens, ...readmeTokens]);
@@ -2389,30 +2454,108 @@ export function extractRepoConcepts(repo: {
   }
   const fullBag = `${nameLower} ${topicList.join(" ")} ${descAndNotes} ${readmeBag}`;
 
-  const out = new Map<string, number>();
+  // Detect vertical non-coding deliverable repos (video/avatar skills, music gen, job search, patent drafting)
+  const isMusicGenOnly =
+    /\b(music generation|song generation|music editing|zero-shot covers)\b/.test(descOnly) &&
+    !/\b(tts|text-to-speech|audiobook)\b/.test(`${nameLower} ${descOnly}`);
+  const isVerticalConsumerSkill = isVerticalConsumerSkillRepo(nameLower, descOnly, repo.description);
+
+  const out = new Map<string, ConceptHitDetail>();
   for (const concept of REPO_CONCEPT_PATTERNS) {
+    if (isMusicGenOnly && concept.id === "tts-voice-synthesis") continue;
+    if (
+      isVerticalConsumerSkill &&
+      (concept.id === "coding-agent-harness" || concept.id === "agent-skills-paradigm")
+    ) {
+      continue;
+    }
+
     let score = 0;
+    let nameOrDescGrounded = false;
+    let textGrounded = false;
+
     for (const tok of concept.exactTokens) {
       const tl = tok.toLowerCase();
       const isCjk = /[\u4e00-\u9fff]/.test(tl);
       const inName = isCjk ? nameLower.includes(tl) : nameTokens.has(tl);
-      if (topicSet.has(tl)) score += 0.55;
-      else if (inName) score += 0.48;
-      else if (descTokens.has(tl)) score += 0.38;
-      else if (readmeTokens.has(tl)) score += 0.24;
-      else if (allTokens.has(tl)) score += 0.22;
+      const inDescOnly = isCjk ? descOnly.includes(tl) : descOnlyTokens.has(tl);
+      const inDescNotes = isCjk ? descAndNotes.includes(tl) : descTokens.has(tl);
+      const inReadme = isCjk ? readmeBag.includes(tl) : readmeTokens.has(tl);
+      const inTopic = topicSet.has(tl);
+
+      if (inName) {
+        score += 0.52;
+        nameOrDescGrounded = true;
+        textGrounded = true;
+      } else if (inDescOnly) {
+        score += 0.42;
+        nameOrDescGrounded = true;
+        textGrounded = true;
+      } else if (inDescNotes) {
+        score += 0.36;
+        nameOrDescGrounded = true;
+        textGrounded = true;
+      } else if (inReadme) {
+        score += 0.28;
+        textGrounded = true;
+      }
+      if (inTopic) {
+        // Topic tag reinforces grounded text strongly, or acts as a bounded auxiliary hint when ungrounded
+        score += nameOrDescGrounded || textGrounded ? 0.32 : 0.30;
+      } else if (!inName && !inDescNotes && !inReadme && allTokens.has(tl)) {
+        score += 0.18;
+      }
     }
+
     for (const phrase of concept.phrases) {
       const pl = phrase.toLowerCase();
-      if (nameLower.includes(pl)) score += 0.50;
-      else if (descAndNotes.includes(pl)) score += 0.42;
-      else if (readmeBag.includes(pl)) score += 0.26;
-      else if (fullBag.includes(pl)) score += 0.22;
+      if (matchesPhrase(nameLower, pl)) {
+        score += 0.52;
+        nameOrDescGrounded = true;
+        textGrounded = true;
+      } else if (matchesPhrase(descOnly, pl)) {
+        score += 0.44;
+        nameOrDescGrounded = true;
+        textGrounded = true;
+      } else if (matchesPhrase(descAndNotes, pl)) {
+        score += 0.38;
+        nameOrDescGrounded = true;
+        textGrounded = true;
+      } else if (matchesPhrase(readmeBag, pl)) {
+        score += 0.28;
+        textGrounded = true;
+      } else if (matchesPhrase(fullBag, pl)) {
+        score += 0.18;
+      }
     }
+
+    if (!nameOrDescGrounded && !textGrounded) {
+      // Topic-only ungrounded mentions stay strictly capped so trailing tags cannot masquerade as core purpose
+      score = Math.min(0.32, score);
+    }
+
     if (score >= 0.24) {
-      out.set(concept.id, Math.min(1, Math.round(score * 1000) / 1000));
+      out.set(concept.id, {
+        strength: Math.min(1, Math.round(score * 1000) / 1000),
+        nameOrDescGrounded,
+        textGrounded,
+      });
     }
   }
+  return out;
+}
+
+export function extractRepoConcepts(repo: {
+  name: string;
+  fullName?: string;
+  description: string;
+  topics: string[];
+  notes?: string;
+  readmeDigest?: RepoReadmeDigest | null;
+}): Map<string, number> {
+  const details = extractRepoConceptHits(repo);
+  const out = new Map<string, number>();
+  for (const [id, d] of details) out.set(id, d.strength);
   return out;
 }
 
@@ -2462,6 +2605,10 @@ function buildRepoFeatureProfile(repo: {
   addWeighted(descLower, 1.7);
   addWeighted(readmeLower, 1.1);
 
+  const conceptDetails = extractRepoConceptHits(repo);
+  const concepts = new Map<string, number>();
+  for (const [id, d] of conceptDetails) concepts.set(id, d.strength);
+
   return {
     nameTokens,
     topicTokens,
@@ -2470,9 +2617,11 @@ function buildRepoFeatureProfile(repo: {
     fullBagLower,
     nameLower: nameClean,
     descLower,
-    concepts: extractRepoConcepts(repo),
+    concepts,
+    conceptDetails,
     isCuratedList: isCuratedListOrTutorial(repo),
     isStub: isMetadataStub(repo),
+    isVerticalConsumerSkill: isVerticalConsumerSkillRepo(nameClean, stripNegatedClauses(repo.description).toLowerCase(), repo.description),
   };
 }
 
@@ -2552,6 +2701,12 @@ function scoreRepoForDomain(
   }
   antiPenalty = Math.min(0.42, antiPenalty);
 
+  // Vertical consumer skills (video promos, avatar creation, job search, patent drafting)
+  // that merely run inside Claude Code/Codex must NOT be misclassified into coding-agents!
+  if (domain.slug === "coding-agents" && profile.isVerticalConsumerSkill) {
+    return { score: 0.05, ontologyScore: 0, strongHits: 0 };
+  }
+
   const ontologyScore = Math.max(0, Math.min(0.88, strongScore + supportScore + conceptScore - antiPenalty));
   const vecWeight = isRemoteVector ? 0.42 : 0.18;
   const vectorContribution = Math.max(0, vectorSim) * vecWeight;
@@ -2583,6 +2738,7 @@ export function scoreStarToOwnedMatch(input: {
     primaryLanguage: string | null;
     topics: string[];
     primaryDomainId: string | null;
+    primaryDomainSlug?: string | null;
     vitality: RepoVitality;
     starsCount: number;
     readmeDigest?: RepoReadmeDigest | null;
@@ -2596,6 +2752,7 @@ export function scoreStarToOwnedMatch(input: {
     topics: string[];
     notes?: string;
     primaryDomainId: string | null;
+    primaryDomainSlug?: string | null;
     priorityTier: RepoPriorityTier;
     readmeDigest?: RepoReadmeDigest | null;
   };
@@ -2637,26 +2794,66 @@ export function scoreStarToOwnedMatch(input: {
     return makeRejected("target_metadata_stub");
   }
 
-  // 1. Canonical Technical Mechanism Concept Overlap
-  const sharedConcepts: Array<{ id: string; label: string; strength: number; relationHint: RepoRelationType }> = [];
+  // 1. Canonical Technical Mechanism Concept Overlap (with grounding & primary-domain alignment!)
+  const targetDomainSlug = target.primaryDomainSlug ?? null;
+  const targetHasPrimaryDomainConcepts = Boolean(
+    targetDomainSlug &&
+      [...targetProfile.conceptDetails.entries()].some(([cid, det]) => {
+        const pat = CONCEPT_BY_ID.get(cid);
+        return pat?.domainSlug === targetDomainSlug && det.textGrounded;
+      }),
+  );
+
+  const sharedConcepts: Array<{
+    id: string;
+    label: string;
+    strength: number;
+    relationHint: RepoRelationType;
+    starGrounded: boolean;
+    starStrength: number;
+    isPrimaryForTarget: boolean;
+  }> = [];
   let conceptRaw = 0;
-  for (const [cid, sStr] of starProfile.concepts) {
-    const tStr = targetProfile.concepts.get(cid);
-    if (!tStr) continue;
+
+  for (const [cid, sDet] of starProfile.conceptDetails) {
+    const tDet = targetProfile.conceptDetails.get(cid);
+    if (!tDet) continue;
     const pat = CONCEPT_BY_ID.get(cid);
     if (!pat) continue;
-    const pairStrength = Math.min(sStr, tStr) * pat.specificity;
-    conceptRaw += pairStrength;
+    // Star repo MUST ground this concept in its own name/description (never link solely on a trailing topic tag!)
+    if (!sDet.nameOrDescGrounded) continue;
+    if (!tDet.textGrounded) continue;
+
+    const isPrimaryForTarget = Boolean(targetDomainSlug && pat.domainSlug === targetDomainSlug);
+    const pairStrength = Math.min(sDet.strength, tDet.strength) * pat.specificity;
+    conceptRaw += isPrimaryForTarget ? pairStrength * 1.1 : pairStrength * 0.75;
     sharedConcepts.push({
       id: cid,
       label: pat.label,
       strength: Math.round(pairStrength * 1000) / 1000,
       relationHint: pat.relationHint,
+      starGrounded: sDet.nameOrDescGrounded,
+      starStrength: sDet.strength,
+      isPrimaryForTarget,
     });
   }
-  sharedConcepts.sort((a, b) => b.strength - a.strength);
+  sharedConcepts.sort(
+    (a, b) =>
+      Number(b.isPrimaryForTarget) - Number(a.isPrimaryForTarget) || b.strength - a.strength,
+  );
+
+  // Primary-Identity Alignment Law:
+  // If the owned repo has primary concepts in its own primary domain (e.g. Chrome MV3 for chromegate-gateway,
+  // web translation / Chrome extension for chrome-ollama-translator, Agent control plane for agent-zoom),
+  // a Star repo MUST share at least one primary-domain concept of the target (prevents incidental README mentions
+  // like "lets Codex call Chrome", "supports Ollama", or "DuckDB recap" from pulling unrelated ecosystems!).
+  const sharedPrimaryConcepts = sharedConcepts.filter((c) => c.isPrimaryForTarget);
+  if (targetHasPrimaryDomainConcepts && sharedConcepts.length > 0 && sharedPrimaryConcepts.length === 0) {
+    return makeRejected("non_primary_target_concept_only");
+  }
+
   const conceptScore = sharedConcepts.length > 0
-    ? Math.min(0.56, 0.25 + conceptRaw * 0.38)
+    ? Math.min(0.56, 0.25 + conceptRaw * 0.36)
     : 0;
 
   // 2. IDF-Weighted BM25 / Cosine on Stopword-Filtered Distinctive Tokens
@@ -2751,8 +2948,13 @@ export function scoreStarToOwnedMatch(input: {
     return makeRejected("below_precision_threshold");
   }
 
-  // Cross-sector 1-to-N links require an explicit shared mechanism concept and higher base confidence
-  if (crossDomain && (sharedConcepts.length === 0 || baseScore < 0.38)) {
+  // Cross-sector 1-to-N links require a strongly grounded primary mechanism concept on the Star repo
+  // (prevents tail-end passing mentions like "billing & admin built in" on an enterprise RAG repo from cross-linking!)
+  const topShared = sharedConcepts[0];
+  const strongCrossMechanism = Boolean(
+    topShared && (topShared.starStrength >= 0.48 || sharedConcepts.length >= 2),
+  );
+  if (crossDomain && (!strongCrossMechanism || baseScore < 0.40)) {
     return makeRejected("cross_sector_insufficient_mechanism");
   }
 
@@ -6329,8 +6531,8 @@ export class RepoEvolutionService {
         domain: string;
       }>("SELECT product, project, layer, domain FROM opc_project_profiles");
       for (const r of profRes.rows) {
-        // Record only this project's OWN role & layer (never copy downstream uses_json dependencies to avoid cross-pollination)
-        appendHint(r.project, `OPC OS ${r.layer} · ${r.domain}（产品线：${r.product}）`);
+        // Record only this project's OWN domain label (omit shared org-chart layer banner like "OPC OS L1 · 常驻数字员工" so unrelated sub-projects never trigger control-plane concepts)
+        appendHint(r.project, `${r.domain}（产品线：${r.product}）`);
       }
     } catch {
       // Table optional in isolated test schemas
@@ -6432,7 +6634,8 @@ export class RepoEvolutionService {
       if (
         computedHint &&
         (!curNotes ||
-          ((curNotes.startsWith("OPC OS ") || curNotes.startsWith("能力契约：")) && curNotes !== computedHint))
+          ((curNotes.startsWith("OPC OS ") || curNotes.startsWith("能力契约：") || curNotes.includes("（产品线：")) &&
+            curNotes !== computedHint))
       ) {
         nextNotes = computedHint;
         changed = true;
@@ -6993,6 +7196,8 @@ export class RepoEvolutionService {
 
     const proposalsByOwned = new Map<string, CandidateProposal[]>();
 
+    const domainSlugById = new Map<string, string>(domains.map((d) => [d.id, d.slug]));
+
     for (const targetRow of ownedRes.rows) {
       const targetId = String(targetRow.id);
       const targetFullName = String(targetRow.full_name);
@@ -7004,6 +7209,7 @@ export class RepoEvolutionService {
       const targetDigest = safeJson<RepoReadmeDigest | null>(targetRow.readme_digest_json, null);
       const targetLang = targetRow.primary_language ? String(targetRow.primary_language) : null;
       const targetDomainId = targetRow.primary_domain_id ? String(targetRow.primary_domain_id) : null;
+      const targetDomainSlug = targetDomainId ? domainSlugById.get(targetDomainId) ?? null : null;
       const priorityTier = String(targetRow.priority_tier ?? "standard") as RepoPriorityTier;
       const isSpotlight = priorityTier === "spotlight";
       const targetSource = targetRow.embedding_source === "remote" ? "remote" : "local";
@@ -7054,7 +7260,10 @@ export class RepoEvolutionService {
         const rawCosine = vectorSimByStarId.get(star.id) ?? 0;
         const isRemoteVec = targetSource === "remote" && star.embeddingSource === "remote" && rawCosine > 0;
         const assessment = scoreStarToOwnedMatch({
-          star,
+          star: {
+            ...star,
+            primaryDomainSlug: star.primaryDomainId ? domainSlugById.get(star.primaryDomainId) ?? null : null,
+          },
           target: {
             fullName: targetFullName,
             owner: targetOwner,
@@ -7064,6 +7273,7 @@ export class RepoEvolutionService {
             primaryLanguage: targetLang,
             topics: targetTopics,
             primaryDomainId: targetDomainId,
+            primaryDomainSlug: targetDomainSlug,
             priorityTier,
             readmeDigest: targetDigest,
           },
