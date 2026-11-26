@@ -32,6 +32,8 @@ const SALT_LEN = 32;
 const IV_LEN = 12;
 const TAG_LEN = 16;
 const SQLITE_MAGIC = Buffer.from("SQLite format 3\0", "ascii");
+const PG_CUSTOM_MAGIC = Buffer.from("PGDMP", "ascii");
+const DEFAULT_PG_CONTAINER = "opc-postgres";
 
 const AGENT_HUB_ALLOWLIST = new Set([
   "hub.db",
@@ -133,6 +135,137 @@ function hotBackupSqlite(srcPath, destPath) {
     throw new Error(`SQLite 热备完整性校验失败 (${basename(srcPath)}): ${integrity.detail}`);
   }
   return integrity;
+}
+
+function resolvePgBackupUrl(env = process.env, explicit = "") {
+  const raw = explicit || env?.OPC_PG_URL || env?.DATABASE_URL || "";
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function resolvePgContainer(env = process.env) {
+  const raw = env?.OPC_PG_CONTAINER || DEFAULT_PG_CONTAINER;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : DEFAULT_PG_CONTAINER;
+}
+
+function detectLocalPgToolMajor(tool) {
+  try {
+    const out = execFileSync(tool, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const m = /(\d+)\./.exec(out);
+    return m ? Number(m[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function toContainerPgUrl(pgUrl) {
+  try {
+    const u = new URL(pgUrl);
+    if (u.hostname === "127.0.0.1" || u.hostname === "localhost") {
+      u.hostname = "127.0.0.1";
+      u.port = "5432";
+    }
+    return u.toString();
+  } catch {
+    return pgUrl;
+  }
+}
+
+function checkPostgresDumpIntegrity(dumpPath, env = process.env) {
+  let fd;
+  try {
+    const st = statSync(dumpPath);
+    if (!st.isFile() || st.size < PG_CUSTOM_MAGIC.length) {
+      return { ok: false, detail: "dump 文件为空或长度不足" };
+    }
+    fd = openSync(dumpPath, "r");
+    const header = Buffer.alloc(PG_CUSTOM_MAGIC.length);
+    const bytes = readSync(fd, header, 0, PG_CUSTOM_MAGIC.length, 0);
+    if (bytes !== PG_CUSTOM_MAGIC.length || !header.equals(PG_CUSTOM_MAGIC)) {
+      return { ok: false, detail: "缺少 PGDMP 自定义归档文件头" };
+    }
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  try {
+    const localMajor = detectLocalPgToolMajor("pg_restore");
+    let listOut;
+    if (localMajor >= 18) {
+      listOut = execFileSync("pg_restore", ["--list", dumpPath], {
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * 1024,
+      });
+    } else {
+      const container = resolvePgContainer(env);
+      listOut = execFileSync("docker", ["exec", "-i", container, "pg_restore", "--list"], {
+        input: readFileSync(dumpPath),
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * 1024,
+      });
+    }
+    const entries = listOut
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith(";"));
+    return { ok: entries.length > 0, detail: `${entries.length} TOC entries` };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function hotBackupPostgres(pgUrl, destPath, env = process.env) {
+  mkdirSync(dirname(destPath), { recursive: true });
+  rmSync(destPath, { force: true });
+  const schema = (env?.OPC_PG_SCHEMA || "public").trim() || "public";
+  const dumpArgs = ["--format=custom", "--no-owner", "--no-acl", `--schema=${schema}`];
+  const localMajor = detectLocalPgToolMajor("pg_dump");
+  if (localMajor >= 18) {
+    execFileSync("pg_dump", [...dumpArgs, "-f", destPath, pgUrl], {
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } else {
+    const container = resolvePgContainer(env);
+    const containerUrl = toContainerPgUrl(pgUrl);
+    const dumpBuf = execFileSync(
+      "docker",
+      ["exec", container, "pg_dump", ...dumpArgs, containerUrl],
+      { maxBuffer: 512 * 1024 * 1024 },
+    );
+    writeFileSync(destPath, dumpBuf, { mode: 0o600 });
+  }
+  chmodSync(destPath, 0o600);
+  const integrity = checkPostgresDumpIntegrity(destPath, env);
+  if (!integrity.ok) {
+    throw new Error(`PostgreSQL pg_dump 完整性校验失败: ${integrity.detail}`);
+  }
+  return integrity;
+}
+
+function restorePostgresDump(pgUrl, dumpPath, env = process.env) {
+  const localMajor = detectLocalPgToolMajor("pg_restore");
+  if (localMajor >= 18) {
+    execFileSync(
+      "pg_restore",
+      ["--clean", "--if-exists", "--no-owner", "--no-acl", "-d", pgUrl, dumpPath],
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
+  } else {
+    const container = resolvePgContainer(env);
+    const containerUrl = toContainerPgUrl(pgUrl);
+    execFileSync(
+      "docker",
+      ["exec", "-i", container, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-acl", "-d", containerUrl],
+      { input: readFileSync(dumpPath), maxBuffer: 64 * 1024 * 1024 },
+    );
+  }
 }
 
 function assertSafeRelPath(relPath, context = "path") {
@@ -594,6 +727,7 @@ export function createBackup({
   rootDir = REPO_ROOT,
   homeDir = homedir(),
   env = process.env,
+  pgUrl = "",
   outPath = "",
   backupDir = "",
   encrypt = false,
@@ -605,6 +739,7 @@ export function createBackup({
   verify = true,
 } = {}) {
   const root = resolve(rootDir);
+  const resolvedPgUrl = resolvePgBackupUrl(env, pgUrl);
   const resolvedPassphrase = resolvePassphrase({ passphrase, passphraseFile, env });
   if (encrypt && !resolvedPassphrase) {
     throw new Error("启用 --encrypt 时必须提供口令（设置 OPC_BACKUP_PASSPHRASE 或传入 --passphrase-file）");
@@ -626,6 +761,33 @@ export function createBackup({
     const manifestSlots = [];
     const manifestFiles = [];
     let sqliteCount = 0;
+    let postgresCount = 0;
+
+    if (resolvedPgUrl) {
+      const pgRel = "opc_os.dump";
+      const stagedPgPath = join(stagingRoot, "slots", "opc-postgres", pgRel);
+      hotBackupPostgres(resolvedPgUrl, stagedPgPath, env);
+      const stagedStat = statSync(stagedPgPath);
+      const sha256 = sha256File(stagedPgPath);
+      postgresCount += 1;
+      manifestFiles.push({
+        slotId: "opc-postgres",
+        relativePath: pgRel,
+        kind: "postgres",
+        size: stagedStat.size,
+        mode: 0o600,
+        sha256,
+        integrity: "ok",
+      });
+      manifestSlots.push({
+        id: "opc-postgres",
+        label: "OPC OS PostgreSQL 18 主库（pg_dump 自定义归档）",
+        scope: "workspace",
+        targetRel: "opc-os/postgres",
+        fileCount: 1,
+        sizeBytes: stagedStat.size,
+      });
+    }
 
     for (const slot of slots) {
       const entries = slot.collect();
@@ -688,6 +850,7 @@ export function createBackup({
       includeAgentHome: Boolean(full || includeAgentHome),
       fileCount: manifestFiles.length,
       sqliteCount,
+      postgresCount,
       totalSourceBytes: manifestFiles.reduce((acc, f) => acc + f.size, 0),
       slots: manifestSlots,
       files: manifestFiles,
@@ -718,6 +881,7 @@ export function createBackup({
       verification = verifyBackup({
         archivePath: finalOut,
         passphrase: resolvedPassphrase,
+        env,
       });
       if (!verification.ok) {
         throw new Error(`备份后自动校验失败：${verification.errors.join("；")}`);
@@ -731,6 +895,7 @@ export function createBackup({
       archiveSizeBytes: archiveSize,
       fileCount: manifest.fileCount,
       sqliteCount: manifest.sqliteCount,
+      postgresCount: manifest.postgresCount,
       slots: manifest.slots,
       verified: Boolean(verification?.ok),
       manifest,
@@ -797,7 +962,7 @@ function assertVerifiedExtractedFile(slotsRoot, realSlotsRoot, slotId, safeRel) 
   return { exists: false, filePath: cur, lst: null };
 }
 
-function verifyExtractedArchive(extractDir, encrypted) {
+function verifyExtractedArchive(extractDir, encrypted, env = process.env) {
   const realExtractDir = assertSafeExtractedTree(extractDir);
   const manifestPath = join(extractDir, "manifest.json");
   if (!existsSync(manifestPath)) {
@@ -807,6 +972,7 @@ function verifyExtractedArchive(extractDir, encrypted) {
       manifest: null,
       checkedFiles: 0,
       checkedSqlite: 0,
+      checkedPostgres: 0,
       errors: ["备份包缺少 manifest.json"],
     };
   }
@@ -818,6 +984,7 @@ function verifyExtractedArchive(extractDir, encrypted) {
       manifest: null,
       checkedFiles: 0,
       checkedSqlite: 0,
+      checkedPostgres: 0,
       errors: ["manifest.json 文件类型非法（符号链接或硬链接）"],
     };
   }
@@ -831,6 +998,7 @@ function verifyExtractedArchive(extractDir, encrypted) {
       manifest,
       checkedFiles: 0,
       checkedSqlite: 0,
+      checkedPostgres: 0,
       errors: ["manifest.json 版本不受支持或结构无效"],
     };
   }
@@ -838,6 +1006,7 @@ function verifyExtractedArchive(extractDir, encrypted) {
   const errors = [];
   let checkedFiles = 0;
   let checkedSqlite = 0;
+  let checkedPostgres = 0;
   const slotsRoot = join(extractDir, "slots");
   if (!existsSync(slotsRoot) || !lstatSync(slotsRoot).isDirectory() || lstatSync(slotsRoot).isSymbolicLink()) {
     return {
@@ -846,6 +1015,7 @@ function verifyExtractedArchive(extractDir, encrypted) {
       manifest,
       checkedFiles: 0,
       checkedSqlite: 0,
+      checkedPostgres: 0,
       errors: ["备份包缺少合法的 slots 目录"],
     };
   }
@@ -900,6 +1070,13 @@ function verifyExtractedArchive(extractDir, encrypted) {
           `SQLite 无法打开：${item.slotId}/${safeRel}（${e instanceof Error ? e.message : String(e)}）`,
         );
       }
+    } else if (item.kind === "postgres") {
+      const check = checkPostgresDumpIntegrity(filePath, env);
+      if (!check.ok) {
+        errors.push(`PostgreSQL dump 完整性校验失败：${item.slotId}/${safeRel}（${check.detail}）`);
+      } else {
+        checkedPostgres += 1;
+      }
     }
   }
 
@@ -909,6 +1086,7 @@ function verifyExtractedArchive(extractDir, encrypted) {
     manifest,
     checkedFiles,
     checkedSqlite,
+    checkedPostgres,
     errors,
   };
 }
@@ -922,7 +1100,7 @@ export function verifyBackup({
   const resolvedPassphrase = resolvePassphrase({ passphrase, passphraseFile, env });
   const { workDir, extractDir, encrypted } = extractArchiveToTemp(archivePath, resolvedPassphrase);
   try {
-    return verifyExtractedArchive(extractDir, encrypted);
+    return verifyExtractedArchive(extractDir, encrypted, env);
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
@@ -939,6 +1117,8 @@ function resolveRestoreSlotDir(slotMeta, { rootDir, homeDir, env, targetRoot }) 
     ? resolve(env.OPC_COMPANION_RUNTIME_DIR)
     : join(root, "data", "companion-runtime");
   switch (slotMeta.id) {
+    case "opc-postgres":
+      return join(root, "data", "postgres-restore");
     case "opc-os-local":
       return resolve(env.KUNLUN_LOCAL_DIR || join(root, "data", "zoom-local"));
     case "opc-os-root":
@@ -989,15 +1169,17 @@ export function restoreBackup({
   rootDir = REPO_ROOT,
   homeDir = homedir(),
   env = process.env,
+  pgUrl = "",
   targetRoot = "",
   apply = false,
   passphrase = "",
   passphraseFile = "",
 } = {}) {
+  const resolvedPgUrl = resolvePgBackupUrl(env, pgUrl);
   const resolvedPassphrase = resolvePassphrase({ passphrase, passphraseFile, env });
   const { workDir, extractDir, encrypted } = extractArchiveToTemp(archivePath, resolvedPassphrase);
   try {
-    const verification = verifyExtractedArchive(extractDir, encrypted);
+    const verification = verifyExtractedArchive(extractDir, encrypted, env);
     if (!verification.ok || !verification.manifest) {
       throw new Error(`拒绝恢复：备份包未通过完整性校验（${verification.errors.join("；")}）`);
     }
@@ -1050,6 +1232,15 @@ export function restoreBackup({
             // ignore chmod issues on exotic filesystems
           }
         }
+        if (item.kind === "postgres" && resolvedPgUrl && !targetRoot) {
+          restorePostgresDump(resolvedPgUrl, srcPath, env);
+        }
+      }
+
+      if (item.kind === "postgres" && (!resolvedPgUrl || targetRoot)) {
+        warnings.push(
+          `已将 PostgreSQL 归档释放到 ${destPath}；如需导入目标库请设置 OPC_PG_URL 并执行 pg_restore --clean --if-exists --no-owner --no-acl -d "$OPC_PG_URL" "${destPath}"。`,
+        );
       }
 
       if (item.slotId === "opc-os-local" && safeRel === "service.env") {
@@ -1136,16 +1327,16 @@ function parseCliArgs(argv) {
 const USAGE = `OPC OS 数据主权一键热备、校验与安全迁移工具
 
 用法:
-  node scripts/opc-backup.mjs backup  [--out <路径>] [--encrypt] [--passphrase-file <文件>] [--full] [--include-hub] [--include-agent-home] [--json]
+  node scripts/opc-backup.mjs backup  [--out <路径>] [--pg-url <PG连接串>] [--encrypt] [--passphrase-file <文件>] [--full] [--include-hub] [--include-agent-home] [--json]
   node scripts/opc-backup.mjs verify  <备份文件> [--passphrase-file <文件>] [--json]
-  node scripts/opc-backup.mjs restore <备份文件> [--target-root <目标目录>] [--apply] [--passphrase-file <文件>] [--json]
+  node scripts/opc-backup.mjs restore <备份文件> [--pg-url <PG连接串>] [--target-root <目标目录>] [--apply] [--passphrase-file <文件>] [--json]
   node scripts/opc-backup.mjs list    [--dir <目录>] [--json]
 
 说明:
-  - 默认 backup 热备 OPC OS 主库 + 商业/GTM/客服/分析全部主权库（对活跃 WAL SQLite 执行 VACUUM INTO 无损热备），输出至 gitignored 的 data/backups/。
+  - 默认 backup 热备 OPC OS 主库（配置 OPC_PG_URL/DATABASE_URL 时自动通过 pg_dump 热备 PostgreSQL 18 主库，同时对活跃 WAL SQLite 执行 VACUUM INTO 无损热备），输出至 gitignored 的 data/backups/。
   - 传入 --full 额外纳入本机 Agent Hub 与 Agent Home 运行态主库（适合整机换机迁移）。
   - 传入 --encrypt 使用 AES-256-GCM 加密为 .tar.gz.enc（口令取自环境变量 OPC_BACKUP_PASSPHRASE 或 --passphrase-file）。
-  - restore 默认仅做 dry-run 预演，传入 --apply 才会落盘，并自动留存旧文件为 .pre-restore-<时间> 副本。`;
+  - restore 默认仅做 dry-run 预演，传入 --apply 才会落盘（若包含 PG dump 且配置 OPC_PG_URL 则自动调用 pg_restore 恢复）。`;
 
 function runCli() {
   const { positional, flags } = parseCliArgs(process.argv.slice(2));
@@ -1160,6 +1351,7 @@ function runCli() {
       const result = createBackup({
         outPath: typeof flags.out === "string" ? flags.out : "",
         backupDir: typeof flags.dir === "string" ? flags.dir : "",
+        pgUrl: typeof flags["pg-url"] === "string" ? flags["pg-url"] : "",
         encrypt: Boolean(flags.encrypt),
         passphraseFile: typeof flags["passphrase-file"] === "string" ? flags["passphrase-file"] : "",
         full: Boolean(flags.full),
@@ -1173,7 +1365,7 @@ function runCli() {
         console.log(`✅ OPC 数据主权热备完成${result.encrypted ? "（AES-256-GCM 已加密）" : ""}`);
         console.log(`   归档文件: ${result.archivePath}`);
         console.log(
-          `   归档体积: ${formatBytes(result.archiveSizeBytes)} | 文件数: ${result.fileCount}（含 SQLite 热备 ${result.sqliteCount} 个） | 自检: ${result.verified ? "PASS" : "SKIPPED"}`,
+          `   归档体积: ${formatBytes(result.archiveSizeBytes)} | 文件数: ${result.fileCount}（SQLite ${result.sqliteCount} 个${result.postgresCount ? ` + PostgreSQL ${result.postgresCount} 个` : ""}） | 自检: ${result.verified ? "PASS" : "SKIPPED"}`,
         );
         console.log("   覆盖槽位:");
         for (const s of result.slots) {
@@ -1194,7 +1386,9 @@ function runCli() {
         console.log(JSON.stringify(result, null, 2));
       } else if (result.ok) {
         console.log(`✅ 校验通过${result.encrypted ? "（已解密验证）" : ""}`);
-        console.log(`   已校验文件: ${result.checkedFiles} 个 | SQLite PRAGMA integrity_check: ${result.checkedSqlite} 个全绿`);
+        console.log(
+          `   已校验文件: ${result.checkedFiles} 个 | SQLite: ${result.checkedSqlite} 个全绿${result.checkedPostgres ? ` | PostgreSQL pg_restore --list: ${result.checkedPostgres} 个全绿` : ""}`,
+        );
         console.log(`   创建时间: ${result.manifest?.createdAt}`);
       } else {
         console.error("❌ 备份校验失败:");
@@ -1209,6 +1403,7 @@ function runCli() {
       if (!archive) throw new Error("请指定需要恢复的备份文件路径");
       const result = restoreBackup({
         archivePath: archive,
+        pgUrl: typeof flags["pg-url"] === "string" ? flags["pg-url"] : "",
         targetRoot: typeof flags["target-root"] === "string" ? flags["target-root"] : "",
         apply: Boolean(flags.apply) && !flags["dry-run"],
         passphraseFile: typeof flags["passphrase-file"] === "string" ? flags["passphrase-file"] : "",

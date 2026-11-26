@@ -878,11 +878,25 @@ export class TaskTriageService {
   private persistRunReport(report: TriageRunReport): void {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO opc_triage_runs (
+        `INSERT INTO opc_triage_runs (
           id, kind, dry_run, started_at, completed_at,
           scanned_count, noise_archived_count, idea_demoted_count, superseded_count,
           verified_count, needs_scope_count, code_checked_count, dispatched_count, report_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          dry_run = excluded.dry_run,
+          started_at = excluded.started_at,
+          completed_at = excluded.completed_at,
+          scanned_count = excluded.scanned_count,
+          noise_archived_count = excluded.noise_archived_count,
+          idea_demoted_count = excluded.idea_demoted_count,
+          superseded_count = excluded.superseded_count,
+          verified_count = excluded.verified_count,
+          needs_scope_count = excluded.needs_scope_count,
+          code_checked_count = excluded.code_checked_count,
+          dispatched_count = excluded.dispatched_count,
+          report_json = excluded.report_json`,
       )
       .run(
         report.id,

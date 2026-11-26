@@ -270,7 +270,8 @@ export class OpportunityStore {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project,kind,source_id) DO UPDATE SET
         pipeline=excluded.pipeline, title=excluded.title, rationale=excluded.rationale, evidence=excluded.evidence,
         impact=excluded.impact, confidence=excluded.confidence, effort=excluded.effort, updated_at=excluded.updated_at, capability_refs=excluded.capability_refs
-      WHERE state='queued' AND (pipeline,title,rationale,evidence,impact,confidence,effort,capability_refs) IS NOT
+      WHERE opc_opportunities.state='queued'
+        AND (opc_opportunities.pipeline,opc_opportunities.title,opc_opportunities.rationale,opc_opportunities.evidence,opc_opportunities.impact,opc_opportunities.confidence,opc_opportunities.effort,opc_opportunities.capability_refs) IS NOT
             (excluded.pipeline,excluded.title,excluded.rationale,excluded.evidence,excluded.impact,excluded.confidence,excluded.effort,excluded.capability_refs)`)
       .run(randomUUID(), project, kind, pipeline, sourceId, title, rationale, JSON.stringify(evidence), impact, confidence, effort, now, now, declared);
     const row = this.db.prepare(`SELECT ${fields} FROM opc_opportunities WHERE project=? AND kind=? AND source_id=?`)
