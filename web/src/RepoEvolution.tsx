@@ -1567,6 +1567,7 @@ interface ParsedFlowEdge {
   to: string;
   label: string;
   style: "solid" | "dashed" | "thick";
+  bidirectional?: boolean;
 }
 
 interface ParsedFlowSubgraph {
@@ -1600,35 +1601,216 @@ function cleanMermaidLabel(raw: string): string {
     .trim();
 }
 
-function wrapLinesForSvg(text: string, maxUnitsPerLine = 22, maxLines = 3): string[] {
-  const rawLines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  const out: string[] = [];
-  for (const raw of rawLines) {
+function measureVisualUnits(text: string): number {
+  let u = 0;
+  for (let i = 0; i < text.length; i++) {
+    u += text.charCodeAt(i) > 0x2e7f ? 1.75 : 1;
+  }
+  return u;
+}
+
+function splitLongWordUnits(word: string, maxUnits: number): string[] {
+  if (measureVisualUnits(word) <= maxUnits) return [word];
+  // Prefer splitting at CamelCase or punctuation boundaries before hard character slicing
+  const segments = word.split(/(?<=[/\-_.:])|(?<=[a-z])(?=[A-Z])/).filter(Boolean);
+  if (segments.length > 1) {
+    const joined: string[] = [];
     let cur = "";
-    let curUnits = 0;
-    for (let i = 0; i < raw.length; i++) {
-      const ch = raw[i];
-      const w = raw.charCodeAt(i) > 0x2e7f ? 1.75 : 1;
-      if (curUnits + w > maxUnitsPerLine && cur.length > 0) {
-        out.push(cur.trim());
-        cur = ch;
-        curUnits = w;
-        if (out.length >= maxLines) break;
+    for (const seg of segments) {
+      if (cur && measureVisualUnits(cur + seg) > maxUnits) {
+        joined.push(cur);
+        cur = seg;
       } else {
-        cur += ch;
-        curUnits += w;
+        cur += seg;
       }
     }
-    if (out.length >= maxLines) break;
+    if (cur) joined.push(cur);
+    if (joined.every((part) => measureVisualUnits(part) <= maxUnits)) return joined;
+  }
+  const chunks: string[] = [];
+  let cur = "";
+  let curUnits = 0;
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i];
+    const w = word.charCodeAt(i) > 0x2e7f ? 1.75 : 1;
+    if (curUnits + w > maxUnits && cur.length > 0) {
+      chunks.push(cur);
+      cur = ch;
+      curUnits = w;
+    } else {
+      cur += ch;
+      curUnits += w;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+function wrapLinesForSvg(text: string, maxUnitsPerLine = 24, maxLines = 3): string[] {
+  const rawLines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const out: string[] = [];
+
+  const pushTruncated = () => {
+    if (out.length <= maxLines) return;
+    out.length = maxLines;
+    out[maxLines - 1] = truncateVisual(out[maxLines - 1], Math.max(8, maxUnitsPerLine - 1));
+  };
+
+  for (const raw of rawLines) {
+    // Tokenize preserving spaces, CJK characters, and keeping English identifiers intact
+    const tokens: string[] = [];
+    let buf = "";
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (/\s/.test(ch)) {
+        if (buf) {
+          tokens.push(buf);
+          buf = "";
+        }
+        tokens.push(" ");
+      } else if (raw.charCodeAt(i) > 0x2e7f) {
+        if (buf) {
+          tokens.push(buf);
+          buf = "";
+        }
+        tokens.push(ch);
+      } else {
+        buf += ch;
+        if (ch === "/" || ch === ",") {
+          tokens.push(buf);
+          buf = "";
+        }
+      }
+    }
+    if (buf) tokens.push(buf);
+
+    let cur = "";
+    let curUnits = 0;
+    for (const rawTok of tokens) {
+      if (rawTok === " ") {
+        if (!cur || cur.endsWith(" ")) continue;
+        if (curUnits + 1 <= maxUnitsPerLine) {
+          cur += " ";
+          curUnits += 1;
+        }
+        continue;
+      }
+      const pieces = splitLongWordUnits(rawTok, maxUnitsPerLine);
+      for (const piece of pieces) {
+        const pieceUnits = measureVisualUnits(piece);
+        const trimmedCur = cur.trimEnd();
+        const trimmedUnits = measureVisualUnits(trimmedCur);
+        if (trimmedCur && curUnits + pieceUnits > maxUnitsPerLine) {
+          out.push(trimmedCur);
+          cur = piece;
+          curUnits = pieceUnits;
+        } else if (!trimmedCur) {
+          cur = piece;
+          curUnits = pieceUnits;
+        } else {
+          const needsSpace = cur.endsWith(" ");
+          cur = needsSpace ? `${trimmedCur} ${piece}` : `${trimmedCur}${piece}`;
+          curUnits = trimmedUnits + (needsSpace ? 1 : 0) + pieceUnits;
+        }
+      }
+    }
     if (cur.trim()) out.push(cur.trim());
   }
+
   if (out.length === 0) return [truncateVisual(text || "Node", maxUnitsPerLine)];
-  if (out.length > maxLines) {
-    const sliced = out.slice(0, maxLines);
-    sliced[maxLines - 1] = truncateVisual(sliced[maxLines - 1], maxUnitsPerLine - 1);
-    return sliced;
-  }
+  pushTruncated();
   return out;
+}
+
+function splitMermaidAmpersands(raw: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quote: '"' | "'" | null = null;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  let braceDepth = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (quote) {
+      if (ch === "\\" && i + 1 < raw.length) {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "[") {
+      bracketDepth++;
+    } else if (ch === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+    } else if (ch === "(") {
+      parenDepth++;
+    } else if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+    } else if (ch === "{") {
+      braceDepth++;
+    } else if (ch === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+    } else if (ch === "&" && bracketDepth === 0 && parenDepth === 0 && braceDepth === 0) {
+      parts.push(raw.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(raw.slice(start));
+  return parts;
+}
+
+function findMermaidArrowOutsideQuotes(
+  line: string,
+  arrowPattern: RegExp,
+): { index: number; length: number; op: string; label: string } | null {
+  let quote: '"' | "'" | null = null;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  let braceDepth = 0;
+  const globalRe = new RegExp(arrowPattern.source, "g");
+
+  let m: RegExpExecArray | null;
+  let scanPos = 0;
+  while ((m = globalRe.exec(line)) !== null) {
+    for (let i = scanPos; i < m.index; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (ch === "\\" && i + 1 < line.length) {
+          i++;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "[") bracketDepth++;
+      else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+      else if (ch === "(") parenDepth++;
+      else if (ch === ")") parenDepth = Math.max(0, parenDepth - 1);
+      else if (ch === "{") braceDepth++;
+      else if (ch === "}") braceDepth = Math.max(0, braceDepth - 1);
+    }
+    scanPos = m.index;
+    if (!quote && bracketDepth === 0 && parenDepth === 0 && braceDepth === 0) {
+      const fullOp = m[1].trim();
+      let edgeLabel = m[2] ? cleanMermaidLabel(m[2]) : "";
+      if (!edgeLabel) {
+        const inlineDash = /^<*--\s+(.+?)\s+-->$/.exec(fullOp);
+        const inlineDot = /^<*-\.\s+(.+?)\s+\.->$/.exec(fullOp);
+        const inlineThick = /^<*==\s+(.+?)\s+==>$/.exec(fullOp);
+        if (inlineDash) edgeLabel = cleanMermaidLabel(inlineDash[1]);
+        else if (inlineDot) edgeLabel = cleanMermaidLabel(inlineDot[1]);
+        else if (inlineThick) edgeLabel = cleanMermaidLabel(inlineThick[1]);
+      }
+      return { index: m.index, length: m[0].length, op: fullOp, label: edgeLabel };
+    }
+    if (m[0].length === 0) globalRe.lastIndex++;
+  }
+  return null;
 }
 
 function parseMermaidNodeToken(
@@ -1752,7 +1934,7 @@ function parseMermaidDiagram(raw: string): ParsedFlowchart | ParsedSequence | nu
   const subgraphStack: ParsedFlowSubgraph[] = [];
 
   const arrowPattern =
-    /(\s*(?:-\.\s+[^.\n]+?\s+\.-+>|==\s+[^=\n]+?\s+==+>|---\s+[^-\n>|]+?\s+-->|--\s+[^-\n>|]+?\s+-->|-\.+->|==+>|--+>|---)\s*(?:\|([^|]+)\|)?\s*)/;
+    /(\s*(?:<-\.\s+[^.\n]+?\s+\.-+>|-\.\s+[^.\n]+?\s+\.-+>|<==\s+[^=\n]+?\s+==+>|==\s+[^=\n]+?\s+==+>|---\s+[^-\n>|]+?\s+-->|<--\s+[^-\n>|]+?\s+-->|--\s+[^-\n>|]+?\s+-->|<-\.+->|<==+>|<--+>|-\.+->|==+>|--+>|---)\s*(?:\|([^|]+)\|)?\s*)/;
 
   for (let i = startIdx; i < lines.length; i++) {
     const line = lines[i];
@@ -1778,41 +1960,30 @@ function parseMermaidDiagram(raw: string): ParsedFlowchart | ParsedSequence | nu
 
     const activeSg = subgraphStack[subgraphStack.length - 1] ?? null;
 
-    // Split chained edges while preserving arrow operator & optional |label|
+    // Split chained edges outside quotes/brackets while preserving arrow operator & optional |label|
     const parts: string[] = [];
     const ops: Array<{ op: string; label: string }> = [];
     let cursor = line;
     while (cursor.length > 0) {
-      const m = arrowPattern.exec(cursor);
-      if (!m || m.index === undefined) {
+      const found = findMermaidArrowOutsideQuotes(cursor, arrowPattern);
+      if (!found) {
         parts.push(cursor.trim());
         break;
       }
-      parts.push(cursor.slice(0, m.index).trim());
-      const fullOp = m[1].trim();
-      let edgeLabel = m[2] ? cleanMermaidLabel(m[2]) : "";
-      if (!edgeLabel) {
-        const inlineDash = /^--\s+(.+?)\s+-->$/.exec(fullOp);
-        const inlineDot = /^-\.\s+(.+?)\s+\.->$/.exec(fullOp);
-        const inlineThick = /^==\s+(.+?)\s+==>$/.exec(fullOp);
-        if (inlineDash) edgeLabel = cleanMermaidLabel(inlineDash[1]);
-        else if (inlineDot) edgeLabel = cleanMermaidLabel(inlineDot[1]);
-        else if (inlineThick) edgeLabel = cleanMermaidLabel(inlineThick[1]);
-      }
-      ops.push({ op: fullOp, label: edgeLabel });
-      cursor = cursor.slice(m.index + m[0].length);
+      parts.push(cursor.slice(0, found.index).trim());
+      ops.push({ op: found.op, label: found.label });
+      cursor = cursor.slice(found.index + found.length);
     }
 
     if (ops.length === 0) {
-      for (const seg of parts[0].split("&")) {
+      for (const seg of splitMermaidAmpersands(parts[0])) {
         parseMermaidNodeToken(seg, nodeMap, activeSg);
       }
       continue;
     }
 
     const stepGroups: string[][] = parts.map((group) =>
-      group
-        .split("&")
+      splitMermaidAmpersands(group)
         .map((tok) => parseMermaidNodeToken(tok, nodeMap, activeSg))
         .filter((id): id is string => Boolean(id)),
     );
@@ -1826,9 +1997,10 @@ function parseMermaidDiagram(raw: string): ParsedFlowchart | ParsedSequence | nu
         : opStr.includes("=")
           ? "thick"
           : "solid";
+      const bidirectional = opStr.startsWith("<");
       for (const fromId of fromGroup) {
         for (const toId of toGroup) {
-          edges.push({ from: fromId, to: toId, label: ops[k].label, style });
+          edges.push({ from: fromId, to: toId, label: ops[k].label, style, bidirectional });
         }
       }
     }
@@ -1946,38 +2118,78 @@ function MermaidArchitectureDiagram({
       );
     }
 
-    // Flowchart topological layered SVG layout
+    // Flowchart topological layered SVG layout (DFS back-edge removal + barycenter + dynamic edge-label gaps)
     const { nodes, edges, subgraphs, direction } = parsed;
     const nodeIds = nodes.map((n) => n.id);
+    const nodeIdSet = new Set(nodeIds);
     const inDeg = new Map<string, number>();
-    const outAdj = new Map<string, string[]>();
+    const outEdgeIndices = new Map<string, number[]>();
     for (const id of nodeIds) {
       inDeg.set(id, 0);
-      outAdj.set(id, []);
+      outEdgeIndices.set(id, []);
     }
-    for (const e of edges) {
-      if (e.from === e.to) continue;
-      if (!outAdj.has(e.from) || !inDeg.has(e.to)) continue;
-      outAdj.get(e.from)!.push(e.to);
+    edges.forEach((e, idx) => {
+      if (e.from === e.to || !nodeIdSet.has(e.from) || !nodeIdSet.has(e.to)) return;
+      outEdgeIndices.get(e.from)!.push(idx);
       inDeg.set(e.to, (inDeg.get(e.to) ?? 0) + 1);
+    });
+
+    // Identify cycle back-edges via DFS starting from zero-indegree roots (then declaration order)
+    // so feedback loops (e.g. Snap --> Agent, Verifier --> Agent) never push entry nodes to the right
+    const backEdgeSet = new Set<number>();
+    const visited = new Set<string>();
+    const onStack = new Set<string>();
+    const dfsOrder = [
+      ...nodeIds.filter((id) => (inDeg.get(id) ?? 0) === 0),
+      ...nodeIds.filter((id) => (inDeg.get(id) ?? 0) > 0),
+    ];
+    const visitDfs = (u: string) => {
+      visited.add(u);
+      onStack.add(u);
+      for (const edgeIdx of outEdgeIndices.get(u) ?? []) {
+        const v = edges[edgeIdx].to;
+        if (onStack.has(v)) {
+          backEdgeSet.add(edgeIdx);
+        } else if (!visited.has(v)) {
+          visitDfs(v);
+        }
+      }
+      onStack.delete(u);
+    };
+    for (const id of dfsOrder) {
+      if (!visited.has(id)) visitDfs(id);
     }
 
-    // Assign topological ranks safely (cycle-proof via bounded Bellman-Ford / Kahn hybrid)
+    // Longest-path DAG ranking on forward edges only
     const rankMap = new Map<string, number>();
     for (const id of nodeIds) rankMap.set(id, 0);
-    const maxRank = Math.max(1, Math.min(nodes.length - 1, 10));
-    for (let pass = 0; pass < Math.min(nodes.length, 14); pass++) {
+    const maxRank = Math.max(1, Math.min(nodes.length - 1, 12));
+    for (let pass = 0; pass < Math.min(nodes.length + 2, 16); pass++) {
       let changed = false;
-      for (const e of edges) {
-        if (e.from === e.to) continue;
+      edges.forEach((e, idx) => {
+        if (e.from === e.to || backEdgeSet.has(idx)) return;
         const rf = rankMap.get(e.from);
         const rt = rankMap.get(e.to);
         if (rf !== undefined && rt !== undefined && rt <= rf && rf + 1 <= maxRank) {
           rankMap.set(e.to, rf + 1);
           changed = true;
         }
-      }
+      });
       if (!changed) break;
+    }
+
+    // Pull isolated root helpers closer to their earliest target (e.g. Reaper -.-> VMM sits right before VMM)
+    for (const id of nodeIds) {
+      if ((inDeg.get(id) ?? 0) !== 0) continue;
+      const forwardChildren = (outEdgeIndices.get(id) ?? [])
+        .filter((idx) => !backEdgeSet.has(idx))
+        .map((idx) => rankMap.get(edges[idx].to) ?? 0);
+      if (forwardChildren.length > 0) {
+        const minChildRank = Math.min(...forwardChildren);
+        if (minChildRank >= 2) {
+          rankMap.set(id, minChildRank - 1);
+        }
+      }
     }
 
     const layers = new Map<number, ParsedFlowNode[]>();
@@ -1988,34 +2200,105 @@ function MermaidArchitectureDiagram({
       layers.set(r, arr);
     }
     const sortedRanks = Array.from(layers.keys()).sort((a, b) => a - b);
+    const rankIndexByRank = new Map<number, number>();
+    sortedRanks.forEach((r, idx) => rankIndexByRank.set(r, idx));
 
-    // Compute exact dimensions for each node so text never clips or overflows
+    // Lightweight 2-pass barycenter ordering within each layer to minimize edge crossings
+    const orderInLayer = new Map<string, number>();
+    const syncOrderMap = () => {
+      for (const r of sortedRanks) {
+        (layers.get(r) ?? []).forEach((n, idx) => orderInLayer.set(n.id, idx));
+      }
+    };
+    syncOrderMap();
+    const forwardInNeighbors = new Map<string, string[]>();
+    const forwardOutNeighbors = new Map<string, string[]>();
+    for (const id of nodeIds) {
+      forwardInNeighbors.set(id, []);
+      forwardOutNeighbors.set(id, []);
+    }
+    edges.forEach((e, idx) => {
+      if (e.from === e.to || backEdgeSet.has(idx)) return;
+      forwardOutNeighbors.get(e.from)?.push(e.to);
+      forwardInNeighbors.get(e.to)?.push(e.from);
+    });
+    for (let i = sortedRanks.length - 2; i >= 0; i--) {
+      const list = layers.get(sortedRanks[i]) ?? [];
+      list.sort((a, b) => {
+        const outsA = forwardOutNeighbors.get(a.id) ?? [];
+        const outsB = forwardOutNeighbors.get(b.id) ?? [];
+        const avgA = outsA.length ? outsA.reduce((s, id) => s + (orderInLayer.get(id) ?? 0), 0) / outsA.length : orderInLayer.get(a.id) ?? 0;
+        const avgB = outsB.length ? outsB.reduce((s, id) => s + (orderInLayer.get(id) ?? 0), 0) / outsB.length : orderInLayer.get(b.id) ?? 0;
+        return avgA - avgB;
+      });
+      syncOrderMap();
+    }
+    for (let i = 1; i < sortedRanks.length; i++) {
+      const list = layers.get(sortedRanks[i]) ?? [];
+      list.sort((a, b) => {
+        const insA = forwardInNeighbors.get(a.id) ?? [];
+        const insB = forwardInNeighbors.get(b.id) ?? [];
+        const avgA = insA.length ? insA.reduce((s, id) => s + (orderInLayer.get(id) ?? 0), 0) / insA.length : orderInLayer.get(a.id) ?? 0;
+        const avgB = insB.length ? insB.reduce((s, id) => s + (orderInLayer.get(id) ?? 0), 0) / insB.length : orderInLayer.get(b.id) ?? 0;
+        return avgA - avgB;
+      });
+      syncOrderMap();
+    }
+
+    // Compute exact dimensions for each node so English identifiers never break mid-word
     const nodeMetrics = new Map<
       string,
       { lines: string[]; w: number; h: number; x: number; y: number; cx: number; cy: number }
     >();
     for (const node of nodes) {
-      const lines = wrapLinesForSvg(node.label, direction === "LR" ? 18 : 22, 3);
-      const maxLineUnits = Math.max(
-        10,
-        ...lines.map((ln) => {
-          let u = 0;
-          for (let i = 0; i < ln.length; i++) u += ln.charCodeAt(i) > 0x2e7f ? 1.75 : 1;
-          return u;
-        }),
-      );
-      const w = Math.max(126, Math.min(238, Math.round(maxLineUnits * 7.6 + 34)));
-      const h = Math.max(46, lines.length * 17 + 22);
+      const lines = wrapLinesForSvg(node.label, direction === "LR" ? 23 : 26, 3);
+      const maxLineUnits = Math.max(10, ...lines.map((ln) => measureVisualUnits(ln)));
+      const w = Math.max(134, Math.min(284, Math.round(maxLineUnits * 7.8 + 34)));
+      const h = Math.max(50, lines.length * 18 + 24);
       nodeMetrics.set(node.id, { lines, w, h, x: 0, y: 0, cx: 0, cy: 0 });
     }
 
-    const padX = 42;
-    const padY = 44;
-    const gapAlong = direction === "LR" ? 72 : 64;
-    const gapCross = direction === "LR" ? 28 : 30;
+    // Pre-measure wrapped edge label pills (up to 2 crisp lines) so column gaps NEVER clip labels
+    const edgePillLayout = edges.map((e) => {
+      if (!e.label) return { lines: [] as string[], w: 0, h: 0 };
+      const lines = wrapLinesForSvg(e.label, 20, 2);
+      const maxU = Math.max(4, ...lines.map((ln) => measureVisualUnits(ln)));
+      const w = Math.max(48, Math.round(maxU * 6.8 + 18));
+      const h = lines.length > 1 ? 31 : 21;
+      return { lines, w, h };
+    });
 
-    let canvasW = 560;
+    const padX = 44;
+    const padY = 44;
+    const gapCross = direction === "LR" ? 40 : 34;
+
+    // Dynamic per-column / per-row gaps sized strictly wider than the longest edge pill between adjacent ranks
+    const gapsAlong: number[] = [];
+    for (let i = 0; i < Math.max(0, sortedRanks.length - 1); i++) {
+      const rLeft = sortedRanks[i];
+      const rRight = sortedRanks[i + 1];
+      let maxPillW = 0;
+      let maxPillH = 0;
+      edges.forEach((e, idx) => {
+        if (backEdgeSet.has(idx)) return;
+        const rf = rankMap.get(e.from);
+        const rt = rankMap.get(e.to);
+        if (rf === rLeft && rt === rRight) {
+          maxPillW = Math.max(maxPillW, edgePillLayout[idx].w);
+          maxPillH = Math.max(maxPillH, edgePillLayout[idx].h);
+        }
+      });
+      if (direction === "LR") {
+        gapsAlong.push(Math.max(136, maxPillW > 0 ? maxPillW + 36 : 136));
+      } else {
+        gapsAlong.push(Math.max(66, maxPillH > 0 ? maxPillH + 46 : 66));
+      }
+    }
+
+    let canvasW = 580;
     let canvasH = 260;
+    let maxNodeBottom = padY;
+    let maxNodeRight = padX;
 
     if (direction === "LR") {
       // Ranks go left -> right; nodes within rank stack top -> bottom
@@ -2039,12 +2322,14 @@ function MermaidArchitectureDiagram({
           m.y = curY;
           m.cx = m.x + m.w / 2;
           m.cy = m.y + m.h / 2;
+          maxNodeRight = Math.max(maxNodeRight, m.x + m.w);
+          maxNodeBottom = Math.max(maxNodeBottom, m.y + m.h);
           curY += m.h + gapCross;
         }
-        curX += colW + gapAlong;
+        curX += colW + (gapsAlong[idx] ?? 0);
       });
-      canvasW = Math.max(580, curX - gapAlong + padX);
-      canvasH = Math.max(240, maxColH + padY * 2);
+      canvasW = Math.max(580, maxNodeRight + padX);
+      canvasH = Math.max(240, maxNodeBottom + padY);
     } else {
       // TD: Ranks go top -> bottom; nodes within rank sit left -> right
       const rowHeights = sortedRanks.map((r) =>
@@ -2067,12 +2352,144 @@ function MermaidArchitectureDiagram({
           m.y = curY + Math.round((rowH - m.h) / 2);
           m.cx = m.x + m.w / 2;
           m.cy = m.y + m.h / 2;
+          maxNodeRight = Math.max(maxNodeRight, m.x + m.w);
+          maxNodeBottom = Math.max(maxNodeBottom, m.y + m.h);
           curX += m.w + gapCross;
         }
-        curY += rowH + gapAlong;
+        curY += rowH + (gapsAlong[idx] ?? 0);
       });
-      canvasW = Math.max(580, maxRowW + padX * 2);
-      canvasH = Math.max(240, curY - gapAlong + padY);
+      canvasW = Math.max(580, maxNodeRight + padX);
+      canvasH = Math.max(240, maxNodeBottom + padY);
+    }
+
+    // Pre-compute edge paths & label positions so outer feedback/skip lanes expand canvas cleanly with 0 overlaps
+    interface RoutedEdge {
+      idx: number;
+      edge: ParsedFlowEdge;
+      d: string;
+      lx: number;
+      ly: number;
+      pillLines: string[];
+      pillW: number;
+      pillH: number;
+      isFeedback: boolean;
+    }
+
+    const routedEdges: RoutedEdge[] = [];
+    let lrBottomFeedbackLane = 0;
+    let tdRightBypassLane = 0;
+    let lrTopSkipLane = 0;
+
+    edges.forEach((e, idx) => {
+      const from = nodeMetrics.get(e.from);
+      const to = nodeMetrics.get(e.to);
+      if (!from || !to) return;
+      const pill = edgePillLayout[idx];
+      const rFromIdx = rankIndexByRank.get(rankMap.get(e.from) ?? 0) ?? 0;
+      const rToIdx = rankIndexByRank.get(rankMap.get(e.to) ?? 0) ?? 0;
+      const isBack = backEdgeSet.has(idx) || rToIdx <= rFromIdx;
+      const rankSpan = Math.abs(rToIdx - rFromIdx);
+
+      let d = "";
+      let lx = (from.cx + to.cx) / 2;
+      let ly = (from.cy + to.cy) / 2;
+
+      if (direction === "LR") {
+        if (isBack) {
+          // Route feedback edges cleanly along dedicated outer lanes below all nodes
+          const lane = lrBottomFeedbackLane++;
+          const laneY = maxNodeBottom + 36 + lane * 40;
+          const exitX = from.cx;
+          const exitY = from.y + from.h;
+          const enterX = Math.max(to.x + 22, Math.min(to.x + to.w - 22, to.cx + (lane - 0.5) * 28));
+          const enterY = to.y + to.h + 4;
+          const r = 14;
+          const dir = enterX < exitX ? -1 : 1;
+          d = `M ${exitX.toFixed(1)} ${exitY.toFixed(1)} L ${exitX.toFixed(1)} ${(laneY - r).toFixed(1)} Q ${exitX.toFixed(1)} ${laneY.toFixed(1)}, ${(exitX + dir * r).toFixed(1)} ${laneY.toFixed(1)} L ${(enterX - dir * r).toFixed(1)} ${laneY.toFixed(1)} Q ${enterX.toFixed(1)} ${laneY.toFixed(1)}, ${enterX.toFixed(1)} ${(laneY - r).toFixed(1)} L ${enterX.toFixed(1)} ${enterY.toFixed(1)}`;
+          lx = (exitX + enterX) / 2;
+          ly = laneY;
+          canvasH = Math.max(canvasH, laneY + 34);
+        } else if (rankSpan > 1) {
+          // Forward multi-column skip edge routes cleanly above all intermediate nodes
+          const lane = lrTopSkipLane++;
+          const laneY = Math.max(18, padY - 22 - lane * 34);
+          const sx = from.cx;
+          const sy = from.y;
+          const tx = to.cx;
+          const ty = to.y - 4;
+          d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${sx.toFixed(1)} ${laneY.toFixed(1)}, ${tx.toFixed(1)} ${laneY.toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+          lx = (sx + tx) / 2;
+          ly = laneY + 6;
+        } else {
+          const sx = e.bidirectional ? from.x + from.w + 4 : from.x + from.w;
+          const sy = from.cy;
+          const tx = to.x - 4;
+          const ty = to.cy;
+          const dx = Math.max(32, Math.abs(tx - sx) * 0.44);
+          d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${(sx + dx).toFixed(1)} ${sy.toFixed(1)}, ${(tx - dx).toFixed(1)} ${ty.toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+          lx = (sx + tx) / 2;
+          ly = (sy + ty) / 2;
+        }
+      } else {
+        if (isBack || rankSpan > 1) {
+          // Route TD skip / back edges cleanly along right outer bypass lanes
+          const lane = tdRightBypassLane++;
+          const laneX = maxNodeRight + 42 + lane * Math.max(64, Math.round(pill.w * 0.6) + 28);
+          const sx = from.x + from.w;
+          const sy = from.cy;
+          const tx = to.x + to.w + 4;
+          const ty = to.cy;
+          const r = 14;
+          const vDir = ty >= sy ? 1 : -1;
+          d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} L ${(laneX - r).toFixed(1)} ${sy.toFixed(1)} Q ${laneX.toFixed(1)} ${sy.toFixed(1)}, ${laneX.toFixed(1)} ${(sy + vDir * r).toFixed(1)} L ${laneX.toFixed(1)} ${(ty - vDir * r).toFixed(1)} Q ${laneX.toFixed(1)} ${ty.toFixed(1)}, ${(laneX - r).toFixed(1)} ${ty.toFixed(1)} L ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+          lx = laneX;
+          ly = (sy + ty) / 2;
+          canvasW = Math.max(canvasW, laneX + Math.ceil(pill.w / 2) + 26);
+        } else {
+          const sx = from.cx;
+          const sy = e.bidirectional ? from.y + from.h + 4 : from.y + from.h;
+          const tx = to.cx;
+          const ty = to.y - 4;
+          const dy = Math.max(24, Math.abs(ty - sy) * 0.45);
+          d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${sx.toFixed(1)} ${(sy + dy).toFixed(1)}, ${tx.toFixed(1)} ${(ty - dy).toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+          lx = (sx + tx) / 2;
+          ly = (sy + ty) / 2;
+        }
+      }
+
+      routedEdges.push({
+        idx,
+        edge: e,
+        d,
+        lx,
+        ly,
+        pillLines: pill.lines,
+        pillW: pill.w,
+        pillH: pill.h,
+        isFeedback: isBack,
+      });
+    });
+
+    // De-conflict any edge pills that happen to touch each other vertically
+    for (let i = 0; i < routedEdges.length; i++) {
+      const a = routedEdges[i];
+      if (!a.pillLines.length) continue;
+      for (let j = i + 1; j < routedEdges.length; j++) {
+        const b = routedEdges[j];
+        if (!b.pillLines.length) continue;
+        const overlapX = Math.abs(a.lx - b.lx) < (a.pillW + b.pillW) / 2 + 6;
+        const overlapY = Math.abs(a.ly - b.ly) < (a.pillH + b.pillH) / 2 + 6;
+        if (overlapX && overlapY) {
+          const shift = Math.ceil(((a.pillH + b.pillH) / 2 + 8 - Math.abs(a.ly - b.ly)) / 2);
+          if (a.ly <= b.ly) {
+            a.ly -= shift;
+            b.ly += shift;
+          } else {
+            a.ly += shift;
+            b.ly -= shift;
+          }
+        }
+      }
     }
 
     const sgPalette = ["#2b4e3c", "#483d82", "#246874", "#9c3a21", "#b9751d"];
@@ -2115,6 +2532,9 @@ function MermaidArchitectureDiagram({
           <marker id="re-mmd-arrow-thick" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#483d82" />
           </marker>
+          <marker id="re-mmd-arrow-feedback" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+            <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#246874" />
+          </marker>
         </defs>
 
         {/* Subgraph Containers */}
@@ -2139,81 +2559,27 @@ function MermaidArchitectureDiagram({
           </g>
         ))}
 
-        {/* Edges */}
-        {edges.map((e, idx) => {
-          const from = nodeMetrics.get(e.from);
-          const to = nodeMetrics.get(e.to);
-          if (!from || !to) return null;
-
-          let sx = from.cx;
-          let sy = from.cy;
-          let tx = to.cx;
-          let ty = to.cy;
-          let d = "";
-          let lx = (sx + tx) / 2;
-          let ly = (sy + ty) / 2;
-
-          if (direction === "LR") {
-            const forward = to.cx >= from.cx;
-            sx = forward ? from.x + from.w : from.x;
-            sy = from.cy;
-            tx = forward ? to.x - 3 : to.x + to.w + 3;
-            ty = to.cy;
-            const dx = Math.max(28, Math.abs(tx - sx) * 0.48);
-            const c1x = forward ? sx + dx : sx - dx;
-            const c2x = forward ? tx - dx : tx + dx;
-            const bendY = !forward ? (from.cy === to.cy ? -34 : 0) : 0;
-            d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${c1x.toFixed(1)} ${(sy + bendY).toFixed(1)}, ${c2x.toFixed(1)} ${(ty + bendY).toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
-            lx = (sx + tx) / 2;
-            ly = (sy + ty) / 2 + bendY * 0.72;
-          } else {
-            const forward = to.cy >= from.cy;
-            sx = from.cx;
-            sy = forward ? from.y + from.h : from.y;
-            tx = to.cx;
-            ty = forward ? to.y - 3 : to.y + to.h + 3;
-            const dy = Math.max(24, Math.abs(ty - sy) * 0.48);
-            const c1y = forward ? sy + dy : sy - dy;
-            const c2y = forward ? ty - dy : ty + dy;
-            const bendX = !forward ? 44 : 0;
-            d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${(sx + bendX).toFixed(1)} ${c1y.toFixed(1)}, ${(tx + bendX).toFixed(1)} ${c2y.toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
-            lx = (sx + tx) / 2 + bendX * 0.72;
-            ly = (sy + ty) / 2;
-          }
-
-          const stroke = e.style === "thick" ? "#483d82" : "#4b5d53";
-          const sw = e.style === "thick" ? 2.2 : 1.5;
-          const labelShort = e.label ? truncateVisual(e.label, 20) : "";
-          const labelW = labelShort ? Math.max(40, labelShort.length * 6.8 + 14) : 0;
-
+        {/* Edge Paths */}
+        {routedEdges.map((r) => {
+          const e = r.edge;
+          const stroke = r.isFeedback ? "#246874" : e.style === "thick" ? "#483d82" : "#4b5d53";
+          const sw = e.style === "thick" ? 2.2 : 1.55;
+          const marker = r.isFeedback
+            ? "url(#re-mmd-arrow-feedback)"
+            : e.style === "thick"
+              ? "url(#re-mmd-arrow-thick)"
+              : "url(#re-mmd-arrow)";
           return (
-            <g key={`edge-${idx}`}>
-              <path
-                d={d}
-                fill="none"
-                stroke={stroke}
-                strokeWidth={sw}
-                strokeDasharray={e.style === "dashed" ? "5 3" : undefined}
-                markerEnd={e.style === "thick" ? "url(#re-mmd-arrow-thick)" : "url(#re-mmd-arrow)"}
-              />
-              {labelShort && (
-                <g transform={`translate(${lx.toFixed(1)}, ${ly.toFixed(1)})`}>
-                  <rect
-                    x={-labelW / 2}
-                    y={-10}
-                    width={labelW}
-                    height={19}
-                    rx={9}
-                    fill="#fcfaf3"
-                    stroke="#cbc5b6"
-                    strokeWidth={0.9}
-                  />
-                  <text x={0} y={3.5} textAnchor="middle" fill="#3b443e" fontSize="10.5" fontWeight="550">
-                    {labelShort}
-                  </text>
-                </g>
-              )}
-            </g>
+            <path
+              key={`edge-path-${r.idx}`}
+              d={r.d}
+              fill="none"
+              stroke={stroke}
+              strokeWidth={sw}
+              strokeDasharray={e.style === "dashed" ? "5 3" : r.isFeedback ? "6 3" : undefined}
+              markerStart={e.bidirectional ? marker : undefined}
+              markerEnd={marker}
+            />
           );
         })}
 
@@ -2222,7 +2588,7 @@ function MermaidArchitectureDiagram({
           const m = nodeMetrics.get(node.id)!;
           const accent = (node.subgraphId && sgColorById.get(node.subgraphId)) || (idx === 0 ? "#2b4e3c" : "#3a506b");
           const rx = node.shape === "stadium" || node.shape === "circle" ? Math.min(22, m.h / 2) : node.shape === "round" ? 9 : 4;
-          const textStartY = m.cy - ((m.lines.length - 1) * 16) / 2 + 4;
+          const textStartY = m.cy - ((m.lines.length - 1) * 17) / 2 + 4.5;
           return (
             <g key={`node-${node.id}`}>
               {node.shape === "diamond" ? (
@@ -2266,9 +2632,37 @@ function MermaidArchitectureDiagram({
                   />
                 </>
               )}
-              <text x={m.cx} y={textStartY} textAnchor="middle" fill="#1d2620" fontSize="12" fontWeight="600">
+              <text x={m.cx} y={textStartY} textAnchor="middle" fill="#1d2620" fontSize="12.5" fontWeight="600">
                 {m.lines.map((ln, lineIdx) => (
-                  <tspan key={lineIdx} x={m.cx} dy={lineIdx === 0 ? 0 : 16}>
+                  <tspan key={lineIdx} x={m.cx} dy={lineIdx === 0 ? 0 : 17}>
+                    {ln}
+                  </tspan>
+                ))}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Edge Label Pills (rendered cleanly in dedicated corridors above paths) */}
+        {routedEdges.map((r) => {
+          if (r.pillLines.length === 0) return null;
+          const pillTop = -r.pillH / 2;
+          const firstLineY = r.pillLines.length === 1 ? 3.8 : -2.5;
+          return (
+            <g key={`edge-pill-${r.idx}`} transform={`translate(${r.lx.toFixed(1)}, ${r.ly.toFixed(1)})`}>
+              <rect
+                x={-r.pillW / 2}
+                y={pillTop}
+                width={r.pillW}
+                height={r.pillH}
+                rx={r.pillLines.length > 1 ? 8 : 10}
+                fill="#fcfaf3"
+                stroke={r.isFeedback ? "#89aeb5" : "#cbc5b6"}
+                strokeWidth={0.95}
+              />
+              <text x={0} y={firstLineY} textAnchor="middle" fill={r.isFeedback ? "#1f535d" : "#343d37"} fontSize="10.8" fontWeight="560">
+                {r.pillLines.map((ln, lIdx) => (
+                  <tspan key={lIdx} x={0} dy={lIdx === 0 ? 0 : 13}>
                     {ln}
                   </tspan>
                 ))}
@@ -2847,6 +3241,11 @@ function ArchitectureStudioTab({
     const q = compareSearch.trim();
     if (!q) {
       setCompareResults([]);
+      setCompareDropdownOpen(false);
+      return;
+    }
+    if (compareSelectedNode && q === compareSelectedNode.fullName) {
+      setCompareDropdownOpen(false);
       return;
     }
     const controller = new AbortController();
@@ -2865,7 +3264,7 @@ function ArchitectureStudioTab({
       window.clearTimeout(t);
       controller.abort();
     };
-  }, [compareSearch]);
+  }, [compareSearch, compareSelectedNode]);
 
   const filteredPrimitives = useMemo(() => {
     const q = filterQuery.trim().toLowerCase();
@@ -4091,10 +4490,18 @@ function ArchitectureStudioTab({
                         type="search"
                         data-testid="arch-compare-search-input"
                         value={compareSearch}
-                        onFocus={() => setCompareDropdownOpen(true)}
+                        onFocus={() => {
+                          if (!compareSelectedNode || compareSearch.trim() !== compareSelectedNode.fullName) {
+                            setCompareDropdownOpen(true);
+                          }
+                        }}
                         onBlur={() => window.setTimeout(() => setCompareDropdownOpen(false), 180)}
                         onChange={(e) => {
-                          setCompareSearch(e.target.value);
+                          const nextVal = e.target.value;
+                          setCompareSearch(nextVal);
+                          if (compareSelectedNode && nextVal.trim() !== compareSelectedNode.fullName) {
+                            setCompareSelectedNode(null);
+                          }
                           setCompareDropdownOpen(true);
                         }}
                         placeholder="搜索任意 Star 仓名（支持 2,000+ Star 全库检索）或从下方快速选择…"
@@ -4149,6 +4556,7 @@ function ArchitectureStudioTab({
                           onClick={() => {
                             setCompareSelectedNode({ id: s.id, fullName: s.fullName });
                             setCompareSearch(s.fullName);
+                            setCompareDropdownOpen(false);
                           }}
                         >
                           ★ {s.fullName}
